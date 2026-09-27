@@ -9,5 +9,6 @@
 #define VUK_TRIGGER_REGISTER 1
 
 void vuk_sensor_tick(int32_t trigger_register_value);
+void vuk_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, uint16_t len);
 
 #endif
