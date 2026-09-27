@@ -21,12 +21,73 @@ static bool front_selected = true;  // VUK default; one extra chord re-syncs if 
 static int32_t trigger_count = 0;
 static uint32_t completions = 0;
 
-// Diagnostics, visible on remapper.org/config's Monitor tab while it's open:
+// Diagnostics, visible on remapper.org/config's Monitor tab while it's open.
+// Emitted a few per millisecond (a monitor report only holds 7 items).
 //   0xFFF40001  chord count (register 1 rising edges)
 //   0xFFF40002  number of SET_FEATURE/OUTPUT reports queued for this chord
-//   0xFFF401nn  mounted HID interface/feature report pair nn: (dev_addr<<8|itf) << 8 | report ID (0xFF = none)
-//   0xFFF402nn  SET_REPORT completion nn (per chord): dev_addr<<16 | itf<<8 | bytes (0 = device rejected it)
+//   0xFFF40005  device-level mounts (tuh_mount_cb) since boot
+//   0xFFF40006  device-level unmounts since boot
+//   0xFFF401nn  known interface/feature report pair nn: (dev_addr<<8|itf) << 8 | report ID (0xFF = none)
+//   0xFFF402nn  SET_REPORT completion nn (per chord): dev_addr<<16 | idx<<8 | bytes (0 = device rejected it)
+//   0xFFF403nn  HID interface mount nn: dev_addr<<28 | idx<<20 | bInterfaceNumber<<16 | report descriptor length
+//   0xFFF404nn  HID interface unmount nn: dev_addr<<8 | idx
 #define VUK_DIAG(n) (0xFFF40000 | (n))
+
+struct diag_item_t {
+    uint32_t usage;
+    int32_t value;
+};
+#define DIAG_Q 64
+static diag_item_t diag_q[DIAG_Q];
+static uint8_t diag_head = 0;
+static uint8_t diag_count = 0;
+
+static void diag(uint32_t n, int32_t value) {
+    if (diag_count == DIAG_Q) {
+        return;
+    }
+    diag_q[(diag_head + diag_count) % DIAG_Q] = { VUK_DIAG(n), value };
+    diag_count++;
+}
+
+static void diag_flush() {
+    // 3 per tick leaves room for the regular inputs in the same monitor report
+    for (int i = 0; (i < 3) && (diag_count > 0); i++) {
+        if (monitor_enabled) {
+            monitor_usage(diag_q[diag_head].usage, diag_q[diag_head].value, 0);
+        }
+        diag_head = (diag_head + 1) % DIAG_Q;
+        diag_count--;
+    }
+}
+
+#define MOUNT_LOG 32
+static int32_t mount_log[MOUNT_LOG];
+static uint8_t mount_log_n = 0;
+static int32_t umount_log[MOUNT_LOG];
+static uint8_t umount_log_n = 0;
+static int32_t dev_mounts = 0;
+static int32_t dev_umounts = 0;
+
+void vuk_on_hid_mount(uint8_t dev_addr, uint8_t instance, uint8_t itf_num, uint16_t desc_len) {
+    if (mount_log_n < MOUNT_LOG) {
+        mount_log[mount_log_n++] = (int32_t) ((uint32_t) (dev_addr & 0x7) << 28 | (uint32_t) (instance & 0xF) << 20 | (uint32_t) (itf_num & 0xF) << 16 | desc_len);
+    }
+}
+
+void vuk_on_hid_umount(uint8_t dev_addr, uint8_t instance) {
+    if (umount_log_n < MOUNT_LOG) {
+        umount_log[umount_log_n++] = (int32_t) dev_addr << 8 | instance;
+    }
+}
+
+extern "C" void tuh_mount_cb(uint8_t dev_addr) {
+    dev_mounts++;
+}
+
+extern "C" void tuh_umount_cb(uint8_t dev_addr) {
+    dev_umounts++;
+}
 
 static int send_one(const vuk_report_t& r) {
     int sent = 0;
@@ -47,7 +108,7 @@ static int send_one(const vuk_report_t& r) {
         if (sent == 0) {
             // The descriptor parser only records feature reports that declare usages. If the
             // dongle's vendor interface didn't register, try every HID interface; the wrong
-            // ones just STALL (shows up as 0 bytes in 0xFFF40004).
+            // ones just STALL (shows up as 0 bytes in 0xFFF402nn).
             for (auto const& [itf, reports] : their_feature_usages) {
                 queue_set_feature_report(itf, r.report_id, r.data, r.len);
                 sent++;
@@ -66,25 +127,29 @@ static void send_all(const vuk_report_t* reports, size_t n) {
             sent += send_one(reports[i]);
         }
     }
-    if (monitor_enabled) {
-        monitor_usage(VUK_DIAG(1), trigger_count, 0);
-        monitor_usage(VUK_DIAG(2), sent, 0);
-        uint32_t n = 0;
-        for (auto const& [itf, reports] : their_feature_usages) {
-            if (reports.empty()) {
-                monitor_usage(VUK_DIAG(0x100 + (n++ & 0xFF)), (int32_t) itf << 8 | 0xFF, 0);
-            }
-            for (auto const& [report_id, usages] : reports) {
-                monitor_usage(VUK_DIAG(0x100 + (n++ & 0xFF)), (int32_t) itf << 8 | report_id, 0);
-            }
+    diag(1, trigger_count);
+    diag(2, sent);
+    diag(5, dev_mounts);
+    diag(6, dev_umounts);
+    uint32_t k = 0;
+    for (auto const& [itf, reports] : their_feature_usages) {
+        if (reports.empty()) {
+            diag(0x100 + (k++ & 0xFF), (int32_t) itf << 8 | 0xFF);
         }
+        for (auto const& [report_id, usages] : reports) {
+            diag(0x100 + (k++ & 0xFF), (int32_t) itf << 8 | report_id);
+        }
+    }
+    for (uint8_t i = 0; i < mount_log_n; i++) {
+        diag(0x300 + i, mount_log[i]);
+    }
+    for (uint8_t i = 0; i < umount_log_n; i++) {
+        diag(0x400 + i, umount_log[i]);
     }
 }
 
 void vuk_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, uint16_t len) {
-    if (monitor_enabled) {
-        monitor_usage(VUK_DIAG(0x200 + (completions++ & 0xFF)), (int32_t) dev_addr << 16 | instance << 8 | (len & 0xFF), 0);
-    }
+    diag(0x200 + (completions++ & 0xFF), (int32_t) dev_addr << 16 | instance << 8 | (len & 0xFF));
 }
 
 void vuk_sensor_tick(int32_t trigger) {
@@ -99,4 +164,5 @@ void vuk_sensor_tick(int32_t trigger) {
         }
     }
     prev_trigger = trigger;
+    diag_flush();
 }

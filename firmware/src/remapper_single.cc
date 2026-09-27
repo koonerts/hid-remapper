@@ -10,6 +10,7 @@
 #include "out_report.h"
 #include "remapper.h"
 #include "tick.h"
+#include "vuk_sensor.h"
 
 static bool __no_inline_not_in_flash_func(manual_sof)(repeating_timer_t* rt) {
     pio_usb_host_frame();
@@ -63,6 +64,11 @@ void descriptor_received_callback(uint16_t vendor_id, uint16_t product_id, const
 
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_report, uint16_t desc_len) {
     printf("tuh_hid_mount_cb\n");
+    {
+        tuh_itf_info_t itf_info;
+        uint8_t itf_num = tuh_hid_itf_get_info(dev_addr, instance, &itf_info) ? itf_info.desc.bInterfaceNumber : 0xF;
+        vuk_on_hid_mount(dev_addr, instance, itf_num, desc_report == NULL ? 0xFFFF : desc_len);
+    }
 
     uint8_t hub_addr;
     uint8_t hub_port;
@@ -87,6 +93,7 @@ void umount_callback(uint8_t dev_addr, uint8_t instance) {
 
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
     printf("tuh_hid_umount_cb\n");
+    vuk_on_hid_umount(dev_addr, instance);
     umount_callback(dev_addr, instance);
 }
 
