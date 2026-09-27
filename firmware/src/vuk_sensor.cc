@@ -37,10 +37,10 @@ struct diag_item_t {
     uint32_t usage;
     int32_t value;
 };
-#define DIAG_Q 64
+#define DIAG_Q 128
 static diag_item_t diag_q[DIAG_Q];
-static uint8_t diag_head = 0;
-static uint8_t diag_count = 0;
+static uint16_t diag_head = 0;
+static uint16_t diag_count = 0;
 
 static void diag(uint32_t n, int32_t value) {
     if (diag_count == DIAG_Q) {
@@ -58,6 +58,40 @@ static void diag_flush() {
         }
         diag_head = (diag_head + 1) % DIAG_Q;
         diag_count--;
+    }
+}
+
+// 0xFFF405nn: config descriptor as TinyUSB saw it, per interface, from the probe driver:
+//   interface  itf<<24 | class<<16 | subclass<<8 | protocol
+//   next word  0x7F<<24 | bNumEndpoints<<16 | bytes available to the driver
+//   HID desc   0x21<<24 | bNumDescriptors<<16 | wReportLength
+//   endpoint   0x05<<24 | bEndpointAddress<<16 | xfer type<<12 | wMaxPacketSize
+//   other      type<<24 | length<<16
+#define PROBE_LOG 48
+static int32_t probe_log[PROBE_LOG];
+static uint8_t probe_log_n = 0;
+
+static void probe(uint32_t v) {
+    if (probe_log_n < PROBE_LOG) {
+        probe_log[probe_log_n++] = (int32_t) v;
+    }
+}
+
+void vuk_probe_interface(const uint8_t* d, uint16_t max_len) {
+    probe((uint32_t) d[2] << 24 | (uint32_t) d[5] << 16 | d[6] << 8 | d[7]);
+    probe(0x7Fu << 24 | (uint32_t) d[4] << 16 | max_len);
+    uint16_t off = d[0];
+    while (off + 2 <= max_len && d[off] >= 2) {
+        const uint8_t* p = d + off;
+        uint8_t type = p[1];
+        if (type == 0x21 && p[0] >= 9) {
+            probe(0x21u << 24 | (uint32_t) p[5] << 16 | (p[7] | p[8] << 8));
+        } else if (type == 0x05 && p[0] >= 7) {
+            probe(0x05u << 24 | (uint32_t) p[2] << 16 | (p[3] & 3) << 12 | ((p[4] | p[5] << 8) & 0xFFF));
+        } else {
+            probe((uint32_t) type << 24 | (uint32_t) p[0] << 16);
+        }
+        off += p[0];
     }
 }
 
@@ -142,6 +176,9 @@ static void send_all(const vuk_report_t* reports, size_t n) {
     }
     for (uint8_t i = 0; i < mount_log_n; i++) {
         diag(0x300 + i, mount_log[i]);
+    }
+    for (uint8_t i = 0; i < probe_log_n; i++) {
+        diag(0x500 + i, probe_log[i]);
     }
     for (uint8_t i = 0; i < umount_log_n; i++) {
         diag(0x400 + i, umount_log[i]);
