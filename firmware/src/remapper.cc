@@ -16,6 +16,7 @@
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
+#include "vuk_sensor.h"
 
 #define MAX_REPORT_SIZE 64
 
@@ -1180,6 +1181,8 @@ void process_mapping(bool auto_repeat) {
     for (auto const& reg_ptr : register_ptrs) {
         *reg_ptr.state_ptr = *reg_ptr.register_ptr;
     }
+
+    vuk_sensor_tick(registers[VUK_TRIGGER_REGISTER - 1]);
 
     // queue triggered macros
     for (auto const& rev_map : reverse_mapping_macros) {

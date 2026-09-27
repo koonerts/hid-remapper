@@ -11,7 +11,7 @@ struct outgoing_out_report_t {
     uint8_t report_id;
     uint16_t len;
     OutType type;
-    uint8_t report[64];  // XXX
+    uint8_t report[65];  // report ID + 64-byte payload
 };
 
 #define OOR_BUFSIZE 8
