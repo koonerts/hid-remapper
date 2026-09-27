@@ -1,6 +1,7 @@
 name: build-rp2040
 on:
   push:
+    branches-ignore: [vuk-sensor]
     paths:
       - 'firmware/**'
   workflow_call:

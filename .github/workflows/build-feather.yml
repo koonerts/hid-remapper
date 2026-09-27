@@ -1,0 +1,35 @@
+name: build-feather
+on:
+  push:
+    branches: [vuk-sensor]
+    paths:
+      - 'firmware/**'
+      - '.github/workflows/build-feather.yml'
+  workflow_dispatch:
+defaults:
+  run:
+    shell: bash --noprofile --norc -x -e -o pipefail {0}
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Install compiler, libraries and tools
+        run: |
+          sudo apt update
+          sudo apt install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib srecord
+      - name: Build (Feather RP2040 USB Host only)
+        run: |
+          mkdir build-feather
+          cd build-feather
+          PICO_BOARD=feather_host cmake ..
+          make -j"$(nproc)" remapper
+          mkdir ../artifacts
+          mv remapper.uf2 ../artifacts/remapper_feather.uf2
+        working-directory: ./firmware
+      - uses: actions/upload-artifact@v7
+        with:
+          name: feather
+          path: firmware/artifacts/*
