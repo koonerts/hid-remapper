@@ -2,6 +2,9 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <map>
+
+#include <tusb.h>
 
 #include "globals.h"
 #include "remapper.h"
@@ -96,36 +99,6 @@ void vuk_probe_interface(const uint8_t* d, uint16_t max_len) {
     }
 }
 
-// 0xFFF406ss: PC-like enumeration trace (patches/tinyusb-pc-enum.patch), last device enumerated:
-//   01 VID<<16|PID   02 bNumInterfaces<<16|wTotalLength   1x string read: result<<16|bytes
-#define ENUM_LOG 8
-static uint8_t enum_stage[ENUM_LOG];
-static uint32_t enum_value[ENUM_LOG];
-static uint8_t enum_log_n = 0;
-
-// 0xFFF407nn: every enumeration step, ring of the last 24 (nn = seq % 24):
-//   seq<<24 | next state<<16 | previous transfer result<<12 | bytes
-//   states: 3 addr0 dev desc, 7 set addr, 8 dev desc, 9 cfg 255, 10 full cfg, 11-13 strings,
-//   14 set config, 15 config drivers; result 0 ok, 1 failed, 2 stalled, 3 timeout
-#define TRANS_LOG 24
-static uint32_t trans_log[TRANS_LOG];
-static uint32_t trans_seq = 0;
-
-extern "C" void tuh_enum_diag_cb(uint8_t stage, uint32_t value) {
-    if (stage & 0x80) {
-        trans_log[trans_seq % TRANS_LOG] = (trans_seq & 0xFF) << 24 | (uint32_t) (stage & 0x7F) << 16 | (value & 0xFFFF);
-        trans_seq++;
-        return;
-    }
-    if (stage == 1) {
-        enum_log_n = 0;
-    }
-    if (enum_log_n < ENUM_LOG) {
-        enum_stage[enum_log_n] = stage;
-        enum_value[enum_log_n++] = value;
-    }
-}
-
 #define MOUNT_LOG 32
 static int32_t mount_log[MOUNT_LOG];
 static uint8_t mount_log_n = 0;
@@ -154,37 +127,53 @@ extern "C" void tuh_umount_cb(uint8_t dev_addr) {
     dev_umounts++;
 }
 
-static int send_one(const vuk_report_t& r) {
-    int sent = 0;
-    if (r.type == 0) {
-        for (auto const& [key, size] : out_report_sizes) {
-            if ((key & 0xFF) == r.report_id) {
-                queue_out_report(key >> 16, r.report_id, r.data, r.len);
-                sent++;
-            }
-        }
-    } else {
-        for (auto const& [itf, reports] : their_feature_usages) {
-            if (reports.count(r.report_id)) {
-                queue_set_feature_report(itf, r.report_id, r.data, r.len);
-                sent++;
-            }
-        }
-        if (sent == 0) {
-            // The descriptor parser only records feature reports that declare usages. If the
-            // dongle's vendor interface didn't register, try every HID interface; the wrong
-            // ones just STALL (shows up as 0 bytes in 0xFFF402nn).
-            for (auto const& [itf, reports] : their_feature_usages) {
-                queue_set_feature_report(itf, r.report_id, r.data, r.len);
-                sent++;
-            }
-        }
-    }
-    return sent;
+#define VUK_VID 0x33E4
+
+static bool is_vuk(uint16_t interface) {
+    uint16_t vid;
+    uint16_t pid;
+    return tuh_vid_pid_get(interface >> 8, &vid, &pid) && (vid == VUK_VID);
 }
 
-// Sends to EVERY matching interface, so with a hub both the dongle and the wired
-// mouse get it (whichever one is live acts on it).
+// One target interface per attached VUK device (VID 33E4), never other devices on a hub:
+// the interface that declares the report ID if there is one (wired mouse: interface 2),
+// otherwise the device's first HID interface. The dongle only exposes its boot-mouse
+// interface to the Feather, but it still accepts the command there.
+static int send_one(const vuk_report_t& r) {
+    std::map<uint8_t, uint16_t> targets;  // dev_addr -> interface
+    std::map<uint8_t, bool> declared;
+    if (r.type == 0) {
+        for (auto const& [key, size] : out_report_sizes) {
+            uint16_t itf = key >> 16;
+            if (((key & 0xFF) == r.report_id) && is_vuk(itf)) {
+                targets[itf >> 8] = itf;
+            }
+        }
+        for (auto const& [dev_addr, itf] : targets) {
+            queue_out_report(itf, r.report_id, r.data, r.len);
+        }
+        return targets.size();
+    }
+    for (auto const& [itf, reports] : their_feature_usages) {
+        if (!is_vuk(itf)) {
+            continue;
+        }
+        uint8_t dev_addr = itf >> 8;
+        // the maps are unordered, so pick the lowest interface explicitly
+        bool has = reports.count(r.report_id);
+        bool better = !targets.count(dev_addr) || (has && !declared[dev_addr]) ||
+                      ((has == declared[dev_addr]) && (itf < targets[dev_addr]));
+        if (better) {
+            targets[dev_addr] = itf;
+            declared[dev_addr] = has;
+        }
+    }
+    for (auto const& [dev_addr, itf] : targets) {
+        queue_set_feature_report(itf, r.report_id, r.data, r.len);
+    }
+    return targets.size();
+}
+
 static int last_sent = 0;
 
 static void diag_all() {
@@ -204,21 +193,16 @@ static void diag_all() {
     for (uint8_t i = 0; i < mount_log_n; i++) {
         diag(0x300 + i, mount_log[i]);
     }
-    for (uint8_t i = 0; i < enum_log_n; i++) {
-        diag(0x600 + enum_stage[i], (int32_t) enum_value[i]);
-    }
     for (uint8_t i = 0; i < probe_log_n; i++) {
         diag(0x500 + i, probe_log[i]);
     }
     for (uint8_t i = 0; i < umount_log_n; i++) {
         diag(0x400 + i, umount_log[i]);
     }
-    uint32_t n = trans_seq < TRANS_LOG ? trans_seq : TRANS_LOG;
-    for (uint32_t i = trans_seq - n; i < trans_seq; i++) {
-        diag(0x700 + (i % TRANS_LOG), (int32_t) trans_log[i % TRANS_LOG]);
-    }
 }
 
+// With a hub, the dongle and the wired mouse each get it (whichever is live acts on it,
+// and both stay in sync).
 static void send_all(const vuk_report_t* reports, size_t n) {
     int sent = 0;
     for (size_t i = 0; i < n; i++) {
