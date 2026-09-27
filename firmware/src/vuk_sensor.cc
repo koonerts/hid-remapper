@@ -6,6 +6,7 @@
 #include "globals.h"
 #include "remapper.h"
 #include "vuk_payloads.h"
+#include "pico/time.h"
 
 // Arm's prebuilt toolchains ship libstdc++ with the verbose terminate handler, which drags in
 // the 33 KB demangler (cp-demangle.o). In this copy_to_ram image that comes straight out of
@@ -102,7 +103,20 @@ static uint8_t enum_stage[ENUM_LOG];
 static uint32_t enum_value[ENUM_LOG];
 static uint8_t enum_log_n = 0;
 
+// 0xFFF407nn: every enumeration step, ring of the last 24 (nn = seq % 24):
+//   seq<<24 | next state<<16 | previous transfer result<<12 | bytes
+//   states: 3 addr0 dev desc, 7 set addr, 8 dev desc, 9 cfg 255, 10 full cfg, 11-13 strings,
+//   14 set config, 15 config drivers; result 0 ok, 1 failed, 2 stalled, 3 timeout
+#define TRANS_LOG 24
+static uint32_t trans_log[TRANS_LOG];
+static uint32_t trans_seq = 0;
+
 extern "C" void tuh_enum_diag_cb(uint8_t stage, uint32_t value) {
+    if (stage & 0x80) {
+        trans_log[trans_seq % TRANS_LOG] = (trans_seq & 0xFF) << 24 | (uint32_t) (stage & 0x7F) << 16 | (value & 0xFFFF);
+        trans_seq++;
+        return;
+    }
     if (stage == 1) {
         enum_log_n = 0;
     }
@@ -171,15 +185,11 @@ static int send_one(const vuk_report_t& r) {
 
 // Sends to EVERY matching interface, so with a hub both the dongle and the wired
 // mouse get it (whichever one is live acts on it).
-static void send_all(const vuk_report_t* reports, size_t n) {
-    int sent = 0;
-    for (size_t i = 0; i < n; i++) {
-        if (reports[i].len != 0) {
-            sent += send_one(reports[i]);
-        }
-    }
+static int last_sent = 0;
+
+static void diag_all() {
     diag(1, trigger_count);
-    diag(2, sent);
+    diag(2, last_sent);
     diag(5, dev_mounts);
     diag(6, dev_umounts);
     uint32_t k = 0;
@@ -203,6 +213,21 @@ static void send_all(const vuk_report_t* reports, size_t n) {
     for (uint8_t i = 0; i < umount_log_n; i++) {
         diag(0x400 + i, umount_log[i]);
     }
+    uint32_t n = trans_seq < TRANS_LOG ? trans_seq : TRANS_LOG;
+    for (uint32_t i = trans_seq - n; i < trans_seq; i++) {
+        diag(0x700 + (i % TRANS_LOG), (int32_t) trans_log[i % TRANS_LOG]);
+    }
+}
+
+static void send_all(const vuk_report_t* reports, size_t n) {
+    int sent = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (reports[i].len != 0) {
+            sent += send_one(reports[i]);
+        }
+    }
+    last_sent = sent;
+    diag_all();
 }
 
 void vuk_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, uint16_t len) {
@@ -221,5 +246,13 @@ void vuk_sensor_tick(int32_t trigger) {
         }
     }
     prev_trigger = trigger;
+    // Also dump everything every 3 s while the Monitor tab is open, so a device that
+    // never mounts (no Mid+Left possible) still shows its enumeration trace.
+    static uint32_t last_dump_us = 0;
+    uint32_t now = time_us_32();
+    if (monitor_enabled && (diag_count == 0) && (now - last_dump_us > 3000000)) {
+        last_dump_us = now;
+        diag_all();
+    }
     diag_flush();
 }

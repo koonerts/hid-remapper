@@ -1,5 +1,5 @@
 diff --git a/src/host/usbh.c b/src/host/usbh.c
-index 88f3101..f481642 100644
+index 88f3101..2920bcc 100644
 --- a/src/host/usbh.c
 +++ b/src/host/usbh.c
 @@ -1313,6 +1313,9 @@ enum {
@@ -33,7 +33,22 @@ index 88f3101..f481642 100644
  
  // process device enumeration
  static void process_enumeration(tuh_xfer_t* xfer) {
-@@ -1402,8 +1419,8 @@ static void process_enumeration(tuh_xfer_t* xfer) {
+@@ -1330,6 +1347,8 @@ static void process_enumeration(tuh_xfer_t* xfer) {
+   };
+   static uint8_t failed_count = 0;
+ 
++  if (tuh_enum_diag_cb) tuh_enum_diag_cb((uint8_t) (0x80 | xfer->user_data), (uint32_t) xfer->result << 12 | (xfer->actual_len & 0xFFF));
++
+   if (XFER_RESULT_SUCCESS != xfer->result) {
+     // retry if not reaching max attempt
+     bool retry = _dev0.enumerating && (failed_count < ATTEMPT_COUNT_MAX);
+@@ -1398,12 +1417,13 @@ static void process_enumeration(tuh_xfer_t* xfer) {
+     case ENUM_ADDR0_DEVICE_DESC: {
+       // TODO probably doesn't need to open/close each enumeration
+       uint8_t const addr0 = 0;
+-      TU_ASSERT(usbh_edpt_control_open(addr0, 8),);
++      // 64 like Windows: an 8-byte-EP0 device just ends with a short packet
++      TU_ASSERT(usbh_edpt_control_open(addr0, 64),);
  
        // Get first 8 bytes of device descriptor for Control Endpoint size
        TU_LOG_USBH("Get 8 byte of Device Descriptor\r\n");
@@ -44,7 +59,7 @@ index 88f3101..f481642 100644
        break;
      }
  
-@@ -1474,7 +1491,7 @@ static void process_enumeration(tuh_xfer_t* xfer) {
+@@ -1474,7 +1494,7 @@ static void process_enumeration(tuh_xfer_t* xfer) {
        // Get 9-byte for total length
        uint8_t const config_idx = CONFIG_NUM - 1;
        TU_LOG_USBH("Get Configuration[0] Descriptor (9 bytes)\r\n");
@@ -53,7 +68,7 @@ index 88f3101..f481642 100644
                                                   process_enumeration, ENUM_GET_FULL_CONFIG_DESC),);
        break;
      }
-@@ -1493,10 +1510,42 @@ static void process_enumeration(tuh_xfer_t* xfer) {
+@@ -1493,10 +1513,42 @@ static void process_enumeration(tuh_xfer_t* xfer) {
        uint8_t const config_idx = CONFIG_NUM - 1;
        TU_LOG_USBH("Get Configuration[0] Descriptor\r\n");
        TU_ASSERT(tuh_descriptor_get_configuration(daddr, config_idx, _usbh_ctrl_buf, total_len,
