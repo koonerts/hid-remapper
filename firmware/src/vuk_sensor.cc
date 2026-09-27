@@ -19,41 +19,32 @@ void __verbose_terminate_handler() {
 static int32_t prev_trigger = 0;
 static bool front_selected = true;  // VUK default; one extra chord re-syncs if wrong
 
-// Finds the dongle interface that owns report_id of the given type.
+// Sends to EVERY interface that owns report_id of the given type, so with a hub
+// both the dongle and the wired mouse get it (whichever one is live acts on it).
 // Keys: out_report_sizes = (dev_addr<<8|itf) << 16 | report_id.
-static bool find_interface(const vuk_report_t& r, uint16_t* interface) {
+static void send_one(const vuk_report_t& r) {
     if (r.type == 0) {
         for (auto const& [key, size] : out_report_sizes) {
             if ((key & 0xFF) == r.report_id) {
-                *interface = key >> 16;
-                return true;
+                queue_out_report(key >> 16, r.report_id, r.data, r.len);
             }
         }
     } else {
         for (auto const& [itf, reports] : their_feature_usages) {
             if (reports.count(r.report_id)) {
-                *interface = itf;
-                return true;
+                queue_set_feature_report(itf, r.report_id, r.data, r.len);
             }
         }
     }
-    return false;
 }
 
 static void send_all(const vuk_report_t* reports, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        uint16_t interface;
-        if ((reports[i].len == 0) || !find_interface(reports[i], &interface)) {
-            continue;
-        }
-        if (reports[i].type == 0) {
-            queue_out_report(interface, reports[i].report_id, reports[i].data, reports[i].len);
-        } else {
-            queue_set_feature_report(interface, reports[i].report_id, reports[i].data, reports[i].len);
+        if (reports[i].len != 0) {
+            send_one(reports[i]);
         }
     }
 }
-
 void vuk_sensor_tick(int32_t trigger) {
     if (trigger != 0 && prev_trigger == 0) {
         front_selected = !front_selected;
