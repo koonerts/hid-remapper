@@ -95,6 +95,23 @@ void vuk_probe_interface(const uint8_t* d, uint16_t max_len) {
     }
 }
 
+// 0xFFF406ss: PC-like enumeration trace (patches/tinyusb-pc-enum.patch), last device enumerated:
+//   01 VID<<16|PID   02 bNumInterfaces<<16|wTotalLength   1x string read: result<<16|bytes
+#define ENUM_LOG 8
+static uint8_t enum_stage[ENUM_LOG];
+static uint32_t enum_value[ENUM_LOG];
+static uint8_t enum_log_n = 0;
+
+extern "C" void tuh_enum_diag_cb(uint8_t stage, uint32_t value) {
+    if (stage == 1) {
+        enum_log_n = 0;
+    }
+    if (enum_log_n < ENUM_LOG) {
+        enum_stage[enum_log_n] = stage;
+        enum_value[enum_log_n++] = value;
+    }
+}
+
 #define MOUNT_LOG 32
 static int32_t mount_log[MOUNT_LOG];
 static uint8_t mount_log_n = 0;
@@ -176,6 +193,9 @@ static void send_all(const vuk_report_t* reports, size_t n) {
     }
     for (uint8_t i = 0; i < mount_log_n; i++) {
         diag(0x300 + i, mount_log[i]);
+    }
+    for (uint8_t i = 0; i < enum_log_n; i++) {
+        diag(0x600 + enum_stage[i], (int32_t) enum_value[i]);
     }
     for (uint8_t i = 0; i < probe_log_n; i++) {
         diag(0x500 + i, probe_log[i]);

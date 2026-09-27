@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+      - name: Apply TinyUSB PC-like enumeration patch
+        run: git -C firmware/tinyusb apply ../patches/tinyusb-pc-enum.patch
       - name: Install compiler, libraries and tools
         run: |
           sudo apt update
