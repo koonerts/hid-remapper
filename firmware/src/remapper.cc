@@ -16,7 +16,7 @@
 #include "our_descriptor.h"
 #include "platform.h"
 #include "remapper.h"
-#include "vuk_sensor.h"
+#include "gw_mouse.h"
 
 #define MAX_REPORT_SIZE 64
 
@@ -1182,7 +1182,7 @@ void process_mapping(bool auto_repeat) {
         *reg_ptr.state_ptr = *reg_ptr.register_ptr;
     }
 
-    vuk_sensor_tick(registers[VUK_TRIGGER_REGISTER - 1], registers[VUK_DPI_REGISTER - 1]);
+    gw_tick(registers[GW_SENSOR_REGISTER - 1], registers[GW_DPI_REGISTER - 1], registers[GW_WHEEL_REGISTER - 1]);
 
     // queue triggered macros
     for (auto const& rev_map : reverse_mapping_macros) {

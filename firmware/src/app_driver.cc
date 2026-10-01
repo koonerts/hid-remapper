@@ -1,11 +1,11 @@
 #include "usb_midi_host.h"
 #include "xbox.h"
-#include "vuk_sensor.h"
+#include "gw_mouse.h"
 
 // Never claims anything; just records every interface descriptor for the Monitor diagnostics.
 static bool probe_init() { return true; }
 static bool probe_open(uint8_t rhport, uint8_t dev_addr, tusb_desc_interface_t const* desc_itf, uint16_t max_len) {
-    vuk_probe_interface((const uint8_t*) desc_itf, max_len);
+    gw_probe_interface((const uint8_t*) desc_itf, max_len);
     return false;
 }
 static bool probe_set_config(uint8_t dev_addr, uint8_t itf_num) { return false; }
