@@ -35,6 +35,9 @@ jobs:
           cd build-feather
           PICO_BOARD=feather_host cmake ..
           make -j"$(nproc)" remapper
+          # copy_to_ram image: whatever RAM the image and bss don't use is the heap
+          arm-none-eabi-size remapper.elf
+          arm-none-eabi-nm remapper.elf | grep -E ' (__end__|end|__HeapLimit|__StackLimit|__StackOneBottom|__StackBottom|__StackTop)$' || true
           mkdir ../artifacts
           mv remapper.uf2 ../artifacts/remapper_feather.uf2
         working-directory: ./firmware
