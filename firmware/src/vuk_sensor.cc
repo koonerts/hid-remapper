@@ -40,10 +40,12 @@ static uint32_t completions = 0;
 //   0xFFF40600  DPI: stage read from the mouse (0 = read failed)
 //   0xFFF40601  DPI: stage count read from the mouse (0 = read failed, VUK_DPI_STAGES used)
 //   0xFFF40602  DPI: stage written
-//   0xFFF40603  DPI: failures, bit 0 stage read, bit 1 table read, bit 2 timeout
+//   0xFFF40603  DPI: failures, bit 0 stage read, bit 1 table read, bit 2 timeout,
+//               bit 3 reply stayed "pending" (a0), bit 4 reads skipped for this interface
 //   0xFFF40604  DPI: SET_FEATUREs queued for the write (stage + table, per device)
 //   0xFFF40605  DPI: interface read from, dev_addr<<8 | idx
-//   0xFFF4061n  DPI: GET_FEATURE reply n: byte0<<24 | byte5<<16 | byte6<<8 | byte7 (-1 = failed)
+//   0xFFF40606  DPI: GET_FEATUREs issued
+//   0xFFF4061n, 0xFFF4062n  DPI: GET_FEATURE reply n: byte0<<24 | byte5<<16 | byte6<<8 | byte7 (-1 = failed)
 #define VUK_DIAG(n) (0xFFF40000 | (n))
 
 struct diag_item_t {
@@ -122,7 +124,12 @@ void vuk_on_hid_mount(uint8_t dev_addr, uint8_t instance, uint8_t itf_num, uint1
     }
 }
 
+static uint16_t dpi_noread_itf = 0;  // DPI: interface whose replies never finished; reads skipped
+
 void vuk_on_hid_umount(uint8_t dev_addr, uint8_t instance) {
+    if (dpi_noread_itf == ((uint16_t) (dev_addr << 8 | instance))) {
+        dpi_noread_itf = 0;  // the address can come back as a different device
+    }
     if (umount_log_n < MOUNT_LOG) {
         umount_log[umount_log_n++] = (int32_t) dev_addr << 8 | instance;
     }
@@ -238,12 +245,17 @@ void vuk_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t repo
 // and the same table back to every attached VUK device, the way the web driver does it.
 // The stage written is absolute, so the dongle and the cable both getting it is harmless.
 // Replies are handled in the tick, never inside the USB callback.
+// Through the dongle a reply first comes back as a0 + the echoed command and no data (seen
+// 2026-09-30); a1 is the finished reply. On a0 only the GET is repeated: re-sending the
+// request would restart the dongle's round trip to the mouse.
 #define VUK_DPI_STAGES 4  // used when the stage count can't be read
 #define DPI_MAX_STAGES 7
 #define DPI_TABLE_BYTES (DPI_MAX_STAGES * 4)
-#define DPI_TIMEOUT_US 300000
+#define DPI_TIMEOUT_US 400000
 #define DPI_RETRY_US 4000
 #define DPI_TRIES 3
+#define DPI_POLL_US 8000
+#define DPI_POLL_BUDGET_US 120000  // per read; a device that never finishes is skipped next time
 
 enum class DpiPhase : uint8_t {
     IDLE,
@@ -262,9 +274,12 @@ static uint32_t dpi_deadline = 0;
 static int dpi_stage = 0;
 static int dpi_count = 0;
 static uint8_t dpi_table[DPI_TABLE_BYTES];
-static int dpi_last_written = 0;  // fallback when the stage read fails
+static int dpi_last_written[2] = { 0, 0 };  // per sensor (front, rear); fallback when the stage read fails
 static int32_t dpi_fail = 0;
 static uint32_t dpi_replies = 0;
+static int32_t dpi_gets = 0;
+static bool dpi_get_only = false;   // the scheduled retry repeats just the GET
+static uint32_t dpi_read_started = 0;
 
 static uint8_t dpi_reply[64];
 static uint16_t dpi_reply_len = 0;
@@ -284,18 +299,25 @@ static const vuk_report_t& dpi_request() {
     return (dpi_phase == DpiPhase::STAGE) ? VUK_DPI_READ_STAGE[0] : VUK_DPI_READ_TABLE[0];
 }
 
-static void dpi_send_request() {
-    const vuk_report_t& r = dpi_request();
-    queue_set_feature_report(dpi_itf, r.report_id, r.data, r.len);
-    queue_get_feature_report(dpi_itf, r.report_id, 64);
+static void dpi_send_get() {
+    queue_get_feature_report(dpi_itf, dpi_request().report_id, 64);
+    dpi_gets++;
     dpi_waiting = true;
 }
 
+static void dpi_send_request() {
+    const vuk_report_t& r = dpi_request();
+    queue_set_feature_report(dpi_itf, r.report_id, r.data, r.len);
+    dpi_read_started = time_us_32();
+    dpi_send_get();
+}
+
 static void dpi_finish() {
+    int& last = dpi_last_written[front_selected ? 0 : 1];
     int n = ((dpi_count >= 1) && (dpi_count <= DPI_MAX_STAGES)) ? dpi_count : VUK_DPI_STAGES;
-    int cur = ((dpi_stage >= 1) && (dpi_stage <= n))                 ? dpi_stage
-              : ((dpi_last_written >= 1) && (dpi_last_written <= n)) ? dpi_last_written
-                                                                     : 1;
+    int cur = ((dpi_stage >= 1) && (dpi_stage <= n)) ? dpi_stage
+              : ((last >= 1) && (last <= n))         ? last
+                                                     : 1;
     int next = cur % n + 1;
     vuk_report_t w = VUK_DPI_WRITE_STAGE[0];
     w.data[7] = next;
@@ -306,7 +328,7 @@ static void dpi_finish() {
         memcpy(t.data + 8, dpi_table, DPI_TABLE_BYTES);
         sent += send_one(t);
     }
-    dpi_last_written = next;
+    last = next;
     diag(3, dpi_trigger_count);
     diag(0x600, dpi_stage);
     diag(0x601, dpi_count);
@@ -314,6 +336,7 @@ static void dpi_finish() {
     diag(0x603, dpi_fail);
     diag(0x604, sent);
     diag(0x605, dpi_itf);
+    diag(0x606, dpi_gets);
     dpi_phase = DpiPhase::IDLE;
     dpi_waiting = false;
     dpi_retry_at = 0;
@@ -324,14 +347,30 @@ static void dpi_handle_reply(uint32_t now) {
     const vuk_report_t& req = dpi_request();
     uint16_t need = 8 + ((dpi_phase == DpiPhase::TABLE) ? DPI_TABLE_BYTES : 0);
     bool ok = (dpi_reply_len >= need) && (dpi_reply[0] == 0xa1) && (memcmp(dpi_reply + 1, req.data + 1, 6) == 0);
-    diag(0x610 + (dpi_replies++ & 0xF),
+    bool pending = (dpi_reply_len >= 8) && (dpi_reply[0] == 0xa0) && (dpi_reply[5] == req.data[5]) && (dpi_reply[6] == req.data[6]);
+    diag(0x610 + (dpi_replies++ & 0x1F),
         (dpi_reply_len >= 8) ? (int32_t) ((uint32_t) dpi_reply[0] << 24 | dpi_reply[5] << 16 | dpi_reply[6] << 8 | dpi_reply[7]) : -1);
     if (!ok) {
-        if (++dpi_tries < DPI_TRIES) {
-            dpi_retry_at = (now + DPI_RETRY_US) | 1;  // never 0, which means "none"
+        if (pending && ((now - dpi_read_started) < DPI_POLL_BUDGET_US)) {
+            dpi_get_only = true;
+            dpi_retry_at = (now + DPI_POLL_US) | 1;  // never 0, which means "none"
+            return;
+        }
+        if (!pending && (++dpi_tries < DPI_TRIES)) {
+            dpi_get_only = false;
+            dpi_retry_at = (now + DPI_RETRY_US) | 1;
             return;
         }
         dpi_fail |= (dpi_phase == DpiPhase::STAGE) ? 1 : 2;
+        if (pending) {
+            // it accepts the request but never finishes the reply: stop asking this interface
+            dpi_fail |= 8;
+            dpi_noread_itf = dpi_itf;
+        }
+        if (dpi_phase == DpiPhase::STAGE) {
+            dpi_finish();  // no stage means no point reading the table
+            return;
+        }
     } else if (dpi_phase == DpiPhase::STAGE) {
         dpi_stage = dpi_reply[7];
     } else {
@@ -368,11 +407,18 @@ static void dpi_start(uint32_t now) {
     dpi_count = 0;
     dpi_fail = 0;
     dpi_replies = 0;
+    dpi_gets = 0;
     dpi_tries = 0;
     dpi_retry_at = 0;
+    dpi_get_only = false;
     dpi_reply_ready = false;
     dpi_deadline = now + DPI_TIMEOUT_US;
     dpi_phase = DpiPhase::STAGE;
+    if (dpi_itf == dpi_noread_itf) {
+        dpi_fail = 16;  // reads skipped
+        dpi_finish();
+        return;
+    }
     dpi_send_request();
 }
 
@@ -389,7 +435,11 @@ static void dpi_tick(int32_t trigger, uint32_t now) {
         dpi_handle_reply(now);
     } else if ((dpi_retry_at != 0) && ((int32_t) (now - dpi_retry_at) >= 0)) {
         dpi_retry_at = 0;
-        dpi_send_request();
+        if (dpi_get_only) {
+            dpi_send_get();
+        } else {
+            dpi_send_request();
+        }
     }
     if ((dpi_phase != DpiPhase::IDLE) && ((int32_t) (now - dpi_deadline) >= 0)) {
         dpi_fail |= 4;
