@@ -42,9 +42,10 @@ static uint32_t completions = 0;
 //   0xFFF40602  DPI: stage written
 //   0xFFF40603  DPI: failures, bit 0 stage read, bit 1 table read, bit 2 timeout,
 //               bit 3 reply stayed "pending" (a0), bit 4 reads skipped for this interface
-//   0xFFF40604  DPI: SET_FEATUREs queued for the write (stage + table, per device)
+//   0xFFF40604  DPI: stage writes queued (one per device)
 //   0xFFF40605  DPI: interface read from, dev_addr<<8 | idx
 //   0xFFF40606  DPI: GET_FEATUREs issued
+//   0xFFF40607  DPI: bytes 1..4 of the last finished stage-count reply
 //   0xFFF4061n, 0xFFF4062n  DPI: GET_FEATURE reply n: byte0<<24 | byte5<<16 | byte6<<8 | byte7 (-1 = failed)
 #define VUK_DIAG(n) (0xFFF40000 | (n))
 
@@ -240,9 +241,11 @@ void vuk_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t repo
     diag(0x200 + (completions++ & 0xFF), (int32_t) dev_addr << 16 | instance << 8 | (len & 0xFF));
 }
 
-// DPI stage cycle. On a register 2 rising edge, read the active sensor's stage and DPI table
+// DPI stage cycle. On a register 2 rising edge, read the active sensor's stage and stage count
 // from one VUK interface (the wired mouse when it's attached), then write stage+1 (wrapping)
-// and the same table back to every attached VUK device, the way the web driver does it.
+// to every attached VUK device. The web driver also writes the DPI table back after a stage
+// change; that isn't needed (stage-only writes verified 2026-09-30) and isn't done, since the
+// table read is inferred and its reply isn't fully decoded.
 // The stage written is absolute, so the dongle and the cable both getting it is harmless.
 // Replies are handled in the tick, never inside the USB callback.
 // Through the dongle a reply first comes back as a0 + the echoed command and no data (seen
@@ -250,7 +253,6 @@ void vuk_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t repo
 // request would restart the dongle's round trip to the mouse.
 #define VUK_DPI_STAGES 4  // used when the stage count can't be read
 #define DPI_MAX_STAGES 7
-#define DPI_TABLE_BYTES (DPI_MAX_STAGES * 4)
 #define DPI_TIMEOUT_US 400000
 #define DPI_RETRY_US 4000
 #define DPI_TRIES 3
@@ -273,7 +275,7 @@ static uint32_t dpi_retry_at = 0;  // 0 = no retry scheduled
 static uint32_t dpi_deadline = 0;
 static int dpi_stage = 0;
 static int dpi_count = 0;
-static uint8_t dpi_table[DPI_TABLE_BYTES];
+static int32_t dpi_table_echo = 0;  // bytes 1..4 of the last stage-count reply (diagnostics)
 static int dpi_last_written[2] = { 0, 0 };  // per sensor (front, rear); fallback when the stage read fails
 static int32_t dpi_fail = 0;
 static uint32_t dpi_replies = 0;
@@ -322,12 +324,6 @@ static void dpi_finish() {
     vuk_report_t w = VUK_DPI_WRITE_STAGE[0];
     w.data[7] = next;
     int sent = send_one(w);
-    if (n == dpi_count) {
-        vuk_report_t t = VUK_DPI_WRITE_TABLE[0];
-        t.data[7] = dpi_count;
-        memcpy(t.data + 8, dpi_table, DPI_TABLE_BYTES);
-        sent += send_one(t);
-    }
     last = next;
     diag(3, dpi_trigger_count);
     diag(0x600, dpi_stage);
@@ -337,6 +333,7 @@ static void dpi_finish() {
     diag(0x604, sent);
     diag(0x605, dpi_itf);
     diag(0x606, dpi_gets);
+    diag(0x607, dpi_table_echo);
     dpi_phase = DpiPhase::IDLE;
     dpi_waiting = false;
     dpi_retry_at = 0;
@@ -345,8 +342,14 @@ static void dpi_finish() {
 
 static void dpi_handle_reply(uint32_t now) {
     const vuk_report_t& req = dpi_request();
-    uint16_t need = 8 + ((dpi_phase == DpiPhase::TABLE) ? DPI_TABLE_BYTES : 0);
-    bool ok = (dpi_reply_len >= need) && (dpi_reply[0] == 0xa1) && (memcmp(dpi_reply + 1, req.data + 1, 6) == 0);
+    // The stage reply echoes the whole request header. The table reply (2026-09-30, dongle:
+    // a1 .. 81 01 <count>) differs somewhere in bytes 1..4, so only status + command are checked.
+    bool ok = (dpi_reply_len >= 8) && (dpi_reply[0] == 0xa1) &&
+              ((dpi_phase == DpiPhase::STAGE) ? (memcmp(dpi_reply + 1, req.data + 1, 6) == 0)
+                                              : ((dpi_reply[5] == req.data[5]) && (dpi_reply[6] == req.data[6])));
+    if ((dpi_phase == DpiPhase::TABLE) && (dpi_reply_len >= 8) && (dpi_reply[0] == 0xa1)) {
+        dpi_table_echo = (int32_t) ((uint32_t) dpi_reply[1] << 24 | dpi_reply[2] << 16 | dpi_reply[3] << 8 | dpi_reply[4]);
+    }
     bool pending = (dpi_reply_len >= 8) && (dpi_reply[0] == 0xa0) && (dpi_reply[5] == req.data[5]) && (dpi_reply[6] == req.data[6]);
     diag(0x610 + (dpi_replies++ & 0x1F),
         (dpi_reply_len >= 8) ? (int32_t) ((uint32_t) dpi_reply[0] << 24 | dpi_reply[5] << 16 | dpi_reply[6] << 8 | dpi_reply[7]) : -1);
@@ -374,8 +377,7 @@ static void dpi_handle_reply(uint32_t now) {
     } else if (dpi_phase == DpiPhase::STAGE) {
         dpi_stage = dpi_reply[7];
     } else {
-        dpi_count = dpi_reply[7];
-        memcpy(dpi_table, dpi_reply + 8, DPI_TABLE_BYTES);
+        dpi_count = dpi_reply[7];  // range-checked in dpi_finish
     }
     if (dpi_phase == DpiPhase::STAGE) {
         dpi_phase = DpiPhase::TABLE;

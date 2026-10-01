@@ -36,7 +36,8 @@ static const vuk_report_t VUK_SELECT_REAR[] = {
 //   read stage   00 00 02 02 01 82 01 00  -> a1 00 02 02 01 82 01 <stage>   (stage is 1-based)
 //   write stage  00 00 02 02 01 02 01 <stage>
 //   write table  00 00 02 1e 01 01 01 <count> then 7 x (X, Y) 16-bit big-endian (4500 = 11 94);
-//                the driver sends it after every stage change
+//                the driver sends it after every stage change, the firmware doesn't (not needed)
+// Through the dongle a read is first answered a0 (not ready) and then a1 on a later GET.
 static const vuk_report_t VUK_DPI_READ_STAGE[] = {
     { 1, 0x00, 64, { 0x00, 0x00, 0x02, 0x02, 0x01, 0x82, 0x01 } },
 };
@@ -46,13 +47,9 @@ static const vuk_report_t VUK_DPI_WRITE_STAGE[] = {
 };
 
 // Never seen in a capture: built from the colour-table read (00 00 02 16 02 81 01) and the
-// table write. A wrong guess just fails the reply check and the stage count falls back.
+// table write. Only its byte 7 (stage count) is used; the dongle answers a1 .. 81 01 04.
 static const vuk_report_t VUK_DPI_READ_TABLE[] = {
     { 1, 0x00, 64, { 0x00, 0x00, 0x02, 0x1e, 0x01, 0x81, 0x01 } },
-};
-
-static const vuk_report_t VUK_DPI_WRITE_TABLE[] = {
-    { 1, 0x00, 64, { 0x00, 0x00, 0x02, 0x1e, 0x01, 0x01, 0x01 } },
 };
 
 #endif
