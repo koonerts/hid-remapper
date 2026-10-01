@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 
 #include <tusb.h>
@@ -29,12 +30,20 @@ static uint32_t completions = 0;
 // Emitted a few per millisecond (a monitor report only holds 7 items).
 //   0xFFF40001  chord count (register 1 rising edges)
 //   0xFFF40002  number of SET_FEATURE/OUTPUT reports queued for this chord
+//   0xFFF40003  DPI chord count (register 2 rising edges)
 //   0xFFF40005  device-level mounts (tuh_mount_cb) since boot
 //   0xFFF40006  device-level unmounts since boot
 //   0xFFF401nn  known interface/feature report pair nn: (dev_addr<<8|itf) << 8 | report ID (0xFF = none)
 //   0xFFF402nn  SET_REPORT completion nn (per chord): dev_addr<<16 | idx<<8 | bytes (0 = device rejected it)
 //   0xFFF403nn  HID interface mount nn: dev_addr<<28 | idx<<20 | bInterfaceNumber<<16 | report descriptor length
 //   0xFFF404nn  HID interface unmount nn: dev_addr<<8 | idx
+//   0xFFF40600  DPI: stage read from the mouse (0 = read failed)
+//   0xFFF40601  DPI: stage count read from the mouse (0 = read failed, VUK_DPI_STAGES used)
+//   0xFFF40602  DPI: stage written
+//   0xFFF40603  DPI: failures, bit 0 stage read, bit 1 table read, bit 2 timeout
+//   0xFFF40604  DPI: SET_FEATUREs queued for the write (stage + table, per device)
+//   0xFFF40605  DPI: interface read from, dev_addr<<8 | idx
+//   0xFFF4061n  DPI: GET_FEATURE reply n: byte0<<24 | byte5<<16 | byte6<<8 | byte7 (-1 = failed)
 #define VUK_DIAG(n) (0xFFF40000 | (n))
 
 struct diag_item_t {
@@ -139,6 +148,25 @@ static bool is_vuk(uint16_t interface) {
 // the interface that declares the report ID if there is one (wired mouse: interface 2),
 // otherwise the device's first HID interface. The dongle only exposes its boot-mouse
 // interface to the Feather, but it still accepts the command there.
+static std::map<uint8_t, uint16_t> feature_targets(uint8_t report_id, std::map<uint8_t, bool>& declared) {
+    std::map<uint8_t, uint16_t> targets;  // dev_addr -> interface
+    for (auto const& [itf, reports] : their_feature_usages) {
+        if (!is_vuk(itf)) {
+            continue;
+        }
+        uint8_t dev_addr = itf >> 8;
+        // the maps are unordered, so pick the lowest interface explicitly
+        bool has = reports.count(report_id);
+        bool better = !targets.count(dev_addr) || (has && !declared[dev_addr]) ||
+                      ((has == declared[dev_addr]) && (itf < targets[dev_addr]));
+        if (better) {
+            targets[dev_addr] = itf;
+            declared[dev_addr] = has;
+        }
+    }
+    return targets;
+}
+
 static int send_one(const vuk_report_t& r) {
     std::map<uint8_t, uint16_t> targets;  // dev_addr -> interface
     std::map<uint8_t, bool> declared;
@@ -154,20 +182,7 @@ static int send_one(const vuk_report_t& r) {
         }
         return targets.size();
     }
-    for (auto const& [itf, reports] : their_feature_usages) {
-        if (!is_vuk(itf)) {
-            continue;
-        }
-        uint8_t dev_addr = itf >> 8;
-        // the maps are unordered, so pick the lowest interface explicitly
-        bool has = reports.count(r.report_id);
-        bool better = !targets.count(dev_addr) || (has && !declared[dev_addr]) ||
-                      ((has == declared[dev_addr]) && (itf < targets[dev_addr]));
-        if (better) {
-            targets[dev_addr] = itf;
-            declared[dev_addr] = has;
-        }
-    }
+    targets = feature_targets(r.report_id, declared);
     for (auto const& [dev_addr, itf] : targets) {
         queue_set_feature_report(itf, r.report_id, r.data, r.len);
     }
@@ -218,7 +233,172 @@ void vuk_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t repo
     diag(0x200 + (completions++ & 0xFF), (int32_t) dev_addr << 16 | instance << 8 | (len & 0xFF));
 }
 
-void vuk_sensor_tick(int32_t trigger) {
+// DPI stage cycle. On a register 2 rising edge, read the active sensor's stage and DPI table
+// from one VUK interface (the wired mouse when it's attached), then write stage+1 (wrapping)
+// and the same table back to every attached VUK device, the way the web driver does it.
+// The stage written is absolute, so the dongle and the cable both getting it is harmless.
+// Replies are handled in the tick, never inside the USB callback.
+#define VUK_DPI_STAGES 4  // used when the stage count can't be read
+#define DPI_MAX_STAGES 7
+#define DPI_TABLE_BYTES (DPI_MAX_STAGES * 4)
+#define DPI_TIMEOUT_US 300000
+#define DPI_RETRY_US 4000
+#define DPI_TRIES 3
+
+enum class DpiPhase : uint8_t {
+    IDLE,
+    STAGE,
+    TABLE,
+};
+
+static DpiPhase dpi_phase = DpiPhase::IDLE;
+static int32_t dpi_prev_trigger = 0;
+static int32_t dpi_trigger_count = 0;
+static uint16_t dpi_itf = 0;
+static uint8_t dpi_tries = 0;
+static bool dpi_waiting = false;   // a GET_FEATURE for dpi_itf is queued or in flight
+static uint32_t dpi_retry_at = 0;  // 0 = no retry scheduled
+static uint32_t dpi_deadline = 0;
+static int dpi_stage = 0;
+static int dpi_count = 0;
+static uint8_t dpi_table[DPI_TABLE_BYTES];
+static int dpi_last_written = 0;  // fallback when the stage read fails
+static int32_t dpi_fail = 0;
+static uint32_t dpi_replies = 0;
+
+static uint8_t dpi_reply[64];
+static uint16_t dpi_reply_len = 0;
+static bool dpi_reply_ready = false;
+
+void vuk_on_get_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, const uint8_t* report, uint16_t len) {
+    if (!dpi_waiting || ((uint16_t) (dev_addr << 8 | instance) != dpi_itf)) {
+        return;
+    }
+    dpi_waiting = false;
+    dpi_reply_len = (len < sizeof(dpi_reply)) ? len : sizeof(dpi_reply);
+    memcpy(dpi_reply, report, dpi_reply_len);
+    dpi_reply_ready = true;
+}
+
+static const vuk_report_t& dpi_request() {
+    return (dpi_phase == DpiPhase::STAGE) ? VUK_DPI_READ_STAGE[0] : VUK_DPI_READ_TABLE[0];
+}
+
+static void dpi_send_request() {
+    const vuk_report_t& r = dpi_request();
+    queue_set_feature_report(dpi_itf, r.report_id, r.data, r.len);
+    queue_get_feature_report(dpi_itf, r.report_id, 64);
+    dpi_waiting = true;
+}
+
+static void dpi_finish() {
+    int n = ((dpi_count >= 1) && (dpi_count <= DPI_MAX_STAGES)) ? dpi_count : VUK_DPI_STAGES;
+    int cur = ((dpi_stage >= 1) && (dpi_stage <= n))                 ? dpi_stage
+              : ((dpi_last_written >= 1) && (dpi_last_written <= n)) ? dpi_last_written
+                                                                     : 1;
+    int next = cur % n + 1;
+    vuk_report_t w = VUK_DPI_WRITE_STAGE[0];
+    w.data[7] = next;
+    int sent = send_one(w);
+    if (n == dpi_count) {
+        vuk_report_t t = VUK_DPI_WRITE_TABLE[0];
+        t.data[7] = dpi_count;
+        memcpy(t.data + 8, dpi_table, DPI_TABLE_BYTES);
+        sent += send_one(t);
+    }
+    dpi_last_written = next;
+    diag(3, dpi_trigger_count);
+    diag(0x600, dpi_stage);
+    diag(0x601, dpi_count);
+    diag(0x602, next);
+    diag(0x603, dpi_fail);
+    diag(0x604, sent);
+    diag(0x605, dpi_itf);
+    dpi_phase = DpiPhase::IDLE;
+    dpi_waiting = false;
+    dpi_retry_at = 0;
+    dpi_reply_ready = false;
+}
+
+static void dpi_handle_reply(uint32_t now) {
+    const vuk_report_t& req = dpi_request();
+    uint16_t need = 8 + ((dpi_phase == DpiPhase::TABLE) ? DPI_TABLE_BYTES : 0);
+    bool ok = (dpi_reply_len >= need) && (dpi_reply[0] == 0xa1) && (memcmp(dpi_reply + 1, req.data + 1, 6) == 0);
+    diag(0x610 + (dpi_replies++ & 0xF),
+        (dpi_reply_len >= 8) ? (int32_t) ((uint32_t) dpi_reply[0] << 24 | dpi_reply[5] << 16 | dpi_reply[6] << 8 | dpi_reply[7]) : -1);
+    if (!ok) {
+        if (++dpi_tries < DPI_TRIES) {
+            dpi_retry_at = (now + DPI_RETRY_US) | 1;  // never 0, which means "none"
+            return;
+        }
+        dpi_fail |= (dpi_phase == DpiPhase::STAGE) ? 1 : 2;
+    } else if (dpi_phase == DpiPhase::STAGE) {
+        dpi_stage = dpi_reply[7];
+    } else {
+        dpi_count = dpi_reply[7];
+        memcpy(dpi_table, dpi_reply + 8, DPI_TABLE_BYTES);
+    }
+    if (dpi_phase == DpiPhase::STAGE) {
+        dpi_phase = DpiPhase::TABLE;
+        dpi_tries = 0;
+        dpi_send_request();
+    } else {
+        dpi_finish();
+    }
+}
+
+static void dpi_start(uint32_t now) {
+    dpi_trigger_count++;
+    std::map<uint8_t, bool> declared;
+    std::map<uint8_t, uint16_t> targets = feature_targets(VUK_DPI_READ_STAGE[0].report_id, declared);
+    if (targets.empty()) {
+        diag(3, dpi_trigger_count);
+        diag(0x604, 0);
+        return;
+    }
+    // read from the wired mouse when it's there (the interface that declares report 0)
+    dpi_itf = targets.begin()->second;
+    for (auto const& [dev_addr, itf] : targets) {
+        if (declared[dev_addr]) {
+            dpi_itf = itf;
+            break;
+        }
+    }
+    dpi_stage = 0;
+    dpi_count = 0;
+    dpi_fail = 0;
+    dpi_replies = 0;
+    dpi_tries = 0;
+    dpi_retry_at = 0;
+    dpi_reply_ready = false;
+    dpi_deadline = now + DPI_TIMEOUT_US;
+    dpi_phase = DpiPhase::STAGE;
+    dpi_send_request();
+}
+
+static void dpi_tick(int32_t trigger, uint32_t now) {
+    if ((trigger != 0) && (dpi_prev_trigger == 0) && (dpi_phase == DpiPhase::IDLE)) {
+        dpi_start(now);
+    }
+    dpi_prev_trigger = trigger;
+    if (dpi_phase == DpiPhase::IDLE) {
+        return;
+    }
+    if (dpi_reply_ready) {
+        dpi_reply_ready = false;
+        dpi_handle_reply(now);
+    } else if ((dpi_retry_at != 0) && ((int32_t) (now - dpi_retry_at) >= 0)) {
+        dpi_retry_at = 0;
+        dpi_send_request();
+    }
+    if ((dpi_phase != DpiPhase::IDLE) && ((int32_t) (now - dpi_deadline) >= 0)) {
+        dpi_fail |= 4;
+        dpi_finish();
+    }
+}
+
+void vuk_sensor_tick(int32_t trigger, int32_t dpi_trigger) {
+    uint32_t now = time_us_32();
     if (trigger != 0 && prev_trigger == 0) {
         trigger_count++;
         completions = 0;
@@ -230,10 +410,10 @@ void vuk_sensor_tick(int32_t trigger) {
         }
     }
     prev_trigger = trigger;
+    dpi_tick(dpi_trigger, now);
     // Also dump everything every 3 s while the Monitor tab is open, so a device that
     // never mounts (no Mid+Left possible) still shows its enumeration trace.
     static uint32_t last_dump_us = 0;
-    uint32_t now = time_us_32();
     if (monitor_enabled && (diag_count == 0) && (now - last_dump_us > 3000000)) {
         last_dump_us = now;
         diag_all();

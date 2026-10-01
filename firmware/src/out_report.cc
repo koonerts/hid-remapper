@@ -24,6 +24,7 @@ static uint8_t get_buffer[64];
 
 // Overridden by vuk_sensor.cc where it's linked in (diagnostics only).
 __attribute__((weak)) void vuk_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, uint16_t len) {}
+__attribute__((weak)) void vuk_on_get_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, const uint8_t* report, uint16_t len) {}
 
 static bool ready_to_send = true;
 
@@ -89,5 +90,6 @@ void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance, uint8_t 
 
 void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t report_id, uint8_t report_type, uint16_t len) {
     ready_to_send = true;
+    vuk_on_get_report_complete(dev_addr, idx, report_id, get_buffer, len);
     get_report_cb(dev_addr, idx, report_id, report_type, get_buffer, len);
 }

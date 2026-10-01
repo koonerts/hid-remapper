@@ -1182,7 +1182,7 @@ void process_mapping(bool auto_repeat) {
         *reg_ptr.state_ptr = *reg_ptr.register_ptr;
     }
 
-    vuk_sensor_tick(registers[VUK_TRIGGER_REGISTER - 1]);
+    vuk_sensor_tick(registers[VUK_TRIGGER_REGISTER - 1], registers[VUK_DPI_REGISTER - 1]);
 
     // queue triggered macros
     for (auto const& rev_map : reverse_mapping_macros) {
