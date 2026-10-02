@@ -68,8 +68,12 @@ static const gw_report_t VUK_DPI_READ_TABLE[] = {
 //   0x1b00  DPI table, 6 bytes per stage: X-1, Y-1 (16-bit little-endian), 00, then a byte that
 //           makes the 6 sum to 0x55. Captured: 1600 / 5000 / 10000 / 20000 / 40000. The driver
 //           rewrites the whole table after every stage change; the firmware doesn't.
+//   0x00bf  always written as 01 right before 0x00bd
+//   0x00bd  sensor angle in degrees, signed byte (-12 = f4, -6 = fa, -14 = f2); captured
+//           2026-10-01 on the cable only (-13 -> -12 -> -11 -> -10 -> -6 -> -14 -> -13)
 //   0x1b48  always written as 01 right before 0x1b4a
 //   0x1b4a  virtual sensor position p, web app range -100..101:
-//           byte = -p for p <= 0 (so -100 = 0x64), 100 + p for p > 0 (1 = 0x65, 101 = 0xc9)
+//           byte = -p for p <= 0 (so -100 = 0x64), 100 + p for p > 0 (1 = 0x65, 101 = 0xc9).
+//           Not used by the firmware (the chord for it was dropped for the angle).
 
 #endif

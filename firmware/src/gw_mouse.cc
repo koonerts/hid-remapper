@@ -47,14 +47,13 @@ void __verbose_terminate_handler() {
 //   0xFFF40701  Warg DPI: stage written, 1-based
 //   0xFFF40702  Warg: byte at address 0x0002 (a guess at the stage count; -1 = no reply)
 //   0xFFF40703  Warg: reports queued by the last write (one per device)
-//   0xFFF40704  Warg: failures, bit 0 stage read, bit 2 position read, bit 3 a read timed out
+//   0xFFF40704  Warg: failures, bit 0 stage read, bit 2 angle read, bit 3 a read timed out
 //               (reads skipped for that device until it's replugged), bit 4 read skipped
 //   0xFFF40705  Warg: device read from (dev_addr)
 //   0xFFF40706  Warg: input reports with ID 8 seen during the last read
-//   0xFFF40710  Warg position: read from the mouse (0x7FFF = not read)
-//   0xFFF40711  Warg position: written
-//   0xFFF40712  Warg position: where the next Mid+Left returns to from 0
-//   0xFFF40713  Warg position: chord + wheel steps since boot
+//   0xFFF40710  Warg angle: read from the mouse (0x7FFF = not read)
+//   0xFFF40711  Warg angle: written
+//   0xFFF40713  Warg angle: chord count since boot (steps + resets)
 //   0xFFF4072n, 0xFFF4073n  Warg: input report n with ID 8 during a read: bytes 1..4, bytes 5..7 << 8 | length
 //   0xFFF407Fn  G-Wolves device n: dev_addr<<24 | family<<16 | PID (family 1 VUK, 2 Warg, 0 unknown: gets nothing)
 #define GW_DIAG(n) (0xFFF40000 | (n))
@@ -548,22 +547,25 @@ static void dpi_tick(uint32_t now) {
 // expected as input report 8 echoing the address with the (v, 0x55 - v) pair; that is a guess
 // (no reply was captured yet), so a read that doesn't come back in time just falls back to what
 // the firmware last wrote: after power-up or a replug the first DPI step then assumes stage 1,
-// and the position assumes 0.
+// and the angle assumes GW_ANGLE_HOME.
 #define RS_REPORT_ID 0x08
 #define RS_LEN 16
 #define RS_WRITE 0x07
 #define RS_READ 0x08
 #define RS_ADDR_DPI_STAGE 0x0004
 #define RS_ADDR_DPI_COUNT 0x0002  // guess; only shown in the Monitor
-#define RS_ADDR_VPOS_ON 0x1b48
-#define RS_ADDR_VPOS 0x1b4a
+#define RS_ADDR_ANGLE_ON 0x00bf
+#define RS_ADDR_ANGLE 0x00bd
 #define RS_DPI_STAGES 5  // as configured on the Warg (1600/5000/10000/20000/40000); not read yet
-#define RS_VPOS_MIN (-100)
-#define RS_VPOS_MAX 101
-#define RS_VPOS_STEP 5
-#define RS_VPOS_NONE 0x7FFF
+// Sensor angle in degrees. Mid+Left goes back to GW_ANGLE_HOME, the angle the Warg is set to in
+// the web app (2026-10-01); it's also assumed after a replug when the mouse doesn't answer a read.
+#define GW_ANGLE_HOME (-13)
+#define RS_ANGLE_STEP 1
+#define RS_ANGLE_MIN (-30)  // the web app's range on G-Wolves' 8K mice
+#define RS_ANGLE_MAX 30
+#define RS_ANGLE_NONE 0x7FFF
 #define RS_READ_TIMEOUT_US 150000
-#define RS_VPOS_SETTLE_US 40000  // one write for a quick run of wheel notches
+#define RS_ANGLE_SETTLE_US 40000  // one write for a quick run of presses
 #define RS_INPUT_LOG 8
 
 static void rs_build(uint8_t* r, uint8_t cmd, uint16_t addr, uint8_t value) {
@@ -628,19 +630,11 @@ static uint8_t rs_read_target() {
     return best;
 }
 
-static int rs_vpos_decode(int b) {
-    return (b <= 100) ? -b : b - 100;
-}
-
-static uint8_t rs_vpos_encode(int p) {
-    return (p <= 0) ? -p : 100 + p;
-}
-
 enum class RsRead : uint8_t {
     NONE,
     DPI_STAGE,
     DPI_COUNT,
-    VPOS,
+    ANGLE,
 };
 
 static RsRead rs_read = RsRead::NONE;
@@ -657,22 +651,20 @@ static bool rs_dpi_wanted = false;
 static int rs_dpi_stage = -1;  // 0-based, as read; -1 = not read
 static int rs_dpi_last = -1;   // 0-based, last written; -1 = none since the mouse was plugged in
 
-static int rs_vpos = 0;
-static bool rs_vpos_known = false;  // read from the mouse, or assumed 0 after a failed read
-static bool rs_vpos_wanted = false;  // a read is needed before the pending steps can apply
-static int rs_vpos_sent = RS_VPOS_NONE;
-static int rs_vpos_saved = 0;  // where Mid+Left goes back to from 0
-static bool rs_vpos_pending_toggle = false;
-static int rs_vpos_pending_steps = 0;
-static uint32_t rs_vpos_changed_at = 0;
-static int32_t rs_vpos_ops = 0;
+static int rs_angle = GW_ANGLE_HOME;
+static bool rs_angle_known = false;   // read from the mouse, set by a reset, or assumed after a failed read
+static bool rs_angle_wanted = false;  // a read is needed before the pending steps can apply
+static int rs_angle_sent = RS_ANGLE_NONE;
+static int rs_angle_pending_steps = 0;
+static uint32_t rs_angle_changed_at = 0;
+static int32_t rs_angle_ops = 0;
 
 static void rs_forget(uint8_t dev_addr) {
     if (rs_noread_dev == dev_addr) {
         rs_noread_dev = 0;
     }
-    rs_vpos_known = false;
-    rs_vpos_sent = RS_VPOS_NONE;
+    rs_angle_known = false;
+    rs_angle_sent = RS_ANGLE_NONE;
     rs_dpi_last = -1;
 }
 
@@ -738,63 +730,49 @@ static void rs_dpi_finish() {
     diag(0x706, rs_inputs);
 }
 
-// up: the next multiple of 5 above, down: the next one below, within the web app's range
-static void rs_vpos_apply(int op) {
-    if (op == 0) {
-        if (rs_vpos != 0) {
-            rs_vpos_saved = rs_vpos;
-            rs_vpos = 0;
-        } else {
-            rs_vpos = rs_vpos_saved;
-        }
-        return;
-    }
-    int p = rs_vpos;
-    int floor5 = (p >= 0) ? p / RS_VPOS_STEP : -((-p + RS_VPOS_STEP - 1) / RS_VPOS_STEP);
-    int ceil5 = (p >= 0) ? (p + RS_VPOS_STEP - 1) / RS_VPOS_STEP : -((-p) / RS_VPOS_STEP);
-    p = (op > 0) ? (floor5 + 1) * RS_VPOS_STEP : (ceil5 - 1) * RS_VPOS_STEP;
-    rs_vpos = (p < RS_VPOS_MIN) ? RS_VPOS_MIN : (p > RS_VPOS_MAX) ? RS_VPOS_MAX : p;
+static int rs_angle_clamp(int a) {
+    return (a < RS_ANGLE_MIN) ? RS_ANGLE_MIN : (a > RS_ANGLE_MAX) ? RS_ANGLE_MAX : a;
 }
 
-// op: 0 = Mid+Left (0 and back), +1/-1 = one wheel notch
-static void rs_vpos_op(int op, uint32_t now) {
-    rs_vpos_ops++;
-    if (!rs_vpos_known) {
-        if (op == 0) {
-            rs_vpos_pending_toggle = !rs_vpos_pending_toggle;
-        } else {
-            rs_vpos_pending_steps += op;
-        }
-        rs_vpos_wanted = true;
-        return;
-    }
-    rs_vpos_apply(op);
-    rs_vpos_changed_at = now;
+// Mid+Left: absolute, so it needs no read
+static void rs_angle_reset(uint32_t now) {
+    rs_angle_ops++;
+    rs_angle = GW_ANGLE_HOME;
+    rs_angle_known = true;
+    rs_angle_pending_steps = 0;
+    rs_angle_wanted = false;
+    rs_angle_changed_at = now;
 }
 
-static void rs_vpos_read_done(int value, uint32_t now) {
-    bool ok = (value >= 0) && (value <= RS_VPOS_MAX + 100);
-    rs_vpos = ok ? rs_vpos_decode(value) : 0;
-    rs_vpos_sent = ok ? rs_vpos : RS_VPOS_NONE;
-    if (rs_vpos != 0) {
-        rs_vpos_saved = rs_vpos;
+// Mid+Back / Mid+Fwd: dir -1 / +1
+static void rs_angle_step(int dir, uint32_t now) {
+    rs_angle_ops++;
+    if (!rs_angle_known) {
+        rs_angle_pending_steps += dir;
+        rs_angle_wanted = true;
+        return;
     }
+    rs_angle = rs_angle_clamp(rs_angle + dir * RS_ANGLE_STEP);
+    rs_angle_changed_at = now;
+}
+
+// value: the byte read, -1 = no reply
+static void rs_angle_read_done(int value, uint32_t now) {
+    if (rs_angle_known) {
+        return;  // a reset came in while reading; it wins
+    }
+    int a = (int8_t) value;  // stored as a signed byte
+    bool ok = (value >= 0) && (a >= RS_ANGLE_MIN) && (a <= RS_ANGLE_MAX);
+    rs_angle = ok ? a : GW_ANGLE_HOME;
+    rs_angle_sent = ok ? rs_angle : RS_ANGLE_NONE;
     if (!ok) {
         rs_fail |= 4;
     }
-    rs_vpos_known = true;
-    diag(0x710, ok ? rs_vpos : RS_VPOS_NONE);
-    if (rs_vpos_pending_toggle) {
-        rs_vpos_apply(0);
-    }
-    for (; rs_vpos_pending_steps > 0; rs_vpos_pending_steps--) {
-        rs_vpos_apply(1);
-    }
-    for (; rs_vpos_pending_steps < 0; rs_vpos_pending_steps++) {
-        rs_vpos_apply(-1);
-    }
-    rs_vpos_pending_toggle = false;
-    rs_vpos_changed_at = now;
+    rs_angle_known = true;
+    diag(0x710, ok ? rs_angle : RS_ANGLE_NONE);
+    rs_angle = rs_angle_clamp(rs_angle + rs_angle_pending_steps * RS_ANGLE_STEP);
+    rs_angle_pending_steps = 0;
+    rs_angle_changed_at = now;
 }
 
 // value: the byte read, -1 = no reply
@@ -816,8 +794,8 @@ static void rs_read_done(int value, uint32_t now) {
         case RsRead::DPI_COUNT:
             diag(0x702, value);
             break;
-        case RsRead::VPOS:
-            rs_vpos_read_done(value, now);
+        case RsRead::ANGLE:
+            rs_angle_read_done(value, now);
             break;
         default:
             break;
@@ -854,25 +832,24 @@ static void rs_tick(uint32_t now) {
             if (!rs_try_read(RsRead::DPI_STAGE, RS_ADDR_DPI_STAGE, now)) {
                 rs_dpi_finish();
             }
-        } else if (rs_vpos_wanted) {
-            rs_vpos_wanted = false;
-            // steps that came in while a position read was running were applied with it
-            if (!rs_vpos_known) {
+        } else if (rs_angle_wanted) {
+            rs_angle_wanted = false;
+            // steps that came in while an angle read was running were applied with it
+            if (!rs_angle_known) {
                 rs_fail = 0;
-                if (!rs_try_read(RsRead::VPOS, RS_ADDR_VPOS, now)) {
-                    rs_vpos_read_done(-1, now);
+                if (!rs_try_read(RsRead::ANGLE, RS_ADDR_ANGLE, now)) {
+                    rs_angle_read_done(-1, now);
                 }
             }
         }
     }
-    if (rs_vpos_known && (rs_vpos != rs_vpos_sent) && ((now - rs_vpos_changed_at) >= RS_VPOS_SETTLE_US)) {
-        // the web driver always writes 0x1b48 = 1 first
-        int sent = rs_send(RS_WRITE, RS_ADDR_VPOS_ON, 0x01);
-        rs_send(RS_WRITE, RS_ADDR_VPOS, rs_vpos_encode(rs_vpos));
-        rs_vpos_sent = rs_vpos;
-        diag(0x711, rs_vpos);
-        diag(0x712, rs_vpos_saved);
-        diag(0x713, rs_vpos_ops);
+    if (rs_angle_known && (rs_angle != rs_angle_sent) && ((now - rs_angle_changed_at) >= RS_ANGLE_SETTLE_US)) {
+        // the web driver always writes 0x00bf = 1 first
+        int sent = rs_send(RS_WRITE, RS_ADDR_ANGLE_ON, 0x01);
+        rs_send(RS_WRITE, RS_ADDR_ANGLE, (uint8_t) (int8_t) rs_angle);
+        rs_angle_sent = rs_angle;
+        diag(0x711, rs_angle);
+        diag(0x713, rs_angle_ops);
         diag(0x703, sent);
         diag(0x704, rs_fail);
     }
@@ -880,7 +857,12 @@ static void rs_tick(uint32_t now) {
 
 // ---------------------------------------------------------------------------------------------
 
-void gw_tick(int32_t trigger, int32_t dpi_trigger, int32_t wheel) {
+static int32_t angle_prev_down = 0;
+static int32_t angle_prev_up = 0;
+static int32_t middle_prev = 0;
+static uint32_t middle_down_at = 0;
+
+void gw_tick(int32_t trigger, int32_t dpi_trigger, int32_t angle_down, int32_t angle_up, int32_t wheel, int32_t middle) {
     uint32_t now = time_us_32();
     if ((trigger != 0) && (prev_trigger == 0)) {
         trigger_count++;
@@ -894,7 +876,7 @@ void gw_tick(int32_t trigger, int32_t dpi_trigger, int32_t wheel) {
             }
         }
         if (family_present(Family::RS)) {
-            rs_vpos_op(0, now);
+            rs_angle_reset(now);
             diag(1, trigger_count);
         }
     }
@@ -910,10 +892,22 @@ void gw_tick(int32_t trigger, int32_t dpi_trigger, int32_t wheel) {
         }
     }
     dpi_prev_trigger = dpi_trigger;
-    // one step per frame that has wheel movement: notches arrive in separate reports, and the
-    // size isn't trusted (a high-resolution wheel would report 120 per notch)
-    if ((wheel != 0) && family_present(Family::RS)) {
-        rs_vpos_op((wheel > 0) ? 1 : -1, now);
+    if ((angle_down != 0) && (angle_prev_down == 0) && family_present(Family::RS)) {
+        rs_angle_step(-1, now);
+    }
+    if ((angle_up != 0) && (angle_prev_up == 0) && family_present(Family::RS)) {
+        rs_angle_step(+1, now);
+    }
+    angle_prev_down = angle_down;
+    angle_prev_up = angle_up;
+    if ((middle != 0) && (middle_prev == 0)) {
+        middle_down_at = now;
+    }
+    middle_prev = middle;
+    // one step per frame with wheel movement (notches arrive in separate reports; the size isn't
+    // trusted, a high-resolution wheel would report 120 per notch)
+    if ((wheel != 0) && (middle != 0) && ((now - middle_down_at) >= GW_WHEEL_HOLD_US) && family_present(Family::RS)) {
+        rs_angle_step((wheel > 0) ? 1 : -1, now);
     }
     dpi_tick(now);
     rs_tick(now);
