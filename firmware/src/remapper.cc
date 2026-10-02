@@ -1182,8 +1182,7 @@ void process_mapping(bool auto_repeat) {
         *reg_ptr.state_ptr = *reg_ptr.register_ptr;
     }
 
-    gw_tick(registers[GW_SENSOR_REGISTER - 1], registers[GW_DPI_REGISTER - 1], registers[GW_ANGLE_DOWN_REGISTER - 1], registers[GW_ANGLE_UP_REGISTER - 1],
-        registers[GW_WHEEL_REGISTER - 1], registers[GW_MIDDLE_REGISTER - 1]);
+    gw_tick(registers);
 
     // queue triggered macros
     for (auto const& rev_map : reverse_mapping_macros) {

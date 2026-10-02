@@ -47,13 +47,16 @@ void __verbose_terminate_handler() {
 //   0xFFF40701  Warg DPI: stage written, 1-based
 //   0xFFF40702  Warg: byte at address 0x0002 (a guess at the stage count; -1 = no reply)
 //   0xFFF40703  Warg: reports queued by the last write (one per device)
-//   0xFFF40704  Warg: failures, bit 0 stage read, bit 2 angle read, bit 3 a read timed out
+//   0xFFF40704  Warg: failures, bit 0 stage read, bit 2 angle/position read, bit 3 a read timed out
 //               (reads skipped for that device until it's replugged), bit 4 read skipped
 //   0xFFF40705  Warg: device read from (dev_addr)
 //   0xFFF40706  Warg: input reports with ID 8 seen during the last read
 //   0xFFF40710  Warg angle: read from the mouse (0x7FFF = not read)
 //   0xFFF40711  Warg angle: written
 //   0xFFF40713  Warg angle: chord count since boot (steps + resets)
+//   0xFFF40718  Warg position: read from the mouse (0x7FFF = not read)
+//   0xFFF40719  Warg position: written
+//   0xFFF4071B  Warg position: chord count since boot (steps + resets)
 //   0xFFF4072n, 0xFFF4073n  Warg: input report n with ID 8 during a read: bytes 1..4, bytes 5..7 << 8 | length
 //   0xFFF407Fn  G-Wolves device n: dev_addr<<24 | family<<16 | PID (family 1 VUK, 2 Warg, 0 unknown: gets nothing)
 #define GW_DIAG(n) (0xFFF40000 | (n))
@@ -229,7 +232,6 @@ extern "C" void tuh_umount_cb(uint8_t dev_addr) {
 
 // ---- VUK ------------------------------------------------------------------------------------
 
-static int32_t prev_trigger = 0;
 static bool front_selected = true;  // VUK default; one extra chord re-syncs if wrong
 static int32_t trigger_count = 0;
 static uint32_t completions = 0;
@@ -364,7 +366,6 @@ enum class DpiPhase : uint8_t {
 };
 
 static DpiPhase dpi_phase = DpiPhase::IDLE;
-static int32_t dpi_prev_trigger = 0;
 static int32_t dpi_trigger_count = 0;
 static uint16_t dpi_itf = 0;
 static uint8_t dpi_tries = 0;
@@ -545,27 +546,31 @@ static void dpi_tick(uint32_t now) {
 // Writes go to every attached RS device (cable and dongle; the values are absolute, so a
 // duplicate is harmless). Reads go to one device, the cable when it's attached. The reply is
 // expected as input report 8 echoing the address with the (v, 0x55 - v) pair; that is a guess
-// (no reply was captured yet), so a read that doesn't come back in time just falls back to what
-// the firmware last wrote: after power-up or a replug the first DPI step then assumes stage 1,
-// and the angle assumes GW_ANGLE_HOME.
+// (no reply was captured yet), so a read that doesn't come back in time just falls back: after
+// power-up or a replug the first DPI step then assumes stage 1, and a setting assumes its home.
 #define RS_REPORT_ID 0x08
 #define RS_LEN 16
 #define RS_WRITE 0x07
 #define RS_READ 0x08
 #define RS_ADDR_DPI_STAGE 0x0004
 #define RS_ADDR_DPI_COUNT 0x0002  // guess; only shown in the Monitor
-#define RS_ADDR_ANGLE_ON 0x00bf
-#define RS_ADDR_ANGLE 0x00bd
 #define RS_DPI_STAGES 5  // as configured on the Warg (1600/5000/10000/20000/40000); not read yet
-// Sensor angle in degrees. Mid+Left goes back to GW_ANGLE_HOME, the angle the Warg is set to in
-// the web app (2026-10-01); it's also assumed after a replug when the mouse doesn't answer a read.
+// Sensor angle in degrees. Mid+Left (tap) goes back to GW_ANGLE_HOME, the angle the Warg is set
+// to in the web app (2026-10-01); it's also assumed after a replug when the mouse doesn't answer.
 #define GW_ANGLE_HOME (-13)
 #define RS_ANGLE_STEP 1
 #define RS_ANGLE_MIN (-30)  // the web app's range on G-Wolves' 8K mice
 #define RS_ANGLE_MAX 30
-#define RS_ANGLE_NONE 0x7FFF
+// Virtual sensor position, web app range -100..101. Mid+Left held for GW_POS_RESET_HOLD_US goes
+// back to GW_POS_HOME; steps move to the next multiple of RS_POS_STEP.
+#define GW_POS_HOME 0
+#define GW_POS_RESET_HOLD_US 500000
+#define RS_POS_STEP 5
+#define RS_POS_MIN (-100)
+#define RS_POS_MAX 101
+#define RS_NONE 0x7FFF
 #define RS_READ_TIMEOUT_US 150000
-#define RS_ANGLE_SETTLE_US 40000  // one write for a quick run of presses
+#define RS_SETTLE_US 40000  // one write for a quick run of presses or notches
 #define RS_INPUT_LOG 8
 
 static void rs_build(uint8_t* r, uint8_t cmd, uint16_t addr, uint8_t value) {
@@ -630,14 +635,72 @@ static uint8_t rs_read_target() {
     return best;
 }
 
+static int clamp(int v, int lo, int hi) {
+    return (v < lo) ? lo : (v > hi) ? hi : v;
+}
+
+// angle: a signed byte
+static int angle_decode(int b) {
+    int a = (int8_t) b;
+    return ((a >= RS_ANGLE_MIN) && (a <= RS_ANGLE_MAX)) ? a : RS_NONE;
+}
+static uint8_t angle_encode(int a) {
+    return (uint8_t) (int8_t) a;
+}
+static int angle_step(int a, int dir) {
+    return clamp(a + dir * RS_ANGLE_STEP, RS_ANGLE_MIN, RS_ANGLE_MAX);
+}
+
+// position: byte = -p for p <= 0, 100 + p for p > 0
+static int pos_decode(int b) {
+    return (b <= 100) ? -b : (b <= 100 + RS_POS_MAX) ? b - 100 : RS_NONE;
+}
+static uint8_t pos_encode(int p) {
+    return (p <= 0) ? -p : 100 + p;
+}
+// up: the next multiple of 5 above, down: the next one below
+static int pos_step(int p, int dir) {
+    int floor5 = (p >= 0) ? p / RS_POS_STEP : -((-p + RS_POS_STEP - 1) / RS_POS_STEP);
+    int ceil5 = (p >= 0) ? (p + RS_POS_STEP - 1) / RS_POS_STEP : -((-p) / RS_POS_STEP);
+    return clamp((dir > 0) ? (floor5 + 1) * RS_POS_STEP : (ceil5 - 1) * RS_POS_STEP, RS_POS_MIN, RS_POS_MAX);
+}
+
+// A one-byte Warg setting the chords change. The web driver writes 01 to on_addr right before
+// every value write, so the firmware does too.
+struct RsSetting {
+    uint16_t on_addr;
+    uint16_t addr;
+    int home;  // reset target, also assumed when the mouse doesn't answer a read
+    int (*decode)(int b);  // RS_NONE if out of range
+    uint8_t (*encode)(int v);
+    int (*step)(int v, int dir);
+    uint16_t diag;  // read at diag, written at diag + 1, chord count at diag + 3
+    int value;
+    bool known;   // read, reset, or assumed after a failed read
+    bool wanted;  // a read is needed before the pending steps can apply
+    int sent;
+    int pending;  // steps that came in before the value was known
+    uint32_t changed_at;
+    int32_t ops;
+};
+
+#define RS_ANGLE 0
+#define RS_POS 1
+#define RS_SETTINGS 2
+static RsSetting rs_settings[RS_SETTINGS] = {
+    { 0x00bf, 0x00bd, GW_ANGLE_HOME, angle_decode, angle_encode, angle_step, 0x710, GW_ANGLE_HOME, false, false, RS_NONE, 0, 0, 0 },
+    { 0x1b48, 0x1b4a, GW_POS_HOME, pos_decode, pos_encode, pos_step, 0x718, GW_POS_HOME, false, false, RS_NONE, 0, 0, 0 },
+};
+
 enum class RsRead : uint8_t {
     NONE,
     DPI_STAGE,
     DPI_COUNT,
-    ANGLE,
+    SETTING,
 };
 
 static RsRead rs_read = RsRead::NONE;
+static uint8_t rs_read_setting = 0;
 static uint8_t rs_read_dev = 0;
 static uint16_t rs_read_addr = 0;
 static uint32_t rs_deadline = 0;
@@ -651,20 +714,14 @@ static bool rs_dpi_wanted = false;
 static int rs_dpi_stage = -1;  // 0-based, as read; -1 = not read
 static int rs_dpi_last = -1;   // 0-based, last written; -1 = none since the mouse was plugged in
 
-static int rs_angle = GW_ANGLE_HOME;
-static bool rs_angle_known = false;   // read from the mouse, set by a reset, or assumed after a failed read
-static bool rs_angle_wanted = false;  // a read is needed before the pending steps can apply
-static int rs_angle_sent = RS_ANGLE_NONE;
-static int rs_angle_pending_steps = 0;
-static uint32_t rs_angle_changed_at = 0;
-static int32_t rs_angle_ops = 0;
-
 static void rs_forget(uint8_t dev_addr) {
     if (rs_noread_dev == dev_addr) {
         rs_noread_dev = 0;
     }
-    rs_angle_known = false;
-    rs_angle_sent = RS_ANGLE_NONE;
+    for (RsSetting& s : rs_settings) {
+        s.known = false;
+        s.sent = RS_NONE;
+    }
     rs_dpi_last = -1;
 }
 
@@ -730,49 +787,48 @@ static void rs_dpi_finish() {
     diag(0x706, rs_inputs);
 }
 
-static int rs_angle_clamp(int a) {
-    return (a < RS_ANGLE_MIN) ? RS_ANGLE_MIN : (a > RS_ANGLE_MAX) ? RS_ANGLE_MAX : a;
+// absolute, so it needs no read
+static void rs_setting_reset(RsSetting& s, uint32_t now) {
+    s.ops++;
+    s.value = s.home;
+    s.known = true;
+    s.pending = 0;
+    s.wanted = false;
+    s.changed_at = now;
 }
 
-// Mid+Left: absolute, so it needs no read
-static void rs_angle_reset(uint32_t now) {
-    rs_angle_ops++;
-    rs_angle = GW_ANGLE_HOME;
-    rs_angle_known = true;
-    rs_angle_pending_steps = 0;
-    rs_angle_wanted = false;
-    rs_angle_changed_at = now;
-}
-
-// Mid+Back / Mid+Fwd: dir -1 / +1
-static void rs_angle_step(int dir, uint32_t now) {
-    rs_angle_ops++;
-    if (!rs_angle_known) {
-        rs_angle_pending_steps += dir;
-        rs_angle_wanted = true;
+static void rs_setting_step(RsSetting& s, int dir, uint32_t now) {
+    s.ops++;
+    if (!s.known) {
+        s.pending += dir;
+        s.wanted = true;
         return;
     }
-    rs_angle = rs_angle_clamp(rs_angle + dir * RS_ANGLE_STEP);
-    rs_angle_changed_at = now;
+    s.value = s.step(s.value, dir);
+    s.changed_at = now;
 }
 
-// value: the byte read, -1 = no reply
-static void rs_angle_read_done(int value, uint32_t now) {
-    if (rs_angle_known) {
+// raw: the byte read, -1 = no reply
+static void rs_setting_read_done(RsSetting& s, int raw, uint32_t now) {
+    if (s.known) {
         return;  // a reset came in while reading; it wins
     }
-    int a = (int8_t) value;  // stored as a signed byte
-    bool ok = (value >= 0) && (a >= RS_ANGLE_MIN) && (a <= RS_ANGLE_MAX);
-    rs_angle = ok ? a : GW_ANGLE_HOME;
-    rs_angle_sent = ok ? rs_angle : RS_ANGLE_NONE;
+    int v = (raw >= 0) ? s.decode(raw) : RS_NONE;
+    bool ok = (v != RS_NONE);
+    s.value = ok ? v : s.home;
+    s.sent = ok ? v : RS_NONE;
     if (!ok) {
         rs_fail |= 4;
     }
-    rs_angle_known = true;
-    diag(0x710, ok ? rs_angle : RS_ANGLE_NONE);
-    rs_angle = rs_angle_clamp(rs_angle + rs_angle_pending_steps * RS_ANGLE_STEP);
-    rs_angle_pending_steps = 0;
-    rs_angle_changed_at = now;
+    s.known = true;
+    diag(s.diag, ok ? v : RS_NONE);
+    for (; s.pending > 0; s.pending--) {
+        s.value = s.step(s.value, 1);
+    }
+    for (; s.pending < 0; s.pending++) {
+        s.value = s.step(s.value, -1);
+    }
+    s.changed_at = now;
 }
 
 // value: the byte read, -1 = no reply
@@ -794,8 +850,8 @@ static void rs_read_done(int value, uint32_t now) {
         case RsRead::DPI_COUNT:
             diag(0x702, value);
             break;
-        case RsRead::ANGLE:
-            rs_angle_read_done(value, now);
+        case RsRead::SETTING:
+            rs_setting_read_done(rs_settings[rs_read_setting], value, now);
             break;
         default:
             break;
@@ -832,41 +888,62 @@ static void rs_tick(uint32_t now) {
             if (!rs_try_read(RsRead::DPI_STAGE, RS_ADDR_DPI_STAGE, now)) {
                 rs_dpi_finish();
             }
-        } else if (rs_angle_wanted) {
-            rs_angle_wanted = false;
-            // steps that came in while an angle read was running were applied with it
-            if (!rs_angle_known) {
-                rs_fail = 0;
-                if (!rs_try_read(RsRead::ANGLE, RS_ADDR_ANGLE, now)) {
-                    rs_angle_read_done(-1, now);
+        } else {
+            for (uint8_t i = 0; i < RS_SETTINGS; i++) {
+                RsSetting& s = rs_settings[i];
+                if (!s.wanted) {
+                    continue;
                 }
+                s.wanted = false;
+                // steps that came in while this setting was being read were applied with it
+                if (!s.known) {
+                    rs_fail = 0;
+                    rs_read_setting = i;
+                    if (!rs_try_read(RsRead::SETTING, s.addr, now)) {
+                        rs_setting_read_done(s, -1, now);
+                    }
+                }
+                break;  // one read at a time
             }
         }
     }
-    if (rs_angle_known && (rs_angle != rs_angle_sent) && ((now - rs_angle_changed_at) >= RS_ANGLE_SETTLE_US)) {
-        // the web driver always writes 0x00bf = 1 first
-        int sent = rs_send(RS_WRITE, RS_ADDR_ANGLE_ON, 0x01);
-        rs_send(RS_WRITE, RS_ADDR_ANGLE, (uint8_t) (int8_t) rs_angle);
-        rs_angle_sent = rs_angle;
-        diag(0x711, rs_angle);
-        diag(0x713, rs_angle_ops);
-        diag(0x703, sent);
-        diag(0x704, rs_fail);
+    // one setting per tick keeps the out-report queue (8) clear with cable + dongle attached
+    for (RsSetting& s : rs_settings) {
+        if (s.known && (s.value != s.sent) && ((now - s.changed_at) >= RS_SETTLE_US)) {
+            int sent = rs_send(RS_WRITE, s.on_addr, 0x01);
+            rs_send(RS_WRITE, s.addr, s.encode(s.value));
+            s.sent = s.value;
+            diag(s.diag + 1, s.value);
+            diag(s.diag + 3, s.ops);
+            diag(0x703, sent);
+            diag(0x704, rs_fail);
+            break;
+        }
     }
 }
 
 // ---------------------------------------------------------------------------------------------
 
-static int32_t angle_prev_down = 0;
-static int32_t angle_prev_up = 0;
-static int32_t middle_prev = 0;
+static int32_t prev_regs[8] = { 0 };
+static uint32_t sensor_down_at = 0;
+static bool sensor_hold_fired = false;
 static uint32_t middle_down_at = 0;
 
-void gw_tick(int32_t trigger, int32_t dpi_trigger, int32_t angle_down, int32_t angle_up, int32_t wheel, int32_t middle) {
+static bool rose(const int32_t* regs, int reg) {
+    return (regs[reg - 1] != 0) && (prev_regs[reg - 1] == 0);
+}
+
+void gw_tick(const int32_t* regs) {
     uint32_t now = time_us_32();
-    if ((trigger != 0) && (prev_trigger == 0)) {
+    bool rs = family_present(Family::RS);
+    // Mid+Left. VUK: sensor toggle on the press. Warg: a tap resets the angle (on release), a
+    // hold resets the position (as soon as it has lasted GW_POS_RESET_HOLD_US).
+    int32_t sensor = regs[GW_SENSOR_REGISTER - 1];
+    if (rose(regs, GW_SENSOR_REGISTER)) {
         trigger_count++;
         completions = 0;
+        sensor_down_at = now;
+        sensor_hold_fired = false;
         if (family_present(Family::VUK)) {
             front_selected = !front_selected;
             if (front_selected) {
@@ -875,40 +952,53 @@ void gw_tick(int32_t trigger, int32_t dpi_trigger, int32_t angle_down, int32_t a
                 send_all(VUK_SELECT_REAR, sizeof(VUK_SELECT_REAR) / sizeof(VUK_SELECT_REAR[0]));
             }
         }
-        if (family_present(Family::RS)) {
-            rs_angle_reset(now);
+        if (rs) {
             diag(1, trigger_count);
         }
     }
-    prev_trigger = trigger;
-    if ((dpi_trigger != 0) && (dpi_prev_trigger == 0)) {
+    if ((sensor != 0) && !sensor_hold_fired && ((now - sensor_down_at) >= GW_POS_RESET_HOLD_US)) {
+        sensor_hold_fired = true;
+        if (rs) {
+            rs_setting_reset(rs_settings[RS_POS], now);
+        }
+    }
+    if ((sensor == 0) && (prev_regs[GW_SENSOR_REGISTER - 1] != 0) && !sensor_hold_fired && rs) {
+        rs_setting_reset(rs_settings[RS_ANGLE], now);
+    }
+    if (rose(regs, GW_DPI_REGISTER)) {
         dpi_trigger_count++;
         diag(3, dpi_trigger_count);
         if ((dpi_phase == DpiPhase::IDLE) && family_present(Family::VUK)) {
             dpi_start(now);
         }
-        if (family_present(Family::RS)) {
+        if (rs) {
             rs_dpi_wanted = true;
         }
     }
-    dpi_prev_trigger = dpi_trigger;
-    if ((angle_down != 0) && (angle_prev_down == 0) && family_present(Family::RS)) {
-        rs_angle_step(-1, now);
+    if (rs) {
+        if (rose(regs, GW_POS_DOWN_REGISTER)) {
+            rs_setting_step(rs_settings[RS_POS], -1, now);
+        }
+        if (rose(regs, GW_POS_UP_REGISTER)) {
+            rs_setting_step(rs_settings[RS_POS], +1, now);
+        }
+        if (rose(regs, GW_ANGLE_DOWN_REGISTER)) {
+            rs_setting_step(rs_settings[RS_ANGLE], -1, now);
+        }
+        if (rose(regs, GW_ANGLE_UP_REGISTER)) {
+            rs_setting_step(rs_settings[RS_ANGLE], +1, now);
+        }
     }
-    if ((angle_up != 0) && (angle_prev_up == 0) && family_present(Family::RS)) {
-        rs_angle_step(+1, now);
-    }
-    angle_prev_down = angle_down;
-    angle_prev_up = angle_up;
-    if ((middle != 0) && (middle_prev == 0)) {
+    if (rose(regs, GW_MIDDLE_REGISTER)) {
         middle_down_at = now;
     }
-    middle_prev = middle;
     // one step per frame with wheel movement (notches arrive in separate reports; the size isn't
     // trusted, a high-resolution wheel would report 120 per notch)
-    if ((wheel != 0) && (middle != 0) && ((now - middle_down_at) >= GW_WHEEL_HOLD_US) && family_present(Family::RS)) {
-        rs_angle_step((wheel > 0) ? 1 : -1, now);
+    int32_t wheel = regs[GW_WHEEL_REGISTER - 1];
+    if ((wheel != 0) && (regs[GW_MIDDLE_REGISTER - 1] != 0) && ((now - middle_down_at) >= GW_WHEEL_HOLD_US) && rs) {
+        rs_setting_step(rs_settings[RS_ANGLE], (wheel > 0) ? 1 : -1, now);
     }
+    memcpy(prev_regs, regs, sizeof(prev_regs));
     dpi_tick(now);
     rs_tick(now);
     // Also dump everything every 3 s while the Monitor tab is open, so a device that
