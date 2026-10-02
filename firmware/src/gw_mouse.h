@@ -13,7 +13,7 @@
 // 0 -> nonzero: next DPI stage, wrapping (VUK: on the active sensor).
 #define GW_DPI_REGISTER 2
 // 0 -> nonzero: Warg virtual sensor position to the next multiple of 5 down / up
-// (wheel layout: Mid+Back / Mid+Fwd).
+// (wheel layout: Mid+Fwd / Mid+Back, since lower values move the sensor forward).
 #define GW_POS_DOWN_REGISTER 3
 #define GW_POS_UP_REGISTER 4
 // Warg sensor angle, two ways; the chord config decides which one is wired up:
