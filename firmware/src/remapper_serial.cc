@@ -178,3 +178,8 @@ void send_out_report() {
 void sof_callback() {
     set_tick_pending();
 }
+
+// No USB host on this side, so gw_mouse.cc gets no room to send mouse commands.
+uint8_t out_report_free_slots() {
+    return 0;
+}

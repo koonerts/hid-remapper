@@ -64,6 +64,10 @@ void do_queue_get_report(uint8_t report_id, uint8_t dev_addr, uint8_t interface,
     oor_items++;
 }
 
+uint8_t out_report_free_slots() {
+    return OOR_BUFSIZE - oor_items;
+}
+
 void do_send_out_report() {
     if ((oor_items > 0) && ready_to_send) {
         outgoing_out_report_t* out = &(outgoing_out_reports[oor_head]);

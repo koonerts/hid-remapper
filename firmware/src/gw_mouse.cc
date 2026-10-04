@@ -10,6 +10,7 @@
 
 #include "globals.h"
 #include "gw_payloads.h"
+#include "out_report.h"
 #include "remapper.h"
 #include "pico/time.h"
 
@@ -57,6 +58,12 @@ void __verbose_terminate_handler() {
 //   0xFFF40718  Warg position: read from the mouse (0x7FFF = not read)
 //   0xFFF40719  Warg position: written
 //   0xFFF4071B  Warg position: chord count since boot (steps + resets)
+//   0xFFF40740  Warg LED: flashes since boot
+//   0xFFF40741  Warg LED: stage whose colour slot was flashed, 1-based (0 = all stages: stage unknown)
+//   0xFFF40742  Warg LED: stage colours read from the mouse (1) or the built-in GW_LED_PALETTE (0)
+//   0xFFF40743  Warg LED: colour flashed (0xRRGGBB)
+//   0xFFF40744  Warg: writes dropped because the write queue was full
+//   0xFFF40745  Warg LED: flashes restored after an unplug
 //   0xFFF4072n, 0xFFF4073n  Warg: input report n with ID 8 during a read: bytes 1..4, bytes 5..7 << 8 | length
 //   0xFFF407Fn  G-Wolves device n: dev_addr<<24 | family<<16 | PID (family 1 VUK, 2 Warg, 0 unknown: gets nothing)
 #define GW_DIAG(n) (0xFFF40000 | (n))
@@ -199,14 +206,14 @@ static uint8_t umount_log_n = 0;
 static int32_t dev_mounts = 0;
 static int32_t dev_umounts = 0;
 
-static void rs_forget(uint8_t dev_addr);
+static void rs_forget(uint8_t dev_addr, bool mounted);
 
 void gw_on_hid_mount(uint8_t dev_addr, uint8_t instance, uint8_t itf_num, uint16_t desc_len) {
     if (mount_log_n < MOUNT_LOG) {
         mount_log[mount_log_n++] = (int32_t) ((uint32_t) (dev_addr & 0x7) << 28 | (uint32_t) (instance & 0xF) << 20 | (uint32_t) (itf_num & 0xF) << 16 | desc_len);
     }
     if (family_of_dev(dev_addr) == Family::RS) {
-        rs_forget(dev_addr);  // the mouse may have been changed in the web app in between
+        rs_forget(dev_addr, true);  // the mouse may have been changed in the web app in between
     }
 }
 
@@ -216,7 +223,7 @@ void gw_on_hid_umount(uint8_t dev_addr, uint8_t instance) {
     if (dpi_noread_itf == ((uint16_t) (dev_addr << 8 | instance))) {
         dpi_noread_itf = 0;  // the address can come back as a different device
     }
-    rs_forget(dev_addr);  // VID/PID may already be gone here, so for any device
+    rs_forget(dev_addr, false);  // VID/PID may already be gone here, so for any device
     if (umount_log_n < MOUNT_LOG) {
         umount_log[umount_log_n++] = (int32_t) dev_addr << 8 | instance;
     }
@@ -544,16 +551,18 @@ static void dpi_tick(uint32_t now) {
 
 // ---- Warg 8K ("RS" protocol, see gw_payloads.h) ---------------------------------------------
 // Writes go to every attached RS device (cable and dongle; the values are absolute, so a
-// duplicate is harmless). Reads go to one device, the cable when it's attached. The reply is
-// expected as input report 8 echoing the address with the (v, 0x55 - v) pair; that is a guess
-// (no reply was captured yet), so a read that doesn't come back in time just falls back: after
-// power-up or a replug the first DPI step then assumes stage 1, and a setting assumes its home.
+// duplicate is harmless), through a write queue paced by the room left in the out-report queue
+// (8 reports). Reads go to one device, the cable when it's attached. The reply is expected as
+// input report 8 echoing the address and length; that is a guess (no reply was captured yet),
+// so a read that doesn't come back in time falls back: after power-up or a replug the first DPI
+// step assumes stage 1, a setting assumes its home, and the LED uses GW_LED_PALETTE.
 #define RS_REPORT_ID 0x08
 #define RS_LEN 16
 #define RS_WRITE 0x07
 #define RS_READ 0x08
 #define RS_ADDR_DPI_STAGE 0x0004
 #define RS_ADDR_DPI_COUNT 0x0002  // guess; only shown in the Monitor
+#define RS_ADDR_LED_SLOT 0x002c   // + 4 per stage: R, G, B, then a byte making the 4 sum to 0x55
 #define RS_DPI_STAGES 5  // as configured on the Warg (1600/5000/10000/20000/40000); not read yet
 // Sensor angle in degrees. Mid+Left (tap) goes back to GW_ANGLE_HOME, the angle the Warg is set
 // to in the web app (2026-10-01); it's also assumed after a replug when the mouse doesn't answer.
@@ -568,20 +577,31 @@ static void dpi_tick(uint32_t now) {
 #define RS_POS_STEP 5
 #define RS_POS_MIN (-100)
 #define RS_POS_MAX 101
+// LED flash: a chord briefly puts a colour in the current DPI stage's colour slot, then the
+// stage's own colour comes back. The colours stay clear of the stage colours (red, orange,
+// yellow, green, purple), and the breathing effect keeps running.
+#define GW_LED_POS 0x00ffffu    // cyan: sensor position step (Mid+Back / Mid+Fwd)
+#define GW_LED_ANGLE 0x0000ffu  // blue: sensor angle step (Mid+wheel)
+#define GW_LED_RESET 0xffffffu  // white: angle reset (Mid+Left tap) or position reset (hold)
+#define GW_LED_LIMIT 0x000000u  // off: a step at the end of the range, nothing changed
+#define GW_LED_FLASH_US 700000
+#define GW_LED_RESTORE_DELAY_US 300000  // after a replug, so all the mouse's interfaces are up
+// The stage colours as set in the web app (2026-10-02). Used to put a slot back when the mouse
+// doesn't answer reads; when it does, the real colours are read once per plug-in instead.
+static const uint32_t GW_LED_PALETTE[RS_DPI_STAGES] = { 0xff0000, 0xff8000, 0xffff00, 0x00ff00, 0xff00ff };
 #define RS_NONE 0x7FFF
 #define RS_READ_TIMEOUT_US 150000
 #define RS_SETTLE_US 40000  // one write for a quick run of presses or notches
 #define RS_INPUT_LOG 8
 
-static void rs_build(uint8_t* r, uint8_t cmd, uint16_t addr, uint8_t value) {
+static void rs_build(uint8_t* r, uint8_t cmd, uint16_t addr, const uint8_t* data, uint8_t len) {
     memset(r, 0, RS_LEN);
     r[0] = cmd;
     r[2] = addr >> 8;
     r[3] = addr & 0xFF;
-    r[4] = 2;
-    if (cmd == RS_WRITE) {
-        r[5] = value;
-        r[6] = 0x55 - value;
+    r[4] = len;
+    if (data != NULL) {
+        memcpy(r + 5, data, len);
     }
     uint8_t sum = RS_REPORT_ID;
     for (int i = 0; i < RS_LEN - 1; i++) {
@@ -610,21 +630,6 @@ static std::map<uint8_t, uint16_t> rs_targets() {
     return targets;
 }
 
-// only_dev 0 = every RS device
-static int rs_send(uint8_t cmd, uint16_t addr, uint8_t value, uint8_t only_dev = 0) {
-    uint8_t r[RS_LEN];
-    rs_build(r, cmd, addr, value);
-    int n = 0;
-    for (auto const& [dev_addr, itf] : rs_targets()) {
-        if ((only_dev != 0) && (dev_addr != only_dev)) {
-            continue;
-        }
-        queue_out_report(itf, RS_REPORT_ID, r, RS_LEN);
-        n++;
-    }
-    return n;
-}
-
 static uint8_t rs_read_target() {
     uint8_t best = 0;
     for (auto const& [dev_addr, itf] : rs_targets()) {
@@ -634,6 +639,68 @@ static uint8_t rs_read_target() {
     }
     return best;
 }
+
+// ---- write queue
+
+struct RsWrite {
+    uint16_t addr;
+    uint8_t len;
+    uint8_t data[4];
+};
+#define RS_WQ 32
+static RsWrite rs_wq[RS_WQ];
+static uint8_t rs_wq_head = 0;
+static uint8_t rs_wq_n = 0;
+static int32_t rs_wq_drops = 0;
+
+static void rs_write(uint16_t addr, const uint8_t* data, uint8_t len) {
+    if (rs_wq_n == RS_WQ) {
+        rs_wq_drops++;
+        diag(0x744, rs_wq_drops);
+        return;
+    }
+    RsWrite& w = rs_wq[(rs_wq_head + rs_wq_n) % RS_WQ];
+    w.addr = addr;
+    w.len = len;
+    memcpy(w.data, data, len);
+    rs_wq_n++;
+}
+
+// a one-byte setting, stored as (v, 0x55 - v)
+static void rs_write_value(uint16_t addr, uint8_t v) {
+    uint8_t d[2] = { v, (uint8_t) (0x55 - v) };
+    rs_write(addr, d, 2);
+}
+
+static void rs_write_colour(uint8_t stage, uint32_t rgb) {
+    uint8_t d[4] = { (uint8_t) (rgb >> 16), (uint8_t) (rgb >> 8), (uint8_t) rgb, 0 };
+    d[3] = 0x55 - (uint8_t) (d[0] + d[1] + d[2]);
+    rs_write(RS_ADDR_LED_SLOT + 4 * stage, d, 4);
+}
+
+// Sends queued writes while the out-report queue has room for one per RS device.
+static void rs_pump() {
+    if (rs_wq_n == 0) {
+        return;
+    }
+    std::map<uint8_t, uint16_t> targets = rs_targets();
+    if (targets.empty()) {
+        rs_wq_n = 0;  // nobody to send to (an interrupted LED flash is handled on the next mount)
+        return;
+    }
+    for (int k = 0; (k < 2) && (rs_wq_n > 0) && (out_report_free_slots() >= targets.size()); k++) {
+        const RsWrite& w = rs_wq[rs_wq_head];
+        uint8_t r[RS_LEN];
+        rs_build(r, RS_WRITE, w.addr, w.data, w.len);
+        for (auto const& [dev_addr, itf] : targets) {
+            queue_out_report(itf, RS_REPORT_ID, r, RS_LEN);
+        }
+        rs_wq_head = (rs_wq_head + 1) % RS_WQ;
+        rs_wq_n--;
+    }
+}
+
+// ---- settings (angle, position)
 
 static int clamp(int v, int lo, int hi) {
     return (v < lo) ? lo : (v > hi) ? hi : v;
@@ -692,20 +759,103 @@ static RsSetting rs_settings[RS_SETTINGS] = {
     { 0x1b48, 0x1b4a, GW_POS_HOME, pos_decode, pos_encode, pos_step, 0x718, GW_POS_HOME, false, false, RS_NONE, 0, 0, 0 },
 };
 
+// ---- LED flash
+
+struct RsLed {
+    bool requested;  // a flash is waiting for its reads (palette, stage)
+    bool active;     // the flash colour is in the slot(s)
+    uint32_t colour;
+    uint32_t shown;
+    uint32_t until;
+    int8_t stage;  // slot flashed, -1 = every stage (current stage unknown)
+    bool palette_done;  // read (or given up) since the mouse was plugged in
+    bool palette_read;  // the palette came from the mouse
+    uint8_t palette_next;
+    bool stage_done;  // stage read (or given up) for this flash
+    uint32_t palette[RS_DPI_STAGES];
+    bool restore_pending;  // a flash was cut off by an unplug: put the slot(s) back on the next mount
+    int8_t restore_stage;
+    uint32_t restore_rgb[RS_DPI_STAGES];
+    uint32_t restore_at;  // 0 = waiting for a mount
+    int32_t flashes;
+    int32_t restored;
+};
+static RsLed led = {};
+static int rs_cur_stage = -1;  // 0-based; from a read or the firmware's own stage write; -1 = unknown
+
+static void led_palette_reset() {
+    memcpy(led.palette, GW_LED_PALETTE, sizeof(led.palette));
+    led.palette_done = false;
+    led.palette_read = false;
+    led.palette_next = 0;
+}
+
+static void led_write(int8_t stage, const uint32_t* rgb_per_stage, uint32_t rgb_all) {
+    for (uint8_t s = 0; s < RS_DPI_STAGES; s++) {
+        if ((stage < 0) || (stage == s)) {
+            rs_write_colour(s, (rgb_per_stage != NULL) ? rgb_per_stage[s] : rgb_all);
+        }
+    }
+}
+
+static void led_restore_now() {
+    if (!led.active) {
+        return;
+    }
+    led_write(led.stage, led.palette, 0);
+    led.active = false;
+}
+
+static void rs_led_flash(uint32_t colour, uint32_t now) {
+    led.flashes++;
+    led.colour = colour;
+    led.until = now + GW_LED_FLASH_US;
+    if (led.active) {
+        if (colour != led.shown) {
+            led_write(led.stage, NULL, colour);
+            led.shown = colour;
+            diag(0x743, (int32_t) colour);
+        }
+        return;
+    }
+    if (!led.requested) {
+        led.requested = true;
+        led.stage_done = false;
+    }
+}
+
+static void led_apply(uint32_t now) {
+    led.requested = false;
+    led.stage = (rs_cur_stage >= 0) && (rs_cur_stage < RS_DPI_STAGES) ? rs_cur_stage : -1;
+    led_write(led.stage, NULL, led.colour);
+    led.shown = led.colour;
+    led.active = true;
+    led.until = now + GW_LED_FLASH_US;
+    diag(0x740, led.flashes);
+    diag(0x741, led.stage + 1);
+    diag(0x742, led.palette_read);
+    diag(0x743, (int32_t) led.colour);
+}
+
+// ---- reads
+
 enum class RsRead : uint8_t {
     NONE,
     DPI_STAGE,
     DPI_COUNT,
     SETTING,
+    LED_SLOT,
+    LED_STAGE,
 };
 
 static RsRead rs_read = RsRead::NONE;
 static uint8_t rs_read_setting = 0;
 static uint8_t rs_read_dev = 0;
 static uint16_t rs_read_addr = 0;
+static uint8_t rs_read_len = 2;
 static uint32_t rs_deadline = 0;
 static uint8_t rs_noread_dev = 0;  // a read from it timed out; skipped until it's replugged
-static int rs_reply_value = -1;
+static int32_t rs_reply_value = -1;
 static bool rs_reply_ready = false;
 static int32_t rs_inputs = 0;
 static int32_t rs_fail = 0;
@@ -714,7 +864,7 @@ static bool rs_dpi_wanted = false;
 static int rs_dpi_stage = -1;  // 0-based, as read; -1 = not read
 static int rs_dpi_last = -1;   // 0-based, last written; -1 = none since the mouse was plugged in
 
-static void rs_forget(uint8_t dev_addr) {
+static void rs_forget(uint8_t dev_addr, bool mounted) {
     if (rs_noread_dev == dev_addr) {
         rs_noread_dev = 0;
     }
@@ -723,15 +873,34 @@ static void rs_forget(uint8_t dev_addr) {
         s.sent = RS_NONE;
     }
     rs_dpi_last = -1;
+    rs_cur_stage = -1;
+    if (led.active && !mounted) {
+        // the temporary colour may still be in the mouse: put it back once a mouse is there again
+        led.restore_pending = true;
+        led.restore_stage = led.stage;
+        memcpy(led.restore_rgb, led.palette, sizeof(led.restore_rgb));
+        led.restore_at = 0;
+        led.active = false;
+    }
+    if (led.restore_pending && mounted) {
+        led.restore_at = (time_us_32() + GW_LED_RESTORE_DELAY_US) | 1;
+    }
+    led.requested = false;
+    led_palette_reset();
 }
 
-// Input report 8 from the device being read: is it the reply (address echoed, valid value
-// pair, valid checksum when the report is complete)? -1 if not.
-static int rs_parse_reply(const uint8_t* r, uint16_t len) {
-    if ((len < 8) || (r[0] != RS_REPORT_ID) || (r[3] != (rs_read_addr >> 8)) || (r[4] != (rs_read_addr & 0xFF)) || (r[5] != 2)) {
+// Input report 8 from the device being read: is it the reply (address and length echoed, valid
+// value pair or colour, valid checksum when the report is complete)? -1 if not. A colour comes
+// back as 0xRRGGBB.
+static int32_t rs_parse_reply(const uint8_t* r, uint16_t len) {
+    if ((len < 6 + rs_read_len) || (r[0] != RS_REPORT_ID) || (r[3] != (rs_read_addr >> 8)) || (r[4] != (rs_read_addr & 0xFF)) || (r[5] != rs_read_len)) {
         return -1;
     }
-    if ((uint8_t) (r[6] + r[7]) != 0x55) {
+    uint8_t data_sum = 0;
+    for (int i = 0; i < rs_read_len; i++) {
+        data_sum += r[6 + i];
+    }
+    if (data_sum != 0x55) {
         return -1;
     }
     if (len >= 1 + RS_LEN) {
@@ -743,7 +912,7 @@ static int rs_parse_reply(const uint8_t* r, uint16_t len) {
             return -1;
         }
     }
-    return r[6];
+    return (rs_read_len == 4) ? (int32_t) ((uint32_t) r[6] << 16 | r[7] << 8 | r[8]) : r[6];
 }
 
 void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* report, uint16_t len) {
@@ -755,20 +924,47 @@ void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* repor
         diag(0x730 + rs_inputs, (int32_t) ((uint32_t) report[5] << 24 | report[6] << 16 | report[7] << 8 | (len & 0xFF)));
     }
     rs_inputs++;
-    int v = rs_parse_reply(report, len);
+    int32_t v = rs_parse_reply(report, len);
     if ((v >= 0) && !rs_reply_ready) {
         rs_reply_value = v;
         rs_reply_ready = true;
     }
 }
 
-static void rs_start_read(RsRead what, uint16_t addr, uint32_t now) {
+static void rs_start_read(RsRead what, uint16_t addr, uint8_t len, uint32_t now) {
     rs_read = what;
     rs_read_addr = addr;
+    rs_read_len = len;
     rs_reply_ready = false;
     rs_inputs = 0;
     rs_deadline = now + RS_READ_TIMEOUT_US;
-    rs_send(RS_READ, addr, 0, rs_read_dev);
+    std::map<uint8_t, uint16_t> targets = rs_targets();
+    uint8_t r[RS_LEN];
+    rs_build(r, RS_READ, addr, NULL, len);
+    if (targets.count(rs_read_dev)) {
+        queue_out_report(targets[rs_read_dev], RS_REPORT_ID, r, RS_LEN);
+    }
+}
+
+// a read can go out now: none in flight, writes flushed first, room in the out-report queue
+static bool rs_can_read() {
+    return (rs_read == RsRead::NONE) && (rs_wq_n == 0) && (out_report_free_slots() >= 1);
+}
+
+static bool rs_reads_work() {
+    uint8_t dev = rs_read_target();
+    return (dev != 0) && (dev != rs_noread_dev);
+}
+
+// true if a read was started; otherwise the caller goes on without one
+static bool rs_try_read(RsRead what, uint16_t addr, uint8_t len, uint32_t now) {
+    rs_read_dev = rs_read_target();
+    if ((rs_read_dev == 0) || (rs_read_dev == rs_noread_dev)) {
+        rs_fail |= 16;
+        return false;
+    }
+    rs_start_read(what, addr, len, now);
+    return true;
 }
 
 static void rs_dpi_finish() {
@@ -777,11 +973,12 @@ static void rs_dpi_finish() {
               : ((rs_dpi_last >= 0) && (rs_dpi_last < n)) ? rs_dpi_last
                                                            : 0;
     int next = (cur + 1) % n;
-    int sent = rs_send(RS_WRITE, RS_ADDR_DPI_STAGE, next);
+    rs_write_value(RS_ADDR_DPI_STAGE, next);
     rs_dpi_last = next;
+    rs_cur_stage = next;
     diag(0x700, rs_dpi_stage + 1);
     diag(0x701, next + 1);
-    diag(0x703, sent);
+    diag(0x703, (int32_t) rs_targets().size());
     diag(0x704, rs_fail);
     diag(0x705, rs_read_dev);
     diag(0x706, rs_inputs);
@@ -797,19 +994,25 @@ static void rs_setting_reset(RsSetting& s, uint32_t now) {
     s.changed_at = now;
 }
 
-static void rs_setting_step(RsSetting& s, int dir, uint32_t now) {
+// 1 = changed, 0 = already at the end of the range, -1 = not known yet (read pending)
+static int rs_setting_step(RsSetting& s, int dir, uint32_t now) {
     s.ops++;
     if (!s.known) {
         s.pending += dir;
         s.wanted = true;
-        return;
+        return -1;
     }
-    s.value = s.step(s.value, dir);
+    int v = s.step(s.value, dir);
+    if (v == s.value) {
+        return 0;
+    }
+    s.value = v;
     s.changed_at = now;
+    return 1;
 }
 
 // raw: the byte read, -1 = no reply
-static void rs_setting_read_done(RsSetting& s, int raw, uint32_t now) {
+static void rs_setting_read_done(RsSetting& s, int32_t raw, uint32_t now) {
     if (s.known) {
         return;  // a reset came in while reading; it wins
     }
@@ -831,8 +1034,8 @@ static void rs_setting_read_done(RsSetting& s, int raw, uint32_t now) {
     s.changed_at = now;
 }
 
-// value: the byte read, -1 = no reply
-static void rs_read_done(int value, uint32_t now) {
+// value: the data read (byte or 0xRRGGBB), -1 = no reply
+static void rs_read_done(int32_t value, uint32_t now) {
     RsRead what = rs_read;
     rs_read = RsRead::NONE;
     switch (what) {
@@ -844,7 +1047,7 @@ static void rs_read_done(int value, uint32_t now) {
             rs_dpi_finish();
             if (value >= 0) {
                 // reads work: also show the byte at the guessed stage-count address
-                rs_start_read(RsRead::DPI_COUNT, RS_ADDR_DPI_COUNT, now);
+                rs_start_read(RsRead::DPI_COUNT, RS_ADDR_DPI_COUNT, 2, now);
             }
             break;
         case RsRead::DPI_COUNT:
@@ -853,20 +1056,27 @@ static void rs_read_done(int value, uint32_t now) {
         case RsRead::SETTING:
             rs_setting_read_done(rs_settings[rs_read_setting], value, now);
             break;
+        case RsRead::LED_SLOT:
+            if (value >= 0) {
+                led.palette[led.palette_next] = (uint32_t) value;
+                if (++led.palette_next == RS_DPI_STAGES) {
+                    led.palette_done = true;
+                    led.palette_read = true;
+                }
+            } else {
+                led_palette_reset();  // keep the built-in colours, all of them
+                led.palette_done = true;
+            }
+            break;
+        case RsRead::LED_STAGE:
+            led.stage_done = true;
+            if ((value >= 0) && (value < RS_DPI_STAGES)) {
+                rs_cur_stage = value;
+            }
+            break;
         default:
             break;
     }
-}
-
-// true if a read was started; otherwise the caller goes on without one
-static bool rs_try_read(RsRead what, uint16_t addr, uint32_t now) {
-    rs_read_dev = rs_read_target();
-    if ((rs_read_dev == 0) || (rs_read_dev == rs_noread_dev)) {
-        rs_fail |= 16;
-        return false;
-    }
-    rs_start_read(what, addr, now);
-    return true;
 }
 
 static void rs_tick(uint32_t now) {
@@ -880,16 +1090,17 @@ static void rs_tick(uint32_t now) {
             rs_read_done(-1, now);
         }
     }
-    if (rs_read == RsRead::NONE) {
+    if (rs_can_read()) {
         if (rs_dpi_wanted) {
             rs_dpi_wanted = false;
             rs_dpi_stage = -1;
             rs_fail = 0;
-            if (!rs_try_read(RsRead::DPI_STAGE, RS_ADDR_DPI_STAGE, now)) {
+            if (!rs_try_read(RsRead::DPI_STAGE, RS_ADDR_DPI_STAGE, 2, now)) {
                 rs_dpi_finish();
             }
         } else {
-            for (uint8_t i = 0; i < RS_SETTINGS; i++) {
+            bool started = false;
+            for (uint8_t i = 0; (i < RS_SETTINGS) && !started; i++) {
                 RsSetting& s = rs_settings[i];
                 if (!s.wanted) {
                     continue;
@@ -899,27 +1110,47 @@ static void rs_tick(uint32_t now) {
                 if (!s.known) {
                     rs_fail = 0;
                     rs_read_setting = i;
-                    if (!rs_try_read(RsRead::SETTING, s.addr, now)) {
+                    if (!rs_try_read(RsRead::SETTING, s.addr, 2, now)) {
                         rs_setting_read_done(s, -1, now);
                     }
                 }
-                break;  // one read at a time
+                started = true;  // one read at a time
+            }
+            if (!started && led.requested) {
+                // the stage colours once per plug-in, the current stage before each flash
+                if (!led.palette_done && rs_reads_work()) {
+                    rs_try_read(RsRead::LED_SLOT, RS_ADDR_LED_SLOT + 4 * led.palette_next, 4, now);
+                } else if (!led.stage_done && rs_reads_work()) {
+                    rs_try_read(RsRead::LED_STAGE, RS_ADDR_DPI_STAGE, 2, now);
+                } else {
+                    led_apply(now);
+                }
             }
         }
     }
-    // one setting per tick keeps the out-report queue (8) clear with cable + dongle attached
+    if (led.active && ((int32_t) (now - led.until) >= 0)) {
+        led_restore_now();
+    }
+    if (led.restore_pending && (led.restore_at != 0) && ((int32_t) (now - led.restore_at) >= 0) && !rs_targets().empty()) {
+        led_write(led.restore_stage, led.restore_rgb, 0);
+        led.restore_pending = false;
+        led.restored++;
+        diag(0x745, led.restored);
+    }
+    // one setting per tick
     for (RsSetting& s : rs_settings) {
         if (s.known && (s.value != s.sent) && ((now - s.changed_at) >= RS_SETTLE_US)) {
-            int sent = rs_send(RS_WRITE, s.on_addr, 0x01);
-            rs_send(RS_WRITE, s.addr, s.encode(s.value));
+            rs_write_value(s.on_addr, 0x01);
+            rs_write_value(s.addr, s.encode(s.value));
             s.sent = s.value;
             diag(s.diag + 1, s.value);
             diag(s.diag + 3, s.ops);
-            diag(0x703, sent);
+            diag(0x703, (int32_t) rs_targets().size());
             diag(0x704, rs_fail);
             break;
         }
     }
+    rs_pump();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -931,6 +1162,12 @@ static uint32_t middle_down_at = 0;
 
 static bool rose(const int32_t* regs, int reg) {
     return (regs[reg - 1] != 0) && (prev_regs[reg - 1] == 0);
+}
+
+// a setting step, with its LED flash: the setting's colour, or off when nothing could change
+static void rs_step_with_flash(int setting, int dir, uint32_t colour, uint32_t now) {
+    int r = rs_setting_step(rs_settings[setting], dir, now);
+    rs_led_flash((r == 0) ? GW_LED_LIMIT : colour, now);
 }
 
 void gw_tick(const int32_t* regs) {
@@ -960,10 +1197,12 @@ void gw_tick(const int32_t* regs) {
         sensor_hold_fired = true;
         if (rs) {
             rs_setting_reset(rs_settings[RS_POS], now);
+            rs_led_flash(GW_LED_RESET, now);
         }
     }
     if ((sensor == 0) && (prev_regs[GW_SENSOR_REGISTER - 1] != 0) && !sensor_hold_fired && rs) {
         rs_setting_reset(rs_settings[RS_ANGLE], now);
+        rs_led_flash(GW_LED_RESET, now);
     }
     if (rose(regs, GW_DPI_REGISTER)) {
         dpi_trigger_count++;
@@ -972,21 +1211,23 @@ void gw_tick(const int32_t* regs) {
             dpi_start(now);
         }
         if (rs) {
+            led_restore_now();  // the new stage's own colour is the feedback
+            led.requested = false;
             rs_dpi_wanted = true;
         }
     }
     if (rs) {
         if (rose(regs, GW_POS_DOWN_REGISTER)) {
-            rs_setting_step(rs_settings[RS_POS], -1, now);
+            rs_step_with_flash(RS_POS, -1, GW_LED_POS, now);
         }
         if (rose(regs, GW_POS_UP_REGISTER)) {
-            rs_setting_step(rs_settings[RS_POS], +1, now);
+            rs_step_with_flash(RS_POS, +1, GW_LED_POS, now);
         }
         if (rose(regs, GW_ANGLE_DOWN_REGISTER)) {
-            rs_setting_step(rs_settings[RS_ANGLE], -1, now);
+            rs_step_with_flash(RS_ANGLE, -1, GW_LED_ANGLE, now);
         }
         if (rose(regs, GW_ANGLE_UP_REGISTER)) {
-            rs_setting_step(rs_settings[RS_ANGLE], +1, now);
+            rs_step_with_flash(RS_ANGLE, +1, GW_LED_ANGLE, now);
         }
     }
     if (rose(regs, GW_MIDDLE_REGISTER)) {
@@ -996,7 +1237,7 @@ void gw_tick(const int32_t* regs) {
     // trusted, a high-resolution wheel would report 120 per notch)
     int32_t wheel = regs[GW_WHEEL_REGISTER - 1];
     if ((wheel != 0) && (regs[GW_MIDDLE_REGISTER - 1] != 0) && ((now - middle_down_at) >= GW_WHEEL_HOLD_US) && rs) {
-        rs_setting_step(rs_settings[RS_ANGLE], (wheel > 0) ? 1 : -1, now);
+        rs_step_with_flash(RS_ANGLE, (wheel > 0) ? 1 : -1, GW_LED_ANGLE, now);
     }
     memcpy(prev_regs, regs, sizeof(prev_regs));
     dpi_tick(now);
