@@ -584,7 +584,7 @@ static void dpi_tick(uint32_t now) {
 #define GW_LED_ANGLE 0x0000ffu  // blue: sensor angle step (Mid+wheel)
 #define GW_LED_RESET 0xffffffu  // white: angle reset (Mid+Left tap) or position reset (hold)
 #define GW_LED_LIMIT 0x000000u  // off: a step at the end of the range, nothing changed
-#define GW_LED_FLASH_US 700000
+#define GW_LED_FLASH_US 1200000  // 0.7 s in v9; longer reads better (user, 2026-10-03)
 #define GW_LED_RESTORE_DELAY_US 300000  // after a replug, so all the mouse's interfaces are up
 // The stage colours as set in the web app (2026-10-02). Used to put a slot back when the mouse
 // doesn't answer reads; when it does, the real colours are read once per plug-in instead.
