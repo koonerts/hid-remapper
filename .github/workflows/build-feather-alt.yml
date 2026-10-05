@@ -1,0 +1,49 @@
+name: build-feather-alt
+# The build-feather build, in an ubuntu:22.04 container on other runner types. A fallback for
+# when the ubuntu-22.04 runners aren't picking jobs up (GitHub incident 2026-10-05). The
+# container gives the same jammy compiler packages whatever the host is. Runs only when this
+# file is pushed or when started by hand; each runner type uploads its own artifact.
+on:
+  push:
+    branches: [vuk-sensor]
+    paths:
+      - '.github/workflows/build-feather-alt.yml'
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-22.04-arm, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    defaults:
+      run:
+        shell: bash --noprofile --norc -x -e -o pipefail {0}
+    steps:
+      # git has to be there before checkout, or checkout falls back to a tarball without submodules
+      - name: Install git, compiler, libraries and tools
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -o Acquire::Retries=3 update
+          apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates git cmake make build-essential python3 gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib srecord
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Build (Feather RP2040 USB Host only)
+        run: |
+          git config --global --add safe.directory '*'
+          mkdir build-feather
+          cd build-feather
+          PICO_BOARD=feather_host cmake ..
+          make -j"$(nproc)" remapper
+          arm-none-eabi-gcc --version | head -1
+          arm-none-eabi-size remapper.elf
+          arm-none-eabi-nm remapper.elf | grep -E ' (__end__|end|__HeapLimit|__StackLimit|__StackOneBottom|__StackBottom|__StackTop)$' || true
+          mkdir ../artifacts
+          mv remapper.uf2 ../artifacts/remapper_feather.uf2
+        working-directory: ./firmware
+      - uses: actions/upload-artifact@v7
+        with:
+          name: feather-${{ matrix.runner }}
+          path: firmware/artifacts/*
