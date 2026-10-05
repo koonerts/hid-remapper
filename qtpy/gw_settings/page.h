@@ -51,15 +51,15 @@ input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
 .note{background:var(--warnbg);color:var(--warn);border-radius:9px;padding:8px 10px;font-size:13px;margin:0 0 12px}
 details>summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between}
 details>summary::-webkit-details-marker{display:none}
-details>summary::after{content:"+";font-size:20px;color:var(--mut);line-height:1}
-details[open]>summary::after{content:"−"}
+details>summary::after{content:"";flex:none;width:9px;height:9px;margin:0 5px 5px 12px;border-right:2px solid var(--mut);border-bottom:2px solid var(--mut);transform:rotate(45deg);transition:transform .15s}
+details[open]>summary::after{transform:rotate(-135deg);margin-bottom:-4px}
 details[open]>summary{margin-bottom:12px}
 ul.ch{margin:0 0 14px;padding-left:18px;font-size:14px}ul.ch li{margin:4px 0}
 .tune{display:grid;grid-template-columns:1fr 92px;gap:8px 10px;align-items:center;font-size:14px}
 .toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translate(-50%,20px);background:var(--fg);color:var(--bg);padding:9px 14px;border-radius:10px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .15s,transform .15s;max-width:90vw}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.bad{background:var(--bad);color:#fff}
-@media (prefers-reduced-motion:reduce){.toast{transition:none}}
+@media (prefers-reduced-motion:reduce){.toast,details>summary::after{transition:none}}
 </style></head><body><main>
 <h1>Warg settings</h1>
 <div id="state" class="chips"><span class="chip">Connecting…</span></div>
@@ -90,7 +90,7 @@ ul.ch{margin:0 0 14px;padding-left:18px;font-size:14px}ul.ch li{margin:4px 0}
 </div>
 <p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p></div>
 
-<details class="card"><summary><h2>Chords</h2></summary>
+<details class="card"><summary><div><h2>Chords</h2><div class="mut">What each chord does, and its tuning</div></div></summary>
 <ul class="ch" id="chords"></ul>
 <div class="tune" id="tune"></div>
 <div class="row" style="margin-top:12px"><button class="p" onclick="saveTune()">Save tuning</button></div></details>
