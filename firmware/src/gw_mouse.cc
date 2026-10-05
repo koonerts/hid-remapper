@@ -1280,7 +1280,7 @@ static void rs_tick(uint32_t now) {
 //   angle step, position step, angle home, position home, flash ms, position-reset hold ms, wheel
 //   hold ms, radio hold ms)   55 last command seq applied   56 firmware version   63 crc8 of 0-62
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 11
+#define GW_FW_VERSION 12
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]

@@ -2,6 +2,14 @@
 
 #include <cstring>
 
+// pico.h brings in the board header, which is where GW_LINK_I2C comes from. Without it the test
+// below sees nothing and the no-op versions get built (v11 shipped that way).
+#include "pico.h"
+
+#if defined(FEATHER_HOST_BOARD) && !defined(GW_LINK_I2C)
+#error "feather_host.h must define GW_LINK_I2C, GW_LINK_SDA and GW_LINK_SCL"
+#endif
+
 uint8_t gw_crc8(const uint8_t* data, uint8_t len) {
     uint8_t crc = 0;
     for (uint8_t i = 0; i < len; i++) {
