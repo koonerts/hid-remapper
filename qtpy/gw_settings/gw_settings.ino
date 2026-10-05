@@ -27,7 +27,7 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 64
-#define QT_FW 2        // this firmware's number, shown in /api/status
+#define QT_FW 3        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define JOIN_TIMEOUT_MS 15000
@@ -602,6 +602,7 @@ static void h_update_done() {
 
 static void h_page() {
     touch();
+    queue_cmd(C_REFRESH, nullptr, 0);  // opening the page reads the mouse's current settings
     server.send_P(200, "text/html", PAGE_HTML);
 }
 
