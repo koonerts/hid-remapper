@@ -4,8 +4,10 @@
 //
 // Radio: off at power-up. Holding Mid+Right on the mouse bumps a counter in the Feather's status
 // block; each bump switches Wi-Fi on or off (the QT Py's Boot button does the same). It switches
-// itself off after RADIO_IDLE_MS without a page request. With no saved network, or when the saved
-// one can't be joined, it opens its own network "GW-Settings" for setup (192.168.4.1).
+// itself off after 10 minutes without a page action; the page can change that to 1 hour or never
+// ("never" also brings Wi-Fi up at power-up). With no saved network, or when the saved one can't
+// be joined after a switch-on by hand, it opens its own network "GW-Settings" for setup
+// (192.168.4.1). That open network is never started unasked and always times out.
 // Page: http://gwolves.local (or the IP shown on the setup page).
 // LED: off = radio off, yellow = joining, blue = on your network, magenta = setup network.
 // Blinking over that while the Feather isn't answering properly: red = nothing answers at all,
@@ -27,9 +29,10 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 64
-#define QT_FW 3        // this firmware's number, shown in /api/status
+#define QT_FW 4        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
+#define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
 #define JOIN_TIMEOUT_MS 15000
 #define CMD_RETRY_MS 300
 #define CMD_TRIES 5
@@ -67,6 +70,8 @@ enum class Radio : uint8_t { OFF, JOINING, STA, AP };
 static Radio radio = Radio::OFF;
 static uint32_t radio_since = 0;
 static uint32_t last_http = 0;
+static uint8_t wmode = 0;          // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
+static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
 
 // ---- command queue (one frame in flight, acked by status byte 55)
 
@@ -264,13 +269,17 @@ static void start_ap() {
     start_mdns();
 }
 
-static void radio_on() {
+static void radio_on(bool manual = true) {
     if (radio != Radio::OFF) {
         return;
     }
+    String ssid = prefs.getString("ssid", "");
+    if (!ssid.length() && !manual) {
+        return;  // nothing to join, and the setup network is never opened unasked
+    }
+    radio_manual = manual;
     radio_since = millis();
     last_http = millis();
-    String ssid = prefs.getString("ssid", "");
     if (ssid.length()) {
         WiFi.mode(WIFI_STA);
         WiFi.setSleep(true);
@@ -284,16 +293,27 @@ static void radio_on() {
     queue_cmd(C_RADIO_STATE, &v, 1);
 }
 
+// how long the radio stays on without a page action; 0 = no limit
+static uint32_t idle_limit() {
+    if ((radio == Radio::AP) || (wmode == 0)) {
+        return RADIO_IDLE_MS;
+    }
+    return (wmode == 1) ? RADIO_IDLE_LONG_MS : 0;
+}
+
 static void radio_tick() {
     if ((radio == Radio::JOINING) && (WiFi.status() == WL_CONNECTED)) {
         radio = Radio::STA;
         start_mdns();
     }
-    if ((radio == Radio::JOINING) && (millis() - radio_since > JOIN_TIMEOUT_MS)) {
+    // switched on by hand and can't join: setup network instead. Started by itself (power-up,
+    // after an update): keep trying, the Wi-Fi stack retries on its own.
+    if ((radio == Radio::JOINING) && radio_manual && (millis() - radio_since > JOIN_TIMEOUT_MS)) {
         WiFi.disconnect(true);
-        start_ap();  // can't join: setup network instead
+        start_ap();
     }
-    if ((radio != Radio::OFF) && (millis() - last_http > RADIO_IDLE_MS)) {
+    uint32_t lim = idle_limit();
+    if ((radio != Radio::OFF) && lim && (millis() - last_http > lim)) {
         radio_off();
     }
     if (radio == Radio::AP) {
@@ -423,7 +443,9 @@ static void h_status() {
     j += (radio == Radio::STA) ? "sta" : (radio == Radio::AP) ? "ap" : (radio == Radio::JOINING) ? "joining" : "off";
     j += "\",\"ssid\":\"" + prefs.getString("ssid", "") + "\"";
     j += ",\"ip\":\"" + ((radio == Radio::AP) ? WiFi.softAPIP().toString() : WiFi.localIP().toString()) + "\"";
-    uint32_t left = (millis() - last_http < RADIO_IDLE_MS) ? (RADIO_IDLE_MS - (millis() - last_http)) / 1000 : 0;
+    uint32_t lim = idle_limit();
+    long left = !lim ? -1 : (millis() - last_http < lim) ? (long) ((lim - (millis() - last_http)) / 1000) : 0;
+    j += ",\"keep\":" + String(wmode);
     j += ",\"off_in_s\":" + String(left) + "}}";
     server.send(200, "application/json", j);
 }
@@ -540,6 +562,18 @@ static void h_flash() {
     ok_json(queue_cmd(C_FLASH, d, 3));
 }
 
+// POST /api/wifimode?m=0|1|2   Wi-Fi switches itself off after 10 min idle / 1 hour idle / never
+static void h_wifimode() {
+    touch();
+    long m;
+    if (!arg_int("m", 0, 2, &m)) {
+        return ok_json(false, "bad value");
+    }
+    wmode = (uint8_t) m;
+    prefs.putUChar("wmode", wmode);
+    ok_json(true);
+}
+
 static void h_radio_off() {
     ok_json(true);
     delay(100);
@@ -624,6 +658,10 @@ void setup() {
     led(0, 0, 0);
     WiFi.mode(WIFI_OFF);
     prefs.begin("gw", false);
+    wmode = prefs.getUChar("wmode", 0);
+    if (wmode > 2) {
+        wmode = 0;
+    }
     Wire1.begin(LINK_SDA, LINK_SCL, LINK_HZ);
     Wire1.setTimeOut(50);
     server.on("/", HTTP_GET, h_page);
@@ -636,11 +674,15 @@ void setup() {
     server.on("/api/flash", HTTP_POST, h_flash);
     server.on("/api/radio_off", HTTP_POST, h_radio_off);
     server.on("/api/wifi", HTTP_POST, h_wifi);
+    server.on("/api/wifimode", HTTP_POST, h_wifimode);
     server.on("/api/update", HTTP_POST, h_update_done, h_update_upload);
     server.onNotFound(h_not_found);
-    if (prefs.getBool("resume", false)) {  // restarted by an update: back onto Wi-Fi
+    bool resume = prefs.getBool("resume", false);  // restarted by an update: back onto Wi-Fi
+    if (resume) {
         prefs.putBool("resume", false);
-        radio_on();
+    }
+    if (resume || (wmode == 2)) {
+        radio_on(false);
     }
 }
 
