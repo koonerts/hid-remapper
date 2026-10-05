@@ -9,6 +9,7 @@
 #include <tusb.h>
 
 #include "globals.h"
+#include "gw_link.h"
 #include "gw_payloads.h"
 #include "out_report.h"
 #include "remapper.h"
@@ -65,6 +66,9 @@ void __verbose_terminate_handler() {
 //   0xFFF40744  Warg: writes dropped because the write queue was full
 //   0xFFF40745  Warg LED: flashes restored after an unplug
 //   0xFFF4072n, 0xFFF4073n  Warg: input report n with ID 8 during a read: bytes 1..4, bytes 5..7 << 8 | length
+//   0xFFF40750  Mid+Right holds (QT Py radio switches requested)
+//   0xFFF40751  QT Py link: rejected frame (length shown)
+//   0xFFF40752  QT Py link: unknown command
 //   0xFFF407Fn  G-Wolves device n: dev_addr<<24 | family<<16 | PID (family 1 VUK, 2 Warg, 0 unknown: gets nothing)
 #define GW_DIAG(n) (0xFFF40000 | (n))
 
@@ -555,7 +559,7 @@ static void dpi_tick(uint32_t now) {
 // (8 reports). Reads go to one device, the cable when it's attached. The reply is expected as
 // input report 8 echoing the address and length; that is a guess (no reply was captured yet),
 // so a read that doesn't come back in time falls back: after power-up or a replug the first DPI
-// step assumes stage 1, a setting assumes its home, and the LED uses GW_LED_PALETTE.
+// step assumes stage 1, a setting assumes its home, and the LED uses the built-in palette.
 #define RS_REPORT_ID 0x08
 #define RS_LEN 16
 #define RS_WRITE 0x07
@@ -563,36 +567,55 @@ static void dpi_tick(uint32_t now) {
 #define RS_ADDR_DPI_STAGE 0x0004
 #define RS_ADDR_DPI_COUNT 0x0002  // guess; only shown in the Monitor
 #define RS_ADDR_LED_SLOT 0x002c   // + 4 per stage: R, G, B, then a byte making the 4 sum to 0x55
+#define RS_ADDR_DPI_TABLE 0x1b00  // + 6 per stage: X-1, Y-1 (16-bit LE), 00, a byte making the 6 sum to 0x55
 #define RS_DPI_STAGES 5  // as configured on the Warg (1600/5000/10000/20000/40000); not read yet
+#define RS_DPI_MIN 50
+#define RS_DPI_MAX 50000
+// Defaults for the settings the QT Py page can change (gw_tune).
 // Sensor angle in degrees. Mid+Left (tap) goes back to GW_ANGLE_HOME, the angle the Warg is set
 // to in the web app (2026-10-01); it's also assumed after a replug when the mouse doesn't answer.
 #define GW_ANGLE_HOME (-13)
 #define RS_ANGLE_STEP 1
 #define RS_ANGLE_MIN (-30)  // the web app's range on G-Wolves' 8K mice
 #define RS_ANGLE_MAX 30
-// Virtual sensor position, web app range -100..101. Mid+Left held for GW_POS_RESET_HOLD_US goes
-// back to GW_POS_HOME; steps move to the next multiple of RS_POS_STEP.
+// Virtual sensor position, web app range -100..101. Mid+Left held for the position-reset hold goes
+// back to GW_POS_HOME; steps move to the next multiple of the position step.
 #define GW_POS_HOME 0
-#define GW_POS_RESET_HOLD_US 500000
+#define GW_POS_RESET_HOLD_MS 500
 #define RS_POS_STEP 5
 #define RS_POS_MIN (-100)
 #define RS_POS_MAX 101
 // LED flash: a chord briefly puts a colour in the current DPI stage's colour slot, then the
 // stage's own colour comes back. The colours stay clear of the stage colours (red, orange,
-// yellow, green, purple), and the breathing effect keeps running.
-#define GW_LED_POS 0x00ffffu    // cyan: sensor position step (Mid+Back / Mid+Fwd)
-#define GW_LED_ANGLE 0x0000ffu  // blue: sensor angle step (Mid+wheel)
-#define GW_LED_RESET 0xffffffu  // white: angle reset (Mid+Left tap) or position reset (hold)
-#define GW_LED_LIMIT 0x000000u  // off: a step at the end of the range, nothing changed
-#define GW_LED_FLASH_US 1200000  // 0.7 s in v9; longer reads better (user, 2026-10-03)
+// yellow, green, purple).
+#define GW_LED_POS 0x00ffffu       // cyan: sensor position step (Mid+Back / Mid+Fwd)
+#define GW_LED_ANGLE 0x0000ffu     // blue: sensor angle step (Mid+wheel)
+#define GW_LED_RESET 0xffffffu     // white: angle reset (Mid+Left tap) or position reset (hold)
+#define GW_LED_LIMIT 0x000000u     // off: a step at the end of the range, nothing changed
+#define GW_LED_RADIO_ON 0x0080ffu  // azure: the QT Py's radio came on (Mid+Right hold); off = GW_LED_LIMIT
+#define GW_LED_FLASH_MS 1200
 #define GW_LED_RESTORE_DELAY_US 300000  // after a replug, so all the mouse's interfaces are up
 // The stage colours as set in the web app (2026-10-02). Used to put a slot back when the mouse
-// doesn't answer reads; when it does, the real colours are read once per plug-in instead.
-static const uint32_t GW_LED_PALETTE[RS_DPI_STAGES] = { 0xff0000, 0xff8000, 0xffff00, 0x00ff00, 0xff00ff };
+// doesn't answer reads; when it does, the real colours are read once per plug-in instead. The QT Py
+// page keeps it current (SET_PALETTE / SET_PALETTE_DEFAULT).
+static uint32_t gw_palette_default[RS_DPI_STAGES] = { 0xff0000, 0xff8000, 0xffff00, 0x00ff00, 0xff00ff };
 #define RS_NONE 0x7FFF
 #define RS_READ_TIMEOUT_US 150000
 #define RS_SETTLE_US 40000  // one write for a quick run of presses or notches
 #define RS_INPUT_LOG 8
+
+struct GwTune {
+    uint8_t angle_step;
+    uint8_t pos_step;
+    int8_t angle_home;
+    int8_t pos_home;
+    uint16_t flash_ms;
+    uint16_t pos_hold_ms;    // Mid+Left hold: position reset
+    uint16_t wheel_hold_ms;  // Middle down this long before the wheel steps the angle
+    uint16_t radio_hold_ms;  // Mid+Right hold: QT Py radio on/off
+};
+static GwTune tune = { RS_ANGLE_STEP, RS_POS_STEP, GW_ANGLE_HOME, GW_POS_HOME, GW_LED_FLASH_MS,
+    GW_POS_RESET_HOLD_MS, GW_WHEEL_HOLD_US / 1000, GW_RADIO_HOLD_MS };
 
 static void rs_build(uint8_t* r, uint8_t cmd, uint16_t addr, const uint8_t* data, uint8_t len) {
     memset(r, 0, RS_LEN);
@@ -645,9 +668,9 @@ static uint8_t rs_read_target() {
 struct RsWrite {
     uint16_t addr;
     uint8_t len;
-    uint8_t data[4];
+    uint8_t data[6];
 };
-#define RS_WQ 32
+#define RS_WQ 40
 static RsWrite rs_wq[RS_WQ];
 static uint8_t rs_wq_head = 0;
 static uint8_t rs_wq_n = 0;
@@ -676,6 +699,12 @@ static void rs_write_colour(uint8_t stage, uint32_t rgb) {
     uint8_t d[4] = { (uint8_t) (rgb >> 16), (uint8_t) (rgb >> 8), (uint8_t) rgb, 0 };
     d[3] = 0x55 - (uint8_t) (d[0] + d[1] + d[2]);
     rs_write(RS_ADDR_LED_SLOT + 4 * stage, d, 4);
+}
+
+static void rs_write_dpi(uint8_t stage, uint16_t x, uint16_t y) {
+    uint8_t d[6] = { (uint8_t) (x - 1), (uint8_t) ((x - 1) >> 8), (uint8_t) (y - 1), (uint8_t) ((y - 1) >> 8), 0, 0 };
+    d[5] = 0x55 - (uint8_t) (d[0] + d[1] + d[2] + d[3] + d[4]);
+    rs_write(RS_ADDR_DPI_TABLE + 6 * stage, d, 6);
 }
 
 // Sends queued writes while the out-report queue has room for one per RS device.
@@ -715,7 +744,7 @@ static uint8_t angle_encode(int a) {
     return (uint8_t) (int8_t) a;
 }
 static int angle_step(int a, int dir) {
-    return clamp(a + dir * RS_ANGLE_STEP, RS_ANGLE_MIN, RS_ANGLE_MAX);
+    return clamp(a + dir * tune.angle_step, RS_ANGLE_MIN, RS_ANGLE_MAX);
 }
 
 // position: byte = -p for p <= 0, 100 + p for p > 0
@@ -725,11 +754,12 @@ static int pos_decode(int b) {
 static uint8_t pos_encode(int p) {
     return (p <= 0) ? -p : 100 + p;
 }
-// up: the next multiple of 5 above, down: the next one below
+// up: the next multiple of the step above, down: the next one below
 static int pos_step(int p, int dir) {
-    int floor5 = (p >= 0) ? p / RS_POS_STEP : -((-p + RS_POS_STEP - 1) / RS_POS_STEP);
-    int ceil5 = (p >= 0) ? (p + RS_POS_STEP - 1) / RS_POS_STEP : -((-p) / RS_POS_STEP);
-    return clamp((dir > 0) ? (floor5 + 1) * RS_POS_STEP : (ceil5 - 1) * RS_POS_STEP, RS_POS_MIN, RS_POS_MAX);
+    int st = tune.pos_step;
+    int floor_ = (p >= 0) ? p / st : -((-p + st - 1) / st);
+    int ceil_ = (p >= 0) ? (p + st - 1) / st : -((-p) / st);
+    return clamp((dir > 0) ? (floor_ + 1) * st : (ceil_ - 1) * st, RS_POS_MIN, RS_POS_MAX);
 }
 
 // A one-byte Warg setting the chords change. The web driver writes 01 to on_addr right before
@@ -738,6 +768,8 @@ struct RsSetting {
     uint16_t on_addr;
     uint16_t addr;
     int home;  // reset target, also assumed when the mouse doesn't answer a read
+    int lo;
+    int hi;
     int (*decode)(int b);  // RS_NONE if out of range
     uint8_t (*encode)(int v);
     int (*step)(int v, int dir);
@@ -755,8 +787,8 @@ struct RsSetting {
 #define RS_POS 1
 #define RS_SETTINGS 2
 static RsSetting rs_settings[RS_SETTINGS] = {
-    { 0x00bf, 0x00bd, GW_ANGLE_HOME, angle_decode, angle_encode, angle_step, 0x710, GW_ANGLE_HOME, false, false, RS_NONE, 0, 0, 0 },
-    { 0x1b48, 0x1b4a, GW_POS_HOME, pos_decode, pos_encode, pos_step, 0x718, GW_POS_HOME, false, false, RS_NONE, 0, 0, 0 },
+    { 0x00bf, 0x00bd, GW_ANGLE_HOME, RS_ANGLE_MIN, RS_ANGLE_MAX, angle_decode, angle_encode, angle_step, 0x710, GW_ANGLE_HOME, false, false, RS_NONE, 0, 0, 0 },
+    { 0x1b48, 0x1b4a, GW_POS_HOME, RS_POS_MIN, RS_POS_MAX, pos_decode, pos_encode, pos_step, 0x718, GW_POS_HOME, false, false, RS_NONE, 0, 0, 0 },
 };
 
 // ---- LED flash
@@ -783,8 +815,13 @@ struct RsLed {
 static RsLed led = {};
 static int rs_cur_stage = -1;  // 0-based; from a read or the firmware's own stage write; -1 = unknown
 
+// DPI table: what the firmware last read or wrote (for the QT Py page); bit n of the mask = stage n known
+static uint16_t rs_dpi_x[RS_DPI_STAGES];
+static uint16_t rs_dpi_y[RS_DPI_STAGES];
+static uint8_t rs_dpi_known = 0;
+
 static void led_palette_reset() {
-    memcpy(led.palette, GW_LED_PALETTE, sizeof(led.palette));
+    memcpy(led.palette, gw_palette_default, sizeof(led.palette));
     led.palette_done = false;
     led.palette_read = false;
     led.palette_next = 0;
@@ -809,7 +846,7 @@ static void led_restore_now() {
 static void rs_led_flash(uint32_t colour, uint32_t now) {
     led.flashes++;
     led.colour = colour;
-    led.until = now + GW_LED_FLASH_US;
+    led.until = now + tune.flash_ms * 1000u;
     if (led.active) {
         if (colour != led.shown) {
             led_write(led.stage, NULL, colour);
@@ -830,7 +867,7 @@ static void led_apply(uint32_t now) {
     led_write(led.stage, NULL, led.colour);
     led.shown = led.colour;
     led.active = true;
-    led.until = now + GW_LED_FLASH_US;
+    led.until = now + tune.flash_ms * 1000u;
     diag(0x740, led.flashes);
     diag(0x741, led.stage + 1);
     diag(0x742, led.palette_read);
@@ -846,7 +883,11 @@ enum class RsRead : uint8_t {
     SETTING,
     LED_SLOT,
     LED_STAGE,
+    REFRESH,
 };
+
+// The QT Py page's "refresh": stage, angle, position, the 5 colours, the 5 DPI table entries.
+#define RS_REFRESH_ITEMS (3 + 2 * RS_DPI_STAGES)
 
 static RsRead rs_read = RsRead::NONE;
 static uint8_t rs_read_setting = 0;
@@ -855,10 +896,12 @@ static uint16_t rs_read_addr = 0;
 static uint8_t rs_read_len = 2;
 static uint32_t rs_deadline = 0;
 static uint8_t rs_noread_dev = 0;  // a read from it timed out; skipped until it's replugged
-static int32_t rs_reply_value = -1;
+static uint8_t rs_reply[6];
 static bool rs_reply_ready = false;
 static int32_t rs_inputs = 0;
 static int32_t rs_fail = 0;
+static bool rs_reads_worked = false;  // a read was answered since the mouse was plugged in
+static int8_t rs_refresh_next = -1;   // next refresh item; -1 = no refresh running
 
 static bool rs_dpi_wanted = false;
 static int rs_dpi_stage = -1;  // 0-based, as read; -1 = not read
@@ -874,6 +917,9 @@ static void rs_forget(uint8_t dev_addr, bool mounted) {
     }
     rs_dpi_last = -1;
     rs_cur_stage = -1;
+    rs_dpi_known = 0;
+    rs_reads_worked = false;
+    rs_refresh_next = -1;
     if (led.active && !mounted) {
         // the temporary colour may still be in the mouse: put it back once a mouse is there again
         led.restore_pending = true;
@@ -889,19 +935,19 @@ static void rs_forget(uint8_t dev_addr, bool mounted) {
     led_palette_reset();
 }
 
-// Input report 8 from the device being read: is it the reply (address and length echoed, valid
-// value pair or colour, valid checksum when the report is complete)? -1 if not. A colour comes
-// back as 0xRRGGBB.
-static int32_t rs_parse_reply(const uint8_t* r, uint16_t len) {
+// Input report 8 from the device being read: is it the reply (address and length echoed, data
+// bytes summing to 0x55 like every stored value, valid checksum when the report is complete)?
+// The data (rs_read_len bytes) goes to out.
+static bool rs_parse_reply(const uint8_t* r, uint16_t len, uint8_t* out) {
     if ((len < 6 + rs_read_len) || (r[0] != RS_REPORT_ID) || (r[3] != (rs_read_addr >> 8)) || (r[4] != (rs_read_addr & 0xFF)) || (r[5] != rs_read_len)) {
-        return -1;
+        return false;
     }
     uint8_t data_sum = 0;
     for (int i = 0; i < rs_read_len; i++) {
         data_sum += r[6 + i];
     }
     if (data_sum != 0x55) {
-        return -1;
+        return false;
     }
     if (len >= 1 + RS_LEN) {
         uint8_t sum = 0;
@@ -909,10 +955,11 @@ static int32_t rs_parse_reply(const uint8_t* r, uint16_t len) {
             sum += r[i];
         }
         if (sum != 0x55) {
-            return -1;
+            return false;
         }
     }
-    return (rs_read_len == 4) ? (int32_t) ((uint32_t) r[6] << 16 | r[7] << 8 | r[8]) : r[6];
+    memcpy(out, r + 6, rs_read_len);
+    return true;
 }
 
 void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* report, uint16_t len) {
@@ -924,9 +971,7 @@ void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* repor
         diag(0x730 + rs_inputs, (int32_t) ((uint32_t) report[5] << 24 | report[6] << 16 | report[7] << 8 | (len & 0xFF)));
     }
     rs_inputs++;
-    int32_t v = rs_parse_reply(report, len);
-    if ((v >= 0) && !rs_reply_ready) {
-        rs_reply_value = v;
+    if (!rs_reply_ready && rs_parse_reply(report, len, rs_reply)) {
         rs_reply_ready = true;
     }
 }
@@ -994,6 +1039,16 @@ static void rs_setting_reset(RsSetting& s, uint32_t now) {
     s.changed_at = now;
 }
 
+// an exact value from the QT Py page: written at once (no settle wait)
+static void rs_setting_set(RsSetting& s, int v, uint32_t now) {
+    s.ops++;
+    s.value = clamp(v, s.lo, s.hi);
+    s.known = true;
+    s.pending = 0;
+    s.wanted = false;
+    s.changed_at = now - RS_SETTLE_US;
+}
+
 // 1 = changed, 0 = already at the end of the range, -1 = not known yet (read pending)
 static int rs_setting_step(RsSetting& s, int dir, uint32_t now) {
     s.ops++;
@@ -1034,31 +1089,82 @@ static void rs_setting_read_done(RsSetting& s, int32_t raw, uint32_t now) {
     s.changed_at = now;
 }
 
-// value: the data read (byte or 0xRRGGBB), -1 = no reply
-static void rs_read_done(int32_t value, uint32_t now) {
+static void rs_refresh_start(int8_t item, uint32_t now) {
+    if (item < 3) {
+        static const uint16_t addr[3] = { RS_ADDR_DPI_STAGE, 0x00bd, 0x1b4a };
+        rs_try_read(RsRead::REFRESH, addr[item], 2, now);
+    } else if (item < 3 + RS_DPI_STAGES) {
+        rs_try_read(RsRead::REFRESH, RS_ADDR_LED_SLOT + 4 * (item - 3), 4, now);
+    } else {
+        rs_try_read(RsRead::REFRESH, RS_ADDR_DPI_TABLE + 6 * (item - 3 - RS_DPI_STAGES), 6, now);
+    }
+}
+
+static void rs_refresh_done(bool ok, const uint8_t* d) {
+    int8_t item = rs_refresh_next;
+    if (!ok) {
+        rs_refresh_next = -1;  // the mouse doesn't answer: stop here
+        return;
+    }
+    if (item == 0) {
+        if (d[0] < RS_DPI_STAGES) {
+            rs_cur_stage = d[0];
+            rs_dpi_last = d[0];
+        }
+    } else if (item < 3) {
+        RsSetting& s = rs_settings[item - 1];
+        int v = s.decode(d[0]);
+        // a change still waiting to be written wins over what's in the mouse
+        if ((v != RS_NONE) && !(s.known && (s.value != s.sent))) {
+            s.value = v;
+            s.sent = v;
+            s.known = true;
+            s.pending = 0;
+            s.wanted = false;
+        }
+    } else if (item < 3 + RS_DPI_STAGES) {
+        led.palette[item - 3] = (uint32_t) d[0] << 16 | d[1] << 8 | d[2];
+        if (item == 2 + RS_DPI_STAGES) {
+            led.palette_done = true;
+            led.palette_read = true;
+        }
+    } else {
+        int st = item - 3 - RS_DPI_STAGES;
+        rs_dpi_x[st] = (uint16_t) (d[0] | d[1] << 8) + 1;
+        rs_dpi_y[st] = (uint16_t) (d[2] | d[3] << 8) + 1;
+        rs_dpi_known |= 1 << st;
+    }
+    rs_refresh_next = (item + 1 < RS_REFRESH_ITEMS) ? item + 1 : -1;
+}
+
+static void rs_read_done(bool ok, uint32_t now) {
     RsRead what = rs_read;
     rs_read = RsRead::NONE;
+    if (ok) {
+        rs_reads_worked = true;
+    }
+    int32_t byte = ok ? rs_reply[0] : -1;
     switch (what) {
         case RsRead::DPI_STAGE:
-            if (value < 0) {
+            if (!ok) {
                 rs_fail |= 1;
             }
-            rs_dpi_stage = value;  // range-checked in rs_dpi_finish
+            rs_dpi_stage = byte;  // range-checked in rs_dpi_finish
             rs_dpi_finish();
-            if (value >= 0) {
+            if (ok) {
                 // reads work: also show the byte at the guessed stage-count address
                 rs_start_read(RsRead::DPI_COUNT, RS_ADDR_DPI_COUNT, 2, now);
             }
             break;
         case RsRead::DPI_COUNT:
-            diag(0x702, value);
+            diag(0x702, byte);
             break;
         case RsRead::SETTING:
-            rs_setting_read_done(rs_settings[rs_read_setting], value, now);
+            rs_setting_read_done(rs_settings[rs_read_setting], byte, now);
             break;
         case RsRead::LED_SLOT:
-            if (value >= 0) {
-                led.palette[led.palette_next] = (uint32_t) value;
+            if (ok) {
+                led.palette[led.palette_next] = (uint32_t) rs_reply[0] << 16 | rs_reply[1] << 8 | rs_reply[2];
                 if (++led.palette_next == RS_DPI_STAGES) {
                     led.palette_done = true;
                     led.palette_read = true;
@@ -1070,9 +1176,12 @@ static void rs_read_done(int32_t value, uint32_t now) {
             break;
         case RsRead::LED_STAGE:
             led.stage_done = true;
-            if ((value >= 0) && (value < RS_DPI_STAGES)) {
-                rs_cur_stage = value;
+            if (ok && (byte < RS_DPI_STAGES)) {
+                rs_cur_stage = byte;
             }
+            break;
+        case RsRead::REFRESH:
+            rs_refresh_done(ok, rs_reply);
             break;
         default:
             break;
@@ -1083,11 +1192,11 @@ static void rs_tick(uint32_t now) {
     if (rs_read != RsRead::NONE) {
         if (rs_reply_ready) {
             rs_reply_ready = false;
-            rs_read_done(rs_reply_value, now);
+            rs_read_done(true, now);
         } else if ((int32_t) (now - rs_deadline) >= 0) {
             rs_fail |= 8;
             rs_noread_dev = rs_read_dev;
-            rs_read_done(-1, now);
+            rs_read_done(false, now);
         }
     }
     if (rs_can_read()) {
@@ -1125,6 +1234,14 @@ static void rs_tick(uint32_t now) {
                 } else {
                     led_apply(now);
                 }
+                started = true;
+            }
+            if (!started && (rs_refresh_next >= 0)) {
+                if (rs_reads_work()) {
+                    rs_refresh_start(rs_refresh_next, now);
+                } else {
+                    rs_refresh_next = -1;
+                }
             }
         }
     }
@@ -1153,15 +1270,206 @@ static void rs_tick(uint32_t now) {
     rs_pump();
 }
 
+// ---- QT Py settings link (gw_link.h) ----------------------------------------------------------
+// Status block the QT Py reads (GW_LINK_STATUS_LEN bytes, little-endian):
+//   0 'G'   1 protocol (1)   2 link flags: bit 0 tuning set since boot, bit 1 built-in palette set
+//   since boot, bit 2 refresh running   3 mouse flags: bit 0 Warg, 1 VUK, 2 reads answered,
+//   3 stage known, 4 angle known, 5 position known, 6 colours read from the mouse, 7 DPI table known
+//   4 stage (0-based, 0xFF unknown)   5 angle (int8)   6 position (int8)   7 Mid+Right hold count
+//   8-22 stage colours (R,G,B x5)   23-42 DPI table (X,Y uint16 x5)   43-54 tuning (GwTune order:
+//   angle step, position step, angle home, position home, flash ms, position-reset hold ms, wheel
+//   hold ms, radio hold ms)   55 last command seq applied   56 firmware version   63 crc8 of 0-62
+// Commands (cmd, seq, len, payload, crc8):
+#define GW_FW_VERSION 11
+#define LINK_SET_STAGE 0x01        // [stage 0-4]
+#define LINK_SET_ANGLE 0x02        // [int8]
+#define LINK_SET_POS 0x03          // [int8]
+#define LINK_SET_PALETTE 0x04      // [R,G,B x5] written to the mouse and kept as the built-in palette
+#define LINK_SET_DPI 0x05          // [X,Y uint16 x5]
+#define LINK_SET_TUNING 0x06       // [12 bytes, GwTune order]
+#define LINK_RADIO_STATE 0x07      // [0 off, 1 on] the QT Py switched its radio: LED confirmation
+#define LINK_REFRESH 0x08          // [] read stage, angle, position, colours, DPI table from the mouse
+#define LINK_FLASH 0x09            // [R,G,B] test flash
+#define LINK_PALETTE_DEFAULT 0x0A  // [R,G,B x5] built-in palette only (QT Py restoring it after a reboot)
+
+static uint8_t link_seq = 0;
+static uint8_t radio_toggles = 0;
+static bool tune_set = false;
+static bool palette_default_set = false;
+
+static void put16(uint8_t* p, uint16_t v) {
+    p[0] = v & 0xFF;
+    p[1] = v >> 8;
+}
+static uint16_t get16(const uint8_t* p) {
+    return p[0] | p[1] << 8;
+}
+
+void gw_link_status(uint8_t* s) {
+    memset(s, 0, GW_LINK_STATUS_LEN);
+    s[0] = 'G';
+    s[1] = 1;
+    s[2] = (tune_set ? 1 : 0) | (palette_default_set ? 2 : 0) | ((rs_refresh_next >= 0) ? 4 : 0);
+    const RsSetting& a = rs_settings[RS_ANGLE];
+    const RsSetting& p = rs_settings[RS_POS];
+    s[3] = (family_present(Family::RS) ? 1 : 0) | (family_present(Family::VUK) ? 2 : 0) | (rs_reads_worked ? 4 : 0) |
+           ((rs_cur_stage >= 0) ? 8 : 0) | (a.known ? 16 : 0) | (p.known ? 32 : 0) | (led.palette_read ? 64 : 0) |
+           ((rs_dpi_known == (1 << RS_DPI_STAGES) - 1) ? 128 : 0);
+    s[4] = (rs_cur_stage >= 0) ? rs_cur_stage : 0xFF;
+    s[5] = (uint8_t) (int8_t) a.value;
+    s[6] = (uint8_t) (int8_t) p.value;
+    s[7] = radio_toggles;
+    for (int i = 0; i < RS_DPI_STAGES; i++) {
+        uint32_t c = led.palette[i];
+        s[8 + 3 * i] = c >> 16;
+        s[9 + 3 * i] = c >> 8;
+        s[10 + 3 * i] = c;
+        put16(s + 23 + 4 * i, rs_dpi_x[i]);
+        put16(s + 25 + 4 * i, rs_dpi_y[i]);
+    }
+    s[43] = tune.angle_step;
+    s[44] = tune.pos_step;
+    s[45] = (uint8_t) tune.angle_home;
+    s[46] = (uint8_t) tune.pos_home;
+    put16(s + 47, tune.flash_ms);
+    put16(s + 49, tune.pos_hold_ms);
+    put16(s + 51, tune.wheel_hold_ms);
+    put16(s + 53, tune.radio_hold_ms);
+    s[55] = link_seq;
+    s[56] = GW_FW_VERSION;
+    s[63] = gw_crc8(s, 63);
+}
+
+static bool tuning_ok(const uint8_t* d) {
+    int8_t ah = (int8_t) d[2], ph = (int8_t) d[3];
+    uint16_t fl = get16(d + 4), poh = get16(d + 6), wh = get16(d + 8), rh = get16(d + 10);
+    return (d[0] >= 1) && (d[0] <= 10) && (d[1] >= 1) && (d[1] <= 25) && (ah >= RS_ANGLE_MIN) && (ah <= RS_ANGLE_MAX) &&
+           (ph >= RS_POS_MIN) && (ph <= RS_POS_MAX) && (fl >= 100) && (fl <= 5000) && (poh >= 150) && (poh <= 3000) &&
+           (wh <= 3000) && (rh >= 200) && (rh <= 3000);
+}
+
+// one command frame from the QT Py; true if it was valid (it's then acknowledged in status byte 55)
+bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
+    if ((n < 4) || (f[2] + 4 != n) || (gw_crc8(f, n - 1) != f[n - 1])) {
+        diag(0x751, n);
+        return false;
+    }
+    uint8_t cmd = f[0], seq = f[1], len = f[2];
+    const uint8_t* d = f + 3;
+    if (seq == link_seq) {
+        return true;  // a repeat of the last command (its ack was missed)
+    }
+    bool rs = family_present(Family::RS);
+    switch (cmd) {
+        case LINK_SET_STAGE:
+            if ((len == 1) && (d[0] < RS_DPI_STAGES) && rs) {
+                led_restore_now();
+                led.requested = false;
+                rs_write_value(RS_ADDR_DPI_STAGE, d[0]);
+                rs_cur_stage = d[0];
+                rs_dpi_last = d[0];
+            }
+            break;
+        case LINK_SET_ANGLE:
+        case LINK_SET_POS:
+            if ((len == 1) && rs) {
+                rs_setting_set(rs_settings[(cmd == LINK_SET_ANGLE) ? RS_ANGLE : RS_POS], (int8_t) d[0], now);
+            }
+            break;
+        case LINK_SET_PALETTE:
+        case LINK_PALETTE_DEFAULT:
+            if (len == 3 * RS_DPI_STAGES) {
+                if (cmd == LINK_SET_PALETTE) {
+                    led_restore_now();
+                }
+                for (int i = 0; i < RS_DPI_STAGES; i++) {
+                    uint32_t c = (uint32_t) d[3 * i] << 16 | d[3 * i + 1] << 8 | d[3 * i + 2];
+                    gw_palette_default[i] = c;
+                    if (cmd == LINK_SET_PALETTE) {
+                        led.palette[i] = c;
+                        if (rs) {
+                            rs_write_colour(i, c);
+                        }
+                    } else if (!led.palette_read) {
+                        led.palette[i] = c;  // nothing better yet
+                    }
+                }
+                palette_default_set = true;
+            }
+            break;
+        case LINK_SET_DPI:
+            if ((len == 4 * RS_DPI_STAGES) && rs) {
+                bool ok = true;
+                for (int i = 0; i < 2 * RS_DPI_STAGES; i++) {
+                    uint16_t v = get16(d + 2 * i);
+                    ok = ok && (v >= RS_DPI_MIN) && (v <= RS_DPI_MAX);
+                }
+                if (ok) {
+                    for (int i = 0; i < RS_DPI_STAGES; i++) {
+                        rs_dpi_x[i] = get16(d + 4 * i);
+                        rs_dpi_y[i] = get16(d + 4 * i + 2);
+                        rs_write_dpi(i, rs_dpi_x[i], rs_dpi_y[i]);
+                    }
+                    rs_dpi_known = (1 << RS_DPI_STAGES) - 1;
+                    if (rs_cur_stage >= 0) {
+                        rs_write_value(RS_ADDR_DPI_STAGE, rs_cur_stage);  // re-select, so a changed current stage applies
+                    }
+                }
+            }
+            break;
+        case LINK_SET_TUNING:
+            if ((len == 12) && tuning_ok(d)) {
+                tune.angle_step = d[0];
+                tune.pos_step = d[1];
+                tune.angle_home = (int8_t) d[2];
+                tune.pos_home = (int8_t) d[3];
+                tune.flash_ms = get16(d + 4);
+                tune.pos_hold_ms = get16(d + 6);
+                tune.wheel_hold_ms = get16(d + 8);
+                tune.radio_hold_ms = get16(d + 10);
+                rs_settings[RS_ANGLE].home = tune.angle_home;
+                rs_settings[RS_POS].home = tune.pos_home;
+                tune_set = true;
+            }
+            break;
+        case LINK_RADIO_STATE:
+            if ((len == 1) && rs) {
+                rs_led_flash(d[0] ? GW_LED_RADIO_ON : GW_LED_LIMIT, now);
+            }
+            break;
+        case LINK_REFRESH:
+            if (rs) {
+                rs_refresh_next = 0;
+            }
+            break;
+        case LINK_FLASH:
+            if ((len == 3) && rs) {
+                rs_led_flash((uint32_t) d[0] << 16 | d[1] << 8 | d[2], now);
+            }
+            break;
+        default:
+            diag(0x752, cmd);
+            break;
+    }
+    link_seq = seq;
+    return true;
+}
+
 // ---------------------------------------------------------------------------------------------
 
 static int32_t prev_regs[8] = { 0 };
 static uint32_t sensor_down_at = 0;
 static bool sensor_hold_fired = false;
+static uint32_t dpi_down_at = 0;
+static bool dpi_hold_fired = false;
 static uint32_t middle_down_at = 0;
 
 static bool rose(const int32_t* regs, int reg) {
     return (regs[reg - 1] != 0) && (prev_regs[reg - 1] == 0);
+}
+
+static bool fell(const int32_t* regs, int reg) {
+    return (regs[reg - 1] == 0) && (prev_regs[reg - 1] != 0);
 }
 
 // a setting step, with its LED flash: the setting's colour, or off when nothing could change
@@ -1170,11 +1478,32 @@ static void rs_step_with_flash(int setting, int dir, uint32_t colour, uint32_t n
     rs_led_flash((r == 0) ? GW_LED_LIMIT : colour, now);
 }
 
+static void link_tick(uint32_t now) {
+    static bool up = false;
+    static uint32_t status_at = 0;
+    if (!up) {
+        gw_link_init();
+        up = true;
+    }
+    uint8_t f[GW_LINK_FRAME_MAX];
+    uint8_t n;
+    if (gw_link_take_frame(f, &n)) {
+        gw_link_apply(f, n, now);
+        status_at = now - 20000;  // show the ack right away
+    }
+    if ((now - status_at) >= 20000) {
+        status_at = now;
+        uint8_t s[GW_LINK_STATUS_LEN];
+        gw_link_status(s);
+        gw_link_set_status(s);
+    }
+}
+
 void gw_tick(const int32_t* regs) {
     uint32_t now = time_us_32();
     bool rs = family_present(Family::RS);
     // Mid+Left. VUK: sensor toggle on the press. Warg: a tap resets the angle (on release), a
-    // hold resets the position (as soon as it has lasted GW_POS_RESET_HOLD_US).
+    // hold resets the position (as soon as it has lasted the position-reset hold).
     int32_t sensor = regs[GW_SENSOR_REGISTER - 1];
     if (rose(regs, GW_SENSOR_REGISTER)) {
         trigger_count++;
@@ -1193,18 +1522,29 @@ void gw_tick(const int32_t* regs) {
             diag(1, trigger_count);
         }
     }
-    if ((sensor != 0) && !sensor_hold_fired && ((now - sensor_down_at) >= GW_POS_RESET_HOLD_US)) {
+    if ((sensor != 0) && !sensor_hold_fired && ((now - sensor_down_at) >= tune.pos_hold_ms * 1000u)) {
         sensor_hold_fired = true;
         if (rs) {
             rs_setting_reset(rs_settings[RS_POS], now);
             rs_led_flash(GW_LED_RESET, now);
         }
     }
-    if ((sensor == 0) && (prev_regs[GW_SENSOR_REGISTER - 1] != 0) && !sensor_hold_fired && rs) {
+    if (fell(regs, GW_SENSOR_REGISTER) && !sensor_hold_fired && rs) {
         rs_setting_reset(rs_settings[RS_ANGLE], now);
         rs_led_flash(GW_LED_RESET, now);
     }
+    // Mid+Right: a tap steps the DPI stage (on release), a hold switches the QT Py's radio (the QT
+    // Py sees the count go up in the status block).
     if (rose(regs, GW_DPI_REGISTER)) {
+        dpi_down_at = now;
+        dpi_hold_fired = false;
+    }
+    if ((regs[GW_DPI_REGISTER - 1] != 0) && !dpi_hold_fired && ((now - dpi_down_at) >= tune.radio_hold_ms * 1000u)) {
+        dpi_hold_fired = true;
+        radio_toggles++;
+        diag(0x750, radio_toggles);
+    }
+    if (fell(regs, GW_DPI_REGISTER) && !dpi_hold_fired) {
         dpi_trigger_count++;
         diag(3, dpi_trigger_count);
         if ((dpi_phase == DpiPhase::IDLE) && family_present(Family::VUK)) {
@@ -1236,12 +1576,13 @@ void gw_tick(const int32_t* regs) {
     // one step per frame with wheel movement (notches arrive in separate reports; the size isn't
     // trusted, a high-resolution wheel would report 120 per notch)
     int32_t wheel = regs[GW_WHEEL_REGISTER - 1];
-    if ((wheel != 0) && (regs[GW_MIDDLE_REGISTER - 1] != 0) && ((now - middle_down_at) >= GW_WHEEL_HOLD_US) && rs) {
+    if ((wheel != 0) && (regs[GW_MIDDLE_REGISTER - 1] != 0) && ((now - middle_down_at) >= tune.wheel_hold_ms * 1000u) && rs) {
         rs_step_with_flash(RS_ANGLE, (wheel > 0) ? 1 : -1, GW_LED_ANGLE, now);
     }
     memcpy(prev_regs, regs, sizeof(prev_regs));
     dpi_tick(now);
     rs_tick(now);
+    link_tick(now);
     // Also dump everything every 3 s while the Monitor tab is open, so a device that
     // never mounts (no Mid+Left possible) still shows its enumeration trace.
     static uint32_t last_dump_us = 0;

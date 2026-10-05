@@ -8,7 +8,11 @@
 
 #define FEATHER_HOST_BOARD
 
-#define GPIO_VALID_PINS_BASE 0b00111111000000001101111111111111
+// GPIO2/3 (STEMMA QT) are left out: they're the QT Py settings link (gw_link.cc)
+#define GPIO_VALID_PINS_BASE 0b00111111000000001101111111110011
+#define GW_LINK_I2C i2c1
+#define GW_LINK_SDA 2
+#define GW_LINK_SCL 3
 
 // On some samples, the xosc can take longer to stabilize than is usual
 #ifndef PICO_XOSC_STARTUP_DELAY_MULTIPLIER

@@ -10,8 +10,10 @@
 
 // 0 -> nonzero: VUK front/rear sensor toggle. Warg: sensor angle back to GW_ANGLE_HOME.
 #define GW_SENSOR_REGISTER 1
-// 0 -> nonzero: next DPI stage, wrapping (VUK: on the active sensor).
+// Mid+Right: a tap steps to the next DPI stage, wrapping (VUK: on the active sensor), on release;
+// held for GW_RADIO_HOLD_MS it switches the QT Py settings page's radio instead.
 #define GW_DPI_REGISTER 2
+#define GW_RADIO_HOLD_MS 600
 // 0 -> nonzero: Warg virtual sensor position to the next multiple of 5 down / up
 // (wheel layout: Mid+Fwd / Mid+Back, since lower values move the sensor forward).
 #define GW_POS_DOWN_REGISTER 3
@@ -35,5 +37,8 @@ void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* repor
 void gw_on_hid_mount(uint8_t dev_addr, uint8_t instance, uint8_t itf_num, uint16_t desc_len);
 void gw_on_hid_umount(uint8_t dev_addr, uint8_t instance);
 void gw_probe_interface(const uint8_t* desc_itf, uint16_t max_len);
+// QT Py settings link (gw_link.h): the status block it reads, and a command frame it wrote
+void gw_link_status(uint8_t* status);
+bool gw_link_apply(const uint8_t* frame, uint8_t len, uint32_t now);
 
 #endif

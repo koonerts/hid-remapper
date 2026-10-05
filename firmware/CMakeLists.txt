@@ -33,6 +33,7 @@ add_executable(remapper
     src/remapper.cc
     src/remapper_single.cc
     src/gw_mouse.cc
+    src/gw_link.cc
     src/crc.cc
     src/descriptor_parser.cc
     src/tinyusb_stuff.cc
@@ -67,6 +68,8 @@ target_link_libraries(remapper
     hardware_pio
     hardware_dma
     hardware_flash
+    hardware_i2c
+    pico_i2c_slave
     $<$<STREQUAL:${PICO_BOARD},remapper_v8>:hardware_adc>
     tinyusb_device
     tinyusb_host
@@ -90,6 +93,7 @@ add_executable(remapper_dual_a
     src/main.cc
     src/remapper.cc
     src/gw_mouse.cc
+    src/gw_link.cc
     src/remapper_dual_a.cc
     src/crc.cc
     src/descriptor_parser.cc
@@ -118,6 +122,8 @@ target_include_directories(remapper_dual_a PRIVATE
 target_link_libraries(remapper_dual_a
     pico_stdlib
     hardware_flash
+    hardware_i2c
+    pico_i2c_slave
     $<$<STREQUAL:${PICO_BOARD},remapper_v7>:hardware_i2c>
     hardware_pio
     tinyusb_device
@@ -161,6 +167,7 @@ add_executable(remapper_serial
     src/main.cc
     src/remapper.cc
     src/gw_mouse.cc
+    src/gw_link.cc
     src/remapper_serial.cc
     src/crc.cc
     src/descriptor_parser.cc
@@ -182,6 +189,8 @@ target_link_libraries(remapper_serial
     pico_stdlib
     pico_unique_id
     hardware_flash
+    hardware_i2c
+    pico_i2c_slave
     tinyusb_device
     tinyusb_board
 )
