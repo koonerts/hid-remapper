@@ -7,12 +7,15 @@
 // itself off after RADIO_IDLE_MS without a page request. With no saved network, or when the saved
 // one can't be joined, it opens its own network "GW-Settings" for setup (192.168.4.1).
 // Page: http://gwolves.local (or the IP shown on the setup page).
-// LED: off = radio off, yellow = joining, blue = on your network, magenta = setup network,
-// red blink = no answer from the Feather.
+// LED: off = radio off, yellow = joining, blue = on your network, magenta = setup network.
+// Blinking over that while the Feather isn't answering properly: red = nothing answers at all,
+// orange = something answers, but not with a valid status block.
+// New firmware over Wi-Fi: POST the .bin to /api/update (home network only); see flash-qtpy.ps1.
 
 #include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
+#include <Update.h>
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -22,7 +25,9 @@
 #define LINK_ADDR 0x42
 #define LINK_SDA 41  // STEMMA QT (Wire1)
 #define LINK_SCL 40
+#define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 64
+#define QT_FW 2        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define JOIN_TIMEOUT_MS 15000
@@ -53,6 +58,10 @@ static bool link_up = false;
 static bool toggles_known = false;
 static uint8_t last_toggles = 0;
 static bool feather_init_done = false;  // tuning/palette pushed since the Feather (re)started
+// link diagnostics (/api/status "diag")
+static uint32_t d_polls = 0, d_ok = 0, d_short = 0, d_bad = 0;
+static uint8_t d_last_n = 0, d_b0 = 0, d_b1 = 0;
+static bool last_answered = false;  // the last read returned a full block, valid or not
 
 enum class Radio : uint8_t { OFF, JOINING, STA, AP };
 static Radio radio = Radio::OFF;
@@ -147,19 +156,28 @@ static void pump_cmds() {
 
 static bool poll_status() {
     uint8_t b[STATUS_LEN];
+    d_polls++;
     uint8_t n = Wire1.requestFrom((uint8_t) LINK_ADDR, (uint8_t) STATUS_LEN);
+    d_last_n = n;
     if (n != STATUS_LEN) {
         while (Wire1.available()) {
             Wire1.read();
         }
+        d_short++;
+        last_answered = false;
         return false;
     }
     for (int i = 0; i < STATUS_LEN; i++) {
         b[i] = Wire1.read();
     }
+    last_answered = true;
+    d_b0 = b[0];
+    d_b1 = b[1];
     if ((b[0] != 'G') || (b[1] != 1) || (crc8(b, 63) != b[63])) {
+        d_bad++;
         return false;
     }
+    d_ok++;
     memcpy(st, b, STATUS_LEN);
     st_ok = true;
     st_at = millis();
@@ -177,28 +195,38 @@ static uint16_t u16(uint8_t i) {
 
 static void led(uint8_t r, uint8_t g, uint8_t b) {
 #ifdef PIN_NEOPIXEL
+    static uint32_t shown = 0xffffffff;
+    uint32_t v = (uint32_t) r << 16 | (uint32_t) g << 8 | b;
+    if (v == shown) {
+        return;
+    }
+    shown = v;
     rgbLedWrite(PIN_NEOPIXEL, r, g, b);
 #endif
 }
 
+// the radio's colour; while the link is down it alternates with red (nothing answers) or orange
+// (answers, but not with a valid block)
 static void show_state() {
     static uint32_t blink = 0;
-    if (!link_up && (millis() - blink > 500)) {
+    static bool on = false;
+    if (millis() - blink > 500) {
         blink = millis();
-        static bool on = false;
         on = !on;
-        led(on ? 12 : 0, 0, 0);
-        return;
     }
-    if (!link_up) {
-        return;
-    }
+    uint8_t r = 0, g = 0, b = 0;
     switch (radio) {
-        case Radio::OFF: led(0, 0, 0); break;
-        case Radio::JOINING: led(12, 8, 0); break;
-        case Radio::STA: led(0, 0, 14); break;
-        case Radio::AP: led(12, 0, 12); break;
+        case Radio::OFF: break;
+        case Radio::JOINING: r = 12; g = 8; break;
+        case Radio::STA: b = 14; break;
+        case Radio::AP: r = 12; b = 12; break;
     }
+    if (!link_up && on) {
+        r = 14;
+        g = last_answered ? 5 : 0;
+        b = 0;
+    }
+    led(r, g, b);
 }
 
 // ---- radio
@@ -357,7 +385,7 @@ static void ok_json(bool ok, const char* err = nullptr) {
 // not counted as use: an open tab alone shouldn't keep the radio on while playing
 static void h_status() {
     String j;
-    j.reserve(900);
+    j.reserve(1200);
     j += "{\"link\":";
     j += link_up ? "true" : "false";
     if (st_ok) {
@@ -386,6 +414,10 @@ static void h_status() {
              ",\"flash_ms\":" + String(u16(47)) + ",\"pos_hold_ms\":" + String(u16(49)) +
              ",\"wheel_hold_ms\":" + String(u16(51)) + ",\"radio_hold_ms\":" + String(u16(53)) + "}";
     }
+    j += ",\"qt_fw\":" + String(QT_FW);
+    j += ",\"diag\":{\"polls\":" + String(d_polls) + ",\"ok\":" + String(d_ok) + ",\"short\":" + String(d_short) +
+         ",\"bad\":" + String(d_bad) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
+         ",\"up_s\":" + String(millis() / 1000) + "}";
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
     j += (radio == Radio::STA) ? "sta" : (radio == Radio::AP) ? "ap" : (radio == Radio::JOINING) ? "joining" : "off";
@@ -529,6 +561,45 @@ static void h_wifi() {
     radio_on();
 }
 
+// POST /api/update  (multipart, one file field holding the .bin): new QT Py firmware over Wi-Fi.
+// Home network only, never on the open setup network. Comes back onto Wi-Fi after the restart.
+static bool upd_started = false;
+static bool upd_ok = false;
+
+static void h_update_upload() {
+    HTTPUpload& up = server.upload();
+    if (up.status == UPLOAD_FILE_START) {
+        upd_ok = false;
+        upd_started = (radio == Radio::STA) && Update.begin(UPDATE_SIZE_UNKNOWN);
+    } else if (up.status == UPLOAD_FILE_WRITE) {
+        touch();
+        if (upd_started && (Update.write(up.buf, up.currentSize) != up.currentSize)) {
+            Update.abort();
+            upd_started = false;
+        }
+    } else if (up.status == UPLOAD_FILE_END) {
+        upd_ok = upd_started && Update.end(true);
+        upd_started = false;
+    } else if (up.status == UPLOAD_FILE_ABORTED) {
+        if (upd_started) {
+            Update.abort();
+        }
+        upd_started = false;
+    }
+}
+
+static void h_update_done() {
+    touch();
+    if (!upd_ok) {
+        return ok_json(false, (radio == Radio::STA) ? "update failed" : "only on the home network");
+    }
+    upd_ok = false;
+    prefs.putBool("resume", true);
+    ok_json(true);
+    delay(400);
+    ESP.restart();
+}
+
 static void h_page() {
     touch();
     server.send_P(200, "text/html", PAGE_HTML);
@@ -552,8 +623,8 @@ void setup() {
     led(0, 0, 0);
     WiFi.mode(WIFI_OFF);
     prefs.begin("gw", false);
-    Wire1.begin(LINK_SDA, LINK_SCL, 100000);
-    Wire1.setTimeOut(20);
+    Wire1.begin(LINK_SDA, LINK_SCL, LINK_HZ);
+    Wire1.setTimeOut(50);
     server.on("/", HTTP_GET, h_page);
     server.on("/api/status", HTTP_GET, h_status);
     server.on("/api/set", HTTP_POST, h_set);
@@ -564,7 +635,12 @@ void setup() {
     server.on("/api/flash", HTTP_POST, h_flash);
     server.on("/api/radio_off", HTTP_POST, h_radio_off);
     server.on("/api/wifi", HTTP_POST, h_wifi);
+    server.on("/api/update", HTTP_POST, h_update_done, h_update_upload);
     server.onNotFound(h_not_found);
+    if (prefs.getBool("resume", false)) {  // restarted by an update: back onto Wi-Fi
+        prefs.putBool("resume", false);
+        radio_on();
+    }
 }
 
 void loop() {
