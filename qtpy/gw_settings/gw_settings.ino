@@ -29,7 +29,7 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 64
-#define QT_FW 5        // this firmware's number, shown in /api/status
+#define QT_FW 6        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -281,6 +281,7 @@ static void radio_on(bool manual = true) {
     radio_since = millis();
     last_http = millis();
     if (ssid.length()) {
+        WiFi.setHostname("gwolves");  // the name the router lists it under (set before the mode)
         WiFi.mode(WIFI_STA);
         WiFi.setSleep(true);
         WiFi.begin(ssid.c_str(), prefs.getString("pass", "").c_str());
