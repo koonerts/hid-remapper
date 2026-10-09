@@ -683,7 +683,13 @@ static uint8_t rs_wq_head = 0;
 static uint8_t rs_wq_n = 0;
 static int32_t rs_wq_drops = 0;
 
+static bool rs_refresh_reading();  // a refresh read is in flight (defined with the reads below)
+static void rs_mark_stale();
+
 static void rs_write(uint16_t addr, const uint8_t* data, uint8_t len) {
+    if (rs_refresh_reading()) {
+        rs_mark_stale();
+    }
     if (rs_wq_n == RS_WQ) {
         rs_wq_drops++;
         diag(0x744, rs_wq_drops);
@@ -902,16 +908,17 @@ enum class RsRead : uint8_t {
 static const uint16_t rs_opt_addr[RS_OPTS] = { RS_ADDR_POLL, RS_ADDR_LOD, RS_ADDR_SNAP, RS_ADDR_SYNC, RS_ADDR_SPDT };
 static uint8_t rs_opt_val[RS_OPTS];
 static uint8_t rs_opt_known = 0;  // bit n = rs_opt_val[n] read from or written to the mouse
-static uint32_t rs_opt_set_at[RS_OPTS];  // when the QT Py last set it (a read started before that is stale)
 
-// only the values the web driver itself writes
-static bool rs_opt_ok(uint8_t k, uint8_t v) {
+
+// only the values the web driver itself writes; reading, SPDT 0 (both off) is accepted too, since the
+// web driver may write it although the capture never had it
+static bool rs_opt_ok(uint8_t k, uint8_t v, bool write = true) {
     switch (k) {
         case 0: return (v == 0x01) || (v == 0x02) || (v == 0x04) || (v == 0x08) || (v == 0x10) || (v == 0x20) || (v == 0x40);
         case 1: return (v >= 1) && (v <= 5);
         case 2:
         case 3: return v <= 1;
-        case 4: return (v >= 1) && (v <= 3);  // both off (0) never captured
+        case 4: return write ? ((v >= 1) && (v <= 3)) : (v <= 3);
         default: return false;
     }
 }
@@ -960,7 +967,11 @@ static int32_t rs_fail = 0;
 static bool rs_reads_worked = false;  // a read was answered since the mouse was plugged in
 static int8_t rs_refresh_next = -1;   // next refresh item; -1 = no refresh running
 static int8_t rs_refresh_item = -1;   // the item whose read is in flight; -1 = none (or cancelled)
-static uint32_t rs_refresh_at = 0;    // when that read went out
+// A write queued while a refresh read is in flight reaches the mouse after the read, so that reply holds
+// the old value: it is dropped and the item read again.
+static bool rs_refresh_stale = false;
+// a REFRESH asked for while a read was in flight: that read timing out doesn't pause reads
+static bool rs_refresh_asked = false;
 
 static bool rs_dpi_wanted = false;
 static int rs_dpi_stage = -1;  // 0-based, as read; -1 = not read
@@ -1062,6 +1073,7 @@ void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* repor
 }
 
 static void rs_start_read(RsRead what, uint16_t addr, uint8_t len, uint32_t now) {
+    rs_refresh_asked = false;
     rs_read = what;
     rs_read_addr = addr;
     rs_read_len = len;
@@ -1078,6 +1090,7 @@ static void rs_start_read(RsRead what, uint16_t addr, uint8_t len, uint32_t now)
 
 // a status query or probe whose reply is kept as it is (r = the 16 bytes after the report ID)
 static void rs_start_exchange(RsRead what, const uint8_t* r, uint32_t now) {
+    rs_refresh_asked = false;
     rs_read = what;
     rs_read_dev = rs_read_target();
     rs_cap_cmd = r[0];
@@ -1189,9 +1202,17 @@ static void rs_setting_read_done(RsSetting& s, int32_t raw, uint32_t now) {
     s.changed_at = now;
 }
 
+static bool rs_refresh_reading() {
+    return ((rs_read == RsRead::REFRESH) || (rs_read == RsRead::INFO)) && (rs_refresh_item >= 0);
+}
+
+static void rs_mark_stale() {
+    rs_refresh_stale = true;
+}
+
 static void rs_refresh_start(int8_t item, uint32_t now) {
     rs_refresh_item = item;
-    rs_refresh_at = now;
+    rs_refresh_stale = false;
     if (item < 3) {
         static const uint16_t addr[3] = { RS_ADDR_DPI_STAGE, 0x00bd, 0x1b4a };
         rs_try_read(RsRead::REFRESH, addr[item], 2, now);
@@ -1217,6 +1238,15 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
         return;
     }
     bool current = (rs_refresh_next == item);  // not restarted or cancelled meanwhile
+    if (rs_refresh_stale) {
+        rs_refresh_stale = false;
+        if (ok && current) {
+            rs_refresh_next = item;  // something was written meanwhile: read this item again
+        } else if (!ok && current) {
+            rs_refresh_next = -1;
+        }
+        return;
+    }
     if (!ok) {
         if (current) {
             rs_refresh_next = -1;  // the mouse doesn't answer: stop here
@@ -1252,9 +1282,7 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
         rs_dpi_known |= 1 << st;
     } else {
         int k = item - 3 - 2 * RS_DPI_STAGES;
-        // anything outside the known values stays unknown; a value set after this read went out wins
-        bool stale = rs_opt_set_at[k] && ((int32_t) (rs_opt_set_at[k] - rs_refresh_at) >= 0);
-        if (rs_opt_ok(k, d[0]) && !stale) {
+        if (rs_opt_ok(k, d[0], false)) {  // anything else stays unknown
             rs_opt_val[k] = d[0];
             rs_opt_known |= 1 << k;
         }
@@ -1345,7 +1373,7 @@ static void rs_tick(uint32_t now) {
             rs_read_done(true, now);
         } else if ((int32_t) (now - rs_deadline) >= 0) {
             // a status query or probe going unanswered says nothing about whether reads work
-            if ((rs_read != RsRead::INFO) && (rs_read != RsRead::RAW)) {
+            if ((rs_read != RsRead::INFO) && (rs_read != RsRead::RAW) && !rs_refresh_asked) {
                 rs_fail |= 8;
                 rs_noread_dev = rs_read_dev;
                 rs_noread_at = now;
@@ -1633,6 +1661,7 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
         case LINK_REFRESH:
             if (rs) {
                 rs_noread_dev = 0;  // asked for by hand: try again even if the last read timed out
+                rs_refresh_asked = (rs_read != RsRead::NONE);
                 rs_refresh_next = 0;
             }
             break;
@@ -1675,7 +1704,7 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                 rs_write_value(rs_opt_addr[d[0]], d[1]);
                 rs_opt_val[d[0]] = d[1];
                 rs_opt_known |= 1 << d[0];
-                rs_opt_set_at[d[0]] = now | 1;
+
             }
             break;
         default:

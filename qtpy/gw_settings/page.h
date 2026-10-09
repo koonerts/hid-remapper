@@ -193,8 +193,8 @@ const l=k==='spdt_l'?val==='1':S.opt.spdt_l,r=k==='spdt_r'?val==='1':S.opt.spdt_
 if(!l&&!r){toast('Both SPDT off isn\'t supported yet (not in the captures)',1);return}
 set.spdt_l=l;set.spdt_r=r;key='spdt';val=(l?1:0)|(r?2:0)}
 else set[k]=(k==='snap'||k==='sync')?val==='1':Number(val);
-for(const x in set){optSet[x]={v:set[x],t:now};S.opt[x]=set[x]}drawOpt();
-post('/api/opt?k='+key+'&v='+val).then(r=>{say(r,'Sent to the mouse');if(!r.ok){for(const x in set)delete optSet[x]}})}}));
+const prev={};for(const x in set){prev[x]=S.opt[x];optSet[x]={v:set[x],t:now};S.opt[x]=set[x]}drawOpt();
+post('/api/opt?k='+key+'&v='+val).then(r=>{say(r,'Sent to the mouse');if(!r.ok){for(const x in set){delete optSet[x];if(S.opt)S.opt[x]=prev[x]}drawOpt()}})}}));
 document.querySelectorAll('#keep button').forEach(b=>{b.onclick=()=>post('/api/wifimode?m='+b.dataset.m).then(r=>say(r,'Saved'))});
 poll();
 </script></body></html>)HTML";

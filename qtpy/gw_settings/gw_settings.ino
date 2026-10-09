@@ -475,8 +475,8 @@ static const uint16_t POLL_HZ[7] = { 125, 250, 500, 1000, 2000, 4000, 8000 };
 static const uint8_t LOD_TENTHS[5] = { 7, 9, 12, 14, 16 };
 
 static String opt_json() {
-    if (!st_ok || (st[56] < 14)) {
-        return "null";  // the Feather's firmware predates these settings
+    if (!st_ok || !link_up || (st[56] < 14)) {
+        return "null";  // no current status from the Feather, or its firmware predates these settings
     }
     uint8_t known = st[62];
     String o = "{\"poll\":";
@@ -524,7 +524,10 @@ static String ext_json() {
 // POST /api/probe?cmd=08&addr=00e1&len=2 | cmd=04   one read or the status query, reply in /api/status "probe"
 static void h_probe() {
     touch();
-    if (!st_ok || !st_ext) {
+    if (!st_ok || !link_up) {
+        return ok_json(false, "no answer from the Feather");
+    }
+    if (!st_ext) {
         return ok_json(false, "needs Feather firmware v14");
     }
     long cmd = strtol(server.arg("cmd").c_str(), nullptr, 16);
@@ -545,7 +548,10 @@ static void h_probe() {
 // POST /api/opt?k=poll&v=1000 | k=lod&v=0.7..1.6 | k=snap|sync&v=0|1 | k=spdt&v=0-3 (bit 0 left, bit 1 right)
 static void h_opt() {
     touch();
-    if (!st_ok || (st[56] < 14)) {
+    if (!st_ok || !link_up) {
+        return ok_json(false, "no answer from the Feather");
+    }
+    if (st[56] < 14) {
         return ok_json(false, "needs Feather firmware v14");
     }
     String k = server.arg("k"), v = server.arg("v");
