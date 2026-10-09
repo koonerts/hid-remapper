@@ -516,7 +516,9 @@ static String ext_json() {
     uint8_t il = (st[66] <= 24) ? st[66] : 0, pl = (st[93] <= 24) ? st[93] : 0;
     static const char* const PSTATE[4] = { "none", "waiting", "answered", "no answer" };
     return ",\"info\":{\"n\":" + String(st[65]) + ",\"hex\":\"" + hex_bytes(st + 67, il) + "\"}" +
-           ",\"probe\":{\"n\":" + String(st[91]) + ",\"state\":\"" + String(PSTATE[st[92] & 3]) + "\",\"hex\":\"" + hex_bytes(st + 94, pl) + "\"}";
+           ",\"probe\":{\"n\":" + String(st[91]) + ",\"state\":\"" + String(PSTATE[st[92] & 3]) + "\",\"cmd\":" + String(st[119]) +
+           ",\"addr\":\"" + hex_bytes(st + 120, 2) + "\",\"len\":" + String(st[122]) + ",\"hex\":\"" + hex_bytes(st + 94, pl) +
+           "\",\"refused\":" + String(st[118]) + ",\"rejected\":" + String(st[123]) + "}";
 }
 
 // POST /api/probe?cmd=08&addr=00e1&len=2 | cmd=04   one read or the status query, reply in /api/status "probe"
@@ -579,7 +581,7 @@ static void h_opt() {
         d[1] = b;
     } else if (k == "spdt") {
         long b;
-        if (!arg_int("v", 0, 3, &b)) {
+        if (!arg_int("v", 1, 3, &b)) {  // both off (0) was never captured; the Feather refuses it too
             return ok_json(false, "bad value");
         }
         d[0] = 4;

@@ -902,6 +902,7 @@ enum class RsRead : uint8_t {
 static const uint16_t rs_opt_addr[RS_OPTS] = { RS_ADDR_POLL, RS_ADDR_LOD, RS_ADDR_SNAP, RS_ADDR_SYNC, RS_ADDR_SPDT };
 static uint8_t rs_opt_val[RS_OPTS];
 static uint8_t rs_opt_known = 0;  // bit n = rs_opt_val[n] read from or written to the mouse
+static uint32_t rs_opt_set_at[RS_OPTS];  // when the QT Py last set it (a read started before that is stale)
 
 // only the values the web driver itself writes
 static bool rs_opt_ok(uint8_t k, uint8_t v) {
@@ -910,7 +911,7 @@ static bool rs_opt_ok(uint8_t k, uint8_t v) {
         case 1: return (v >= 1) && (v <= 5);
         case 2:
         case 3: return v <= 1;
-        case 4: return v <= 3;
+        case 4: return (v >= 1) && (v <= 3);  // both off (0) never captured
         default: return false;
     }
 }
@@ -925,12 +926,17 @@ static uint8_t rs_info[RS_RAW_MAX];  // last reply to 04, report ID first
 static uint8_t rs_info_len = 0;      // 0 = none since the mouse was plugged in
 static uint8_t rs_info_seq = 0;
 // A probe from the QT Py: one read (08) or status query (04), never a write; the reply is passed back.
+// The Feather rebuilds the report itself from the command, address and length.
 static uint8_t rs_raw_req[RS_LEN];
 static bool rs_raw_pending = false;
 static uint8_t rs_raw[RS_RAW_MAX];
 static uint8_t rs_raw_len = 0;
 static uint8_t rs_raw_seq = 0;
-static uint8_t rs_raw_state = 0;  // 0 none, 1 waiting, 2 answered, 3 no answer
+static uint8_t rs_raw_state = 0;  // 0 none, 1 waiting, 2 answered, 3 no answer (refusals don't change it)
+static uint8_t rs_raw_refused = 0;           // probes refused (malformed, not allowed, or one already running)
+static uint8_t rs_raw_cmd = 0, rs_raw_rlen = 0;
+static uint16_t rs_raw_addr = 0;             // the probe rs_raw* describes
+static uint8_t rs_cap_rejects = 0;           // report 8s echoing the command but failing the checks
 // what the reply to an INFO/RAW exchange must echo in its first data byte, and where it's kept meanwhile
 static uint8_t rs_cap_cmd = 0;
 static uint8_t rs_cap[RS_RAW_MAX];
@@ -953,6 +959,8 @@ static int32_t rs_inputs = 0;
 static int32_t rs_fail = 0;
 static bool rs_reads_worked = false;  // a read was answered since the mouse was plugged in
 static int8_t rs_refresh_next = -1;   // next refresh item; -1 = no refresh running
+static int8_t rs_refresh_item = -1;   // the item whose read is in flight; -1 = none (or cancelled)
+static uint32_t rs_refresh_at = 0;    // when that read went out
 
 static bool rs_dpi_wanted = false;
 static int rs_dpi_stage = -1;  // 0-based, as read; -1 = not read
@@ -973,6 +981,7 @@ static void rs_forget(uint8_t dev_addr, bool mounted) {
     rs_info_len = 0;
     rs_reads_worked = false;
     rs_refresh_next = -1;
+    rs_refresh_item = -1;  // a reply still on its way is ignored
     if (led.active && !mounted) {
         // the temporary colour may still be in the mouse: put it back once a mouse is there again
         led.restore_pending = true;
@@ -1023,12 +1032,23 @@ void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* repor
         return;
     }
     if ((rs_read == RsRead::INFO) || (rs_read == RsRead::RAW)) {
-        // kept as it is; the first report 8 that echoes the command sent
-        if (!rs_reply_ready && (report[1] == rs_cap_cmd)) {
-            rs_cap_len = (len < RS_RAW_MAX) ? len : RS_RAW_MAX;
-            memcpy(rs_cap, report, rs_cap_len);
-            rs_reply_ready = true;
+        // kept as it is: the first full report 8 that echoes the command (for a read, also the address
+        // and length) and whose bytes sum to 0x55
+        if (rs_reply_ready || (report[1] != rs_cap_cmd)) {
+            return;
         }
+        uint8_t sum = 0;
+        for (int i = 0; (i < 1 + RS_LEN) && (i < len); i++) {
+            sum += report[i];
+        }
+        bool echo = (rs_cap_cmd != RS_READ) || ((report[3] == (rs_read_addr >> 8)) && (report[4] == (rs_read_addr & 0xFF)) && (report[5] == rs_read_len));
+        if ((len < 1 + RS_LEN) || (sum != 0x55) || !echo) {
+            rs_cap_rejects++;
+            return;
+        }
+        rs_cap_len = (len < RS_RAW_MAX) ? len : RS_RAW_MAX;
+        memcpy(rs_cap, report, rs_cap_len);
+        rs_reply_ready = true;
         return;
     }
     if (rs_inputs < RS_INPUT_LOG) {
@@ -1061,6 +1081,8 @@ static void rs_start_exchange(RsRead what, const uint8_t* r, uint32_t now) {
     rs_read = what;
     rs_read_dev = rs_read_target();
     rs_cap_cmd = r[0];
+    rs_read_addr = (uint16_t) (r[2] << 8 | r[3]);
+    rs_read_len = r[4];
     rs_reply_ready = false;
     rs_deadline = now + RS_RAW_TIMEOUT_US;
     std::map<uint8_t, uint16_t> targets = rs_targets();
@@ -1168,6 +1190,8 @@ static void rs_setting_read_done(RsSetting& s, int32_t raw, uint32_t now) {
 }
 
 static void rs_refresh_start(int8_t item, uint32_t now) {
+    rs_refresh_item = item;
+    rs_refresh_at = now;
     if (item < 3) {
         static const uint16_t addr[3] = { RS_ADDR_DPI_STAGE, 0x00bd, 0x1b4a };
         rs_try_read(RsRead::REFRESH, addr[item], 2, now);
@@ -1184,10 +1208,19 @@ static void rs_refresh_start(int8_t item, uint32_t now) {
     }
 }
 
+// The reply is decoded as the item that was read, whatever rs_refresh_next says now: a REFRESH that
+// came in meanwhile restarted it (next = 0), and an unplug cancelled it (item = -1, reply ignored).
 static void rs_refresh_done(bool ok, const uint8_t* d) {
-    int8_t item = rs_refresh_next;
+    int8_t item = rs_refresh_item;
+    rs_refresh_item = -1;
+    if (item < 0) {
+        return;
+    }
+    bool current = (rs_refresh_next == item);  // not restarted or cancelled meanwhile
     if (!ok) {
-        rs_refresh_next = -1;  // the mouse doesn't answer: stop here
+        if (current) {
+            rs_refresh_next = -1;  // the mouse doesn't answer: stop here
+        }
         return;
     }
     if (item == 0) {
@@ -1219,12 +1252,16 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
         rs_dpi_known |= 1 << st;
     } else {
         int k = item - 3 - 2 * RS_DPI_STAGES;
-        if (rs_opt_ok(k, d[0])) {  // anything else stays unknown
+        // anything outside the known values stays unknown; a value set after this read went out wins
+        bool stale = rs_opt_set_at[k] && ((int32_t) (rs_opt_set_at[k] - rs_refresh_at) >= 0);
+        if (rs_opt_ok(k, d[0]) && !stale) {
             rs_opt_val[k] = d[0];
             rs_opt_known |= 1 << k;
         }
     }
-    rs_refresh_next = (item + 1 < RS_REFRESH_ITEMS) ? item + 1 : -1;
+    if (current) {
+        rs_refresh_next = (item + 1 < RS_REFRESH_ITEMS) ? item + 1 : -1;
+    }
 }
 
 static void rs_read_done(bool ok, uint32_t now) {
@@ -1273,14 +1310,19 @@ static void rs_read_done(bool ok, uint32_t now) {
         case RsRead::REFRESH:
             rs_refresh_done(ok, rs_reply);
             break;
-        case RsRead::INFO:
-            if (ok) {
+        case RsRead::INFO: {
+            int8_t item = rs_refresh_item;
+            rs_refresh_item = -1;
+            if (ok && (item >= 0)) {
                 memcpy(rs_info, rs_cap, rs_cap_len);
                 rs_info_len = rs_cap_len;
                 rs_info_seq++;
             }
-            rs_refresh_next = -1;  // the last refresh item
+            if ((item >= 0) && (rs_refresh_next == item)) {
+                rs_refresh_next = -1;  // the last refresh item
+            }
             break;
+        }
         case RsRead::RAW:
             if (ok) {
                 memcpy(rs_raw, rs_cap, rs_cap_len);
@@ -1318,6 +1360,7 @@ static void rs_tick(uint32_t now) {
                 rs_start_exchange(RsRead::RAW, rs_raw_req, now);
             } else {
                 rs_raw_state = 3;
+                rs_raw_len = 0;
                 rs_raw_seq++;
             }
         } else if (rs_dpi_wanted) {
@@ -1405,7 +1448,9 @@ static void rs_tick(uint32_t now) {
 // Bytes 64-127 (v14+; a QT Py reading only 64 bytes sees the block above unchanged):
 //   64 'X'   65 status query reply count   66 its length (0 = none)   67-90 the reply (report ID first)
 //   91 probe count   92 probe state (0 none, 1 waiting, 2 answered, 3 no answer)   93 reply length
-//   94-117 the reply (report ID first)   118-126 0   127 crc8 of 64-126
+//   94-117 the reply (report ID first)   118 probes refused   119-122 the probe described (cmd, addr
+//   hi, addr lo, len)   123 replies rejected (echoed the command, failed the checks)   124-126 0
+//   127 crc8 of 64-126
 // Commands (cmd, seq, len, payload, crc8):
 #define GW_FW_VERSION 14
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
@@ -1479,6 +1524,12 @@ void gw_link_status(uint8_t* s) {
     s[92] = rs_raw_state;
     s[93] = rs_raw_len;
     memcpy(s + 94, rs_raw, rs_raw_len);
+    s[118] = rs_raw_refused;
+    s[119] = rs_raw_cmd;
+    s[120] = rs_raw_addr >> 8;
+    s[121] = rs_raw_addr & 0xFF;
+    s[122] = rs_raw_rlen;
+    s[123] = rs_cap_rejects;
     s[127] = gw_crc8(s + 64, 63);
 }
 
@@ -1596,15 +1647,26 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
             for (int i = 0; i < len; i++) {
                 sum += d[i];
             }
-            bool ok = (len == RS_LEN) && (sum == 0x55) && (((d[0] == RS_READ) && (d[4] >= 1) && (d[4] <= 10)) || ((d[0] == RS_INFO_CMD) && (d[4] == 0)));
-            if (ok && rs && !rs_raw_pending) {
-                memcpy(rs_raw_req, d, RS_LEN);
+            bool ok = (len == RS_LEN) && (sum == 0x55) && (d[1] == 0);
+            for (int i = 5; ok && (i < RS_LEN - 1); i++) {
+                ok = (d[i] == 0);  // no data bytes, as the web driver sends them
+            }
+            uint8_t cmd = ok ? d[0] : 0, rlen = ok ? d[4] : 0;
+            uint16_t addr = ok ? (uint16_t) (d[2] << 8 | d[3]) : 0;
+            // reads only inside the areas the web driver reads (0000-01ff, 1b00-1bff), at most 10 bytes
+            bool read_ok = (cmd == RS_READ) && (rlen >= 1) && (rlen <= 10) &&
+                           ((addr + rlen <= 0x0200) || ((addr >= 0x1b00) && (addr + rlen <= 0x1c00)));
+            bool query_ok = (cmd == RS_INFO_CMD) && (addr == 0) && (rlen == 0);
+            if ((read_ok || query_ok) && rs && !rs_raw_pending && (rs_read != RsRead::RAW)) {
+                rs_build(rs_raw_req, cmd, addr, NULL, rlen);
+                rs_raw_cmd = cmd;
+                rs_raw_addr = addr;
+                rs_raw_rlen = rlen;
                 rs_raw_pending = true;
                 rs_raw_state = 1;
-            } else {
-                rs_raw_state = 3;  // refused
                 rs_raw_len = 0;
-                rs_raw_seq++;
+            } else {
+                rs_raw_refused++;
             }
             break;
         }
@@ -1613,6 +1675,7 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                 rs_write_value(rs_opt_addr[d[0]], d[1]);
                 rs_opt_val[d[0]] = d[1];
                 rs_opt_known |= 1 << d[0];
+                rs_opt_set_at[d[0]] = now | 1;
             }
             break;
         default:

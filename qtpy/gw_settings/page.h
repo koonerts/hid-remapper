@@ -80,7 +80,7 @@ ul.ch{margin:0 0 14px;padding-left:18px;font-size:14px}ul.ch li{margin:4px 0}
 <div class="card"><div class="hd"><h2>More mouse settings</h2></div>
 <p class="note" id="optnote" hidden></p>
 <div class="opt" id="pv">
-<span>Polling rate (Hz)</span><div class="seg" data-k="poll"><button data-v="250">250</button><button data-v="500">500</button><button data-v="1000">1000</button><button data-v="2000">2000</button><button data-v="4000">4000</button><button data-v="8000">8000</button></div>
+<span>Polling rate (Hz)</span><div class="seg" data-k="poll"><button data-v="125">125</button><button data-v="250">250</button><button data-v="500">500</button><button data-v="1000">1000</button><button data-v="2000">2000</button><button data-v="4000">4000</button><button data-v="8000">8000</button></div>
 <span>Lift-off distance (mm)</span><div class="seg" data-k="lod"><button data-v="0.7">0.7</button><button data-v="0.9">0.9</button><button data-v="1.2">1.2</button><button data-v="1.4">1.4</button><button data-v="1.6">1.6</button></div>
 <span>Motion Sync</span><div class="seg" data-k="sync"><button data-v="0">Off</button><button data-v="1">On</button></div>
 <span>Angle Snap</span><div class="seg" data-k="snap"><button data-v="0">Off</button><button data-v="1">On</button></div>
@@ -150,12 +150,16 @@ function drawTune(){const el=$('tune');if(!S.tune)return;if(!el.children.length)
 if(dTune||Date.now()<holdT)return;el.querySelectorAll('input').forEach(i=>{if(document.activeElement!==i)i.value=S.tune[i.dataset.k]})}
 function saveTune(){const q=[...$('tune').querySelectorAll('input')].map(i=>i.dataset.a+'='+i.value).join('&');post('/api/tune?'+q).then(r=>{say(r,'Tuning saved');if(r.ok){dTune=false;holdT=Date.now()+1800}})}
 
-let optEdit={};
-// the mouse's other settings; S.opt null = Feather firmware too old, a null value = not read yet
+// values just set here, laid over the status for a while: a status read before the Feather had the
+// change would otherwise undo it on screen, and SPDT's other side is combined from these
+let optSet={};
+function optOverlay(){if(!S||!S.opt)return;for(const k in optSet){if(Date.now()-optSet[k].t<2500)S.opt[k]=optSet[k].v;else delete optSet[k]}}
+// the mouse's other settings; S.opt null = no status from the Feather yet, or its firmware is too old;
+// a null value = not read yet
 function drawOpt(){const o=S.opt,note=$('optnote'),btns=document.querySelectorAll('#pv .seg[data-k] button');
-if(!o){note.hidden=false;note.textContent='These need Feather firmware v14 or later.';btns.forEach(b=>b.disabled=true);return}
+if(!o){note.hidden=false;note.textContent=S.link?'These need Feather firmware v14 or later.':'No answer from the Feather.';btns.forEach(b=>b.disabled=true);return}
 btns.forEach(b=>b.disabled=false);
-document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>{const k=seg.dataset.k;if(optEdit[k]&&Date.now()-optEdit[k]<1500)return;const v=o[k];
+document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>{const k=seg.dataset.k;const v=o[k];
 seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',v!==null&&v!==undefined&&(typeof v==='boolean'?(b.dataset.v==='1')===v:Number(b.dataset.v)===v)))});
 const missing=Object.values(o).some(v=>v===null);note.hidden=!missing;if(missing)note.textContent='Some of these haven\'t been read from the mouse yet: press Read from mouse.'}
 function drawRadio(){const r=S.radio;let s=r.mode==='sta'?'On '+r.ssid+' at '+r.ip:r.mode==='ap'?'Setup network GW-Settings at '+r.ip:'Joining…';
@@ -180,15 +184,17 @@ async function toIp(j){if(ipTried||touched)return false;ipTried=true;const ip=j&
 if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;
 const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch('http://'+ip+'/api/status',{mode:'no-cors',cache:'no-store',signal:c.signal})}catch(e){return false}finally{clearTimeout(tm)}
 if(touched)return false;location.replace('http://'+ip+'/');return true}
-function poll(){fetch('/api/status').then(r=>r.json()).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;render()}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,1000))}
+function poll(){fetch('/api/status').then(r=>r.json()).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();render()}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,1000))}
 buildStages();bindSlider('angle');bindSlider('pos');
 document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>{b.onclick=()=>{
-if(!S||!S.opt)return;const k=seg.dataset.k;let key=k,val=b.dataset.v;
+if(!S||!S.opt)return;const k=seg.dataset.k;let key=k,val=b.dataset.v;const now=Date.now(),set={};
 if(k==='spdt_l'||k==='spdt_r'){if(S.opt.spdt_l===null||S.opt.spdt_r===null){toast('Press Read from mouse first',1);return}
-const l=k==='spdt_l'?val==='1':S.opt.spdt_l,r=k==='spdt_r'?val==='1':S.opt.spdt_r;S.opt.spdt_l=l;S.opt.spdt_r=r;key='spdt';val=(l?1:0)|(r?2:0)}
-else S.opt[k]=(k==='snap'||k==='sync')?val==='1':Number(val);
-optEdit[k]=Date.now();seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
-post('/api/opt?k='+key+'&v='+val).then(r=>say(r,'Sent to the mouse'))}}));
+const l=k==='spdt_l'?val==='1':S.opt.spdt_l,r=k==='spdt_r'?val==='1':S.opt.spdt_r;
+if(!l&&!r){toast('Both SPDT off isn\'t supported yet (not in the captures)',1);return}
+set.spdt_l=l;set.spdt_r=r;key='spdt';val=(l?1:0)|(r?2:0)}
+else set[k]=(k==='snap'||k==='sync')?val==='1':Number(val);
+for(const x in set){optSet[x]={v:set[x],t:now};S.opt[x]=set[x]}drawOpt();
+post('/api/opt?k='+key+'&v='+val).then(r=>{say(r,'Sent to the mouse');if(!r.ok){for(const x in set)delete optSet[x]}})}}));
 document.querySelectorAll('#keep button').forEach(b=>{b.onclick=()=>post('/api/wifimode?m='+b.dataset.m).then(r=>say(r,'Saved'))});
 poll();
 </script></body></html>)HTML";
