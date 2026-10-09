@@ -1242,14 +1242,16 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
         rs_refresh_stale = false;
         if (ok && current) {
             rs_refresh_next = item;  // something was written meanwhile: read this item again
-        } else if (!ok && current) {
+        } else if (!ok && current && !rs_refresh_asked) {
             rs_refresh_next = -1;
         }
         return;
     }
     if (!ok) {
-        if (current) {
-            rs_refresh_next = -1;  // the mouse doesn't answer: stop here
+        // the mouse doesn't answer: stop here, unless a REFRESH asked for meanwhile restarted it at
+        // this same item (item 0, the first read of any refresh)
+        if (current && !rs_refresh_asked) {
+            rs_refresh_next = -1;
         }
         return;
     }
@@ -1261,11 +1263,24 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
     } else if (item < 3) {
         RsSetting& s = rs_settings[item - 1];
         int v = s.decode(d[0]);
-        // a change still waiting to be written wins over what's in the mouse
-        if ((v != RS_NONE) && !(s.known && (s.value != s.sent))) {
+        if ((v != RS_NONE) && !s.known) {
+            // chord steps pressed while it was unknown apply on top of what the mouse has (as in
+            // rs_setting_read_done); the setting's write follows once they've settled
             s.value = v;
             s.sent = v;
             s.known = true;
+            s.wanted = false;
+            for (; s.pending > 0; s.pending--) {
+                s.value = s.step(s.value, 1);
+            }
+            for (; s.pending < 0; s.pending++) {
+                s.value = s.step(s.value, -1);
+            }
+            s.changed_at = time_us_32();
+        } else if ((v != RS_NONE) && (s.value == s.sent)) {
+            // known, nothing waiting to be written: take the mouse's value (a change waiting wins)
+            s.value = v;
+            s.sent = v;
             s.pending = 0;
             s.wanted = false;
         }
@@ -1427,7 +1442,9 @@ static void rs_tick(uint32_t now) {
                 }
                 started = true;
             }
-            if (!started && (rs_refresh_next >= 0)) {
+            // a refresh waits while a light flash is showing: a colour read now would be the flash's,
+            // and it would be put back as the stage's colour when the flash ends
+            if (!started && (rs_refresh_next >= 0) && !led.active && !led.restore_pending) {
                 if (rs_reads_work()) {
                     rs_refresh_start(rs_refresh_next, now);
                 } else {
