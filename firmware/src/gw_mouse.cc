@@ -601,6 +601,7 @@ static void dpi_tick(uint32_t now) {
 static uint32_t gw_palette_default[RS_DPI_STAGES] = { 0xff0000, 0xff8000, 0xffff00, 0x00ff00, 0xff00ff };
 #define RS_NONE 0x7FFF
 #define RS_READ_TIMEOUT_US 150000
+#define RS_NOREAD_HOLD_US 1000000  // after a read timed out, input from the device this much later means it's awake
 #define RS_SETTLE_US 40000  // one write for a quick run of presses or notches
 #define RS_INPUT_LOG 8
 
@@ -895,7 +896,11 @@ static uint8_t rs_read_dev = 0;
 static uint16_t rs_read_addr = 0;
 static uint8_t rs_read_len = 2;
 static uint32_t rs_deadline = 0;
-static uint8_t rs_noread_dev = 0;  // a read from it timed out; skipped until it's replugged
+// A read from this device timed out (a wireless mouse that's asleep doesn't answer), so reads to it
+// are skipped. Cleared when it's replugged, when it sends input again at least RS_NOREAD_HOLD_US after
+// the timeout (it's awake), and by the QT Py's "read settings" (REFRESH).
+static uint8_t rs_noread_dev = 0;
+static uint32_t rs_noread_at = 0;
 static uint8_t rs_reply[6];
 static bool rs_reply_ready = false;
 static int32_t rs_inputs = 0;
@@ -963,6 +968,9 @@ static bool rs_parse_reply(const uint8_t* r, uint16_t len, uint8_t* out) {
 }
 
 void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* report, uint16_t len) {
+    if ((rs_noread_dev != 0) && (dev_addr == rs_noread_dev) && ((int32_t) (time_us_32() - rs_noread_at) >= RS_NOREAD_HOLD_US)) {
+        rs_noread_dev = 0;  // sending again, so awake: reads are worth trying
+    }
     if ((rs_read == RsRead::NONE) || (dev_addr != rs_read_dev) || (len < 8) || (report[0] != RS_REPORT_ID)) {
         return;
     }
@@ -1196,6 +1204,7 @@ static void rs_tick(uint32_t now) {
         } else if ((int32_t) (now - rs_deadline) >= 0) {
             rs_fail |= 8;
             rs_noread_dev = rs_read_dev;
+            rs_noread_at = now;
             rs_read_done(false, now);
         }
     }
@@ -1273,14 +1282,15 @@ static void rs_tick(uint32_t now) {
 // ---- QT Py settings link (gw_link.h) ----------------------------------------------------------
 // Status block the QT Py reads (GW_LINK_STATUS_LEN bytes, little-endian):
 //   0 'G'   1 protocol (1)   2 link flags: bit 0 tuning set since boot, bit 1 built-in palette set
-//   since boot, bit 2 refresh running   3 mouse flags: bit 0 Warg, 1 VUK, 2 reads answered,
+//   since boot, bit 2 refresh running, bit 3 reads paused (last one timed out: mouse asleep?)
+//   3 mouse flags: bit 0 Warg, 1 VUK, 2 reads answered,
 //   3 stage known, 4 angle known, 5 position known, 6 colours read from the mouse, 7 DPI table known
 //   4 stage (0-based, 0xFF unknown)   5 angle (int8)   6 position (int8)   7 Mid+Right hold count
 //   8-22 stage colours (R,G,B x5)   23-42 DPI table (X,Y uint16 x5)   43-54 tuning (GwTune order:
 //   angle step, position step, angle home, position home, flash ms, position-reset hold ms, wheel
 //   hold ms, radio hold ms)   55 last command seq applied   56 firmware version   63 crc8 of 0-62
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 12
+#define GW_FW_VERSION 13
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1309,7 +1319,7 @@ void gw_link_status(uint8_t* s) {
     memset(s, 0, GW_LINK_STATUS_LEN);
     s[0] = 'G';
     s[1] = 1;
-    s[2] = (tune_set ? 1 : 0) | (palette_default_set ? 2 : 0) | ((rs_refresh_next >= 0) ? 4 : 0);
+    s[2] = (tune_set ? 1 : 0) | (palette_default_set ? 2 : 0) | ((rs_refresh_next >= 0) ? 4 : 0) | ((rs_noread_dev != 0) ? 8 : 0);
     const RsSetting& a = rs_settings[RS_ANGLE];
     const RsSetting& p = rs_settings[RS_POS];
     s[3] = (family_present(Family::RS) ? 1 : 0) | (family_present(Family::VUK) ? 2 : 0) | (rs_reads_worked ? 4 : 0) |
@@ -1439,6 +1449,7 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
             break;
         case LINK_REFRESH:
             if (rs) {
+                rs_noread_dev = 0;  // asked for by hand: try again even if the last read timed out
                 rs_refresh_next = 0;
             }
             break;

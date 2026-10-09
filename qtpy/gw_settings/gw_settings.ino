@@ -29,7 +29,7 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 64
-#define QT_FW 6        // this firmware's number, shown in /api/status
+#define QT_FW 7        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -421,6 +421,7 @@ static void h_status() {
         j += ",\"colours_read\":" + String((f & 64) ? "true" : "false");
         j += ",\"dpi_known\":" + String((f & 128) ? "true" : "false");
         j += ",\"refreshing\":" + String((st[2] & 4) ? "true" : "false");
+        j += ",\"paused\":" + String((st[2] & 8) ? "true" : "false");  // Feather v13+: the last read timed out
         j += ",\"palette\":[";
         for (int i = 0; i < 5; i++) {
             uint32_t c = (uint32_t) st[8 + 3 * i] << 16 | st[9 + 3 * i] << 8 | st[10 + 3 * i];
