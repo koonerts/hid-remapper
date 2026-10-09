@@ -21,6 +21,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <esp_system.h>
 
 #include "page.h"
 
@@ -29,7 +30,7 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 64
-#define QT_FW 7        // this firmware's number, shown in /api/status
+#define QT_FW 8        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -72,6 +73,66 @@ static uint32_t radio_since = 0;
 static uint32_t last_http = 0;
 static uint8_t wmode = 0;          // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
+// Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
+// on some routers (broadcast ARP and mDNS queries get lost while it dozes). /api/wifisleep sets it.
+static bool wsleep = false;
+// diagnostics (/api/status "wifi", "boot")
+static uint32_t w_disc = 0, w_disc_at = 0;
+static uint8_t w_disc_reason = 0;
+static uint32_t b_boots = 0, b_brownouts = 0, b_crashes = 0;
+static uint8_t b_reason = 0;
+
+// A dropout = losing a working connection, once per outage. Not counted: the board's own switch-off
+// (reason ASSOC_LEAVE) or the failed retries that follow a drop (no address in between).
+static bool w_had_ip = false;
+
+static void on_wifi_got_ip(WiFiEvent_t, WiFiEventInfo_t) {
+    w_had_ip = true;
+}
+
+static void on_wifi_disconnect(WiFiEvent_t, WiFiEventInfo_t info) {
+    uint8_t reason = info.wifi_sta_disconnected.reason;
+    if (w_had_ip && (reason != WIFI_REASON_ASSOC_LEAVE)) {
+        w_disc++;
+        w_disc_at = millis();
+        w_disc_reason = reason;
+    }
+    w_had_ip = false;
+}
+
+// for strings that go into the status JSON
+static String json_str(const String& s) {
+    String o;
+    o.reserve(s.length() + 2);
+    for (size_t i = 0; i < s.length(); i++) {
+        char c = s[i];
+        if ((c == '"') || (c == '\\')) {
+            o += '\\';
+            o += c;
+        } else if ((uint8_t) c < 0x20) {
+            char b[8];
+            snprintf(b, sizeof(b), "\\u%04x", (uint8_t) c);
+            o += b;
+        } else {
+            o += c;
+        }
+    }
+    return o;
+}
+
+static const char* reset_name(uint8_t r) {
+    switch (r) {
+        case ESP_RST_POWERON: return "power-on";
+        case ESP_RST_SW: return "restart";
+        case ESP_RST_PANIC: return "crash";
+        case ESP_RST_INT_WDT:
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT: return "watchdog";
+        case ESP_RST_BROWNOUT: return "brownout";
+        case ESP_RST_USB: return "usb";
+        default: return "other";
+    }
+}
 
 // ---- command queue (one frame in flight, acked by status byte 55)
 
@@ -283,7 +344,7 @@ static void radio_on(bool manual = true) {
     if (ssid.length()) {
         WiFi.setHostname("gwolves");  // the name the router lists it under (set before the mode)
         WiFi.mode(WIFI_STA);
-        WiFi.setSleep(true);
+        WiFi.setSleep(wsleep);
         WiFi.begin(ssid.c_str(), prefs.getString("pass", "").c_str());
         radio = Radio::JOINING;
     } else {
@@ -443,12 +504,20 @@ static void h_status() {
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
     j += (radio == Radio::STA) ? "sta" : (radio == Radio::AP) ? "ap" : (radio == Radio::JOINING) ? "joining" : "off";
-    j += "\",\"ssid\":\"" + prefs.getString("ssid", "") + "\"";
+    j += "\",\"ssid\":\"" + json_str(prefs.getString("ssid", "")) + "\"";
     j += ",\"ip\":\"" + ((radio == Radio::AP) ? WiFi.softAPIP().toString() : WiFi.localIP().toString()) + "\"";
     uint32_t lim = idle_limit();
     long left = !lim ? -1 : (millis() - last_http < lim) ? (long) ((lim - (millis() - last_http)) / 1000) : 0;
     j += ",\"keep\":" + String(wmode);
-    j += ",\"off_in_s\":" + String(left) + "}}";
+    j += ",\"off_in_s\":" + String(left) + "}";
+    bool up = (WiFi.status() == WL_CONNECTED);
+    j += ",\"wifi\":{\"rssi\":" + String(up ? WiFi.RSSI() : 0) + ",\"ch\":" + String(up ? WiFi.channel() : 0) +
+         ",\"bssid\":\"" + (up ? WiFi.BSSIDstr() : String("")) + "\",\"sleep\":" + String(wsleep ? "true" : "false") +
+         ",\"drops\":" + String(w_disc) + ",\"drop_reason\":" + String(w_disc_reason) +
+         ",\"drop_ago_s\":" + String(w_disc ? (long) ((millis() - w_disc_at) / 1000) : -1) + "}";
+    j += ",\"boot\":{\"reason\":\"" + String(reset_name(b_reason)) + "\",\"boots\":" + String(b_boots) +
+         ",\"brownouts\":" + String(b_brownouts) + ",\"crashes\":" + String(b_crashes) +
+         ",\"heap\":" + String(ESP.getFreeHeap()) + ",\"heap_min\":" + String(ESP.getMinFreeHeap()) + "}}";
     server.send(200, "application/json", j);
 }
 
@@ -564,6 +633,21 @@ static void h_flash() {
     ok_json(queue_cmd(C_FLASH, d, 3));
 }
 
+// POST /api/wifisleep?on=0|1   Wi-Fi power save (kept; applies at once)
+static void h_wifisleep() {
+    touch();
+    long v;
+    if (!arg_int("on", 0, 1, &v)) {
+        return ok_json(false, "bad value");
+    }
+    wsleep = (v == 1);
+    prefs.putBool("wsleep", wsleep);
+    if (radio != Radio::OFF) {
+        WiFi.setSleep(wsleep);
+    }
+    ok_json(true);
+}
+
 // POST /api/wifimode?m=0|1|2   Wi-Fi switches itself off after 10 min idle / 1 hour idle / never
 static void h_wifimode() {
     touch();
@@ -661,6 +745,19 @@ void setup() {
     WiFi.mode(WIFI_OFF);
     prefs.begin("gw", false);
     wmode = prefs.getUChar("wmode", 0);
+    wsleep = prefs.getBool("wsleep", false);
+    b_reason = (uint8_t) esp_reset_reason();
+    b_boots = prefs.getULong("boots", 0) + 1;
+    prefs.putULong("boots", b_boots);
+    b_brownouts = prefs.getULong("brownouts", 0);
+    b_crashes = prefs.getULong("crashes", 0);
+    if (b_reason == ESP_RST_BROWNOUT) {
+        prefs.putULong("brownouts", ++b_brownouts);
+    } else if ((b_reason == ESP_RST_PANIC) || (b_reason == ESP_RST_INT_WDT) || (b_reason == ESP_RST_TASK_WDT) || (b_reason == ESP_RST_WDT)) {
+        prefs.putULong("crashes", ++b_crashes);
+    }
+    WiFi.onEvent(on_wifi_disconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    WiFi.onEvent(on_wifi_got_ip, ARDUINO_EVENT_WIFI_STA_GOT_IP);
     if (wmode > 2) {
         wmode = 0;
     }
@@ -677,6 +774,7 @@ void setup() {
     server.on("/api/radio_off", HTTP_POST, h_radio_off);
     server.on("/api/wifi", HTTP_POST, h_wifi);
     server.on("/api/wifimode", HTTP_POST, h_wifimode);
+    server.on("/api/wifisleep", HTTP_POST, h_wifisleep);
     server.on("/api/update", HTTP_POST, h_update_done, h_update_upload);
     server.onNotFound(h_not_found);
     bool resume = prefs.getBool("resume", false);  // restarted by an update: back onto Wi-Fi
