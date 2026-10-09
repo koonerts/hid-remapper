@@ -77,16 +77,16 @@ ul.ch{margin:0 0 14px;padding-left:18px;font-size:14px}ul.ch li{margin:4px 0}
 <div class="fld"><div class="lbl"><span>Position</span><b id="posv">–</b></div>
 <div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div>
 
-<div class="card"><div class="hd"><h2>More mouse settings</h2><span class="tag">Preview</span></div>
-<p class="note">Not connected to the mouse yet. This shows the planned layout only: nothing here is read from the mouse or sent to it.</p>
+<div class="card"><div class="hd"><h2>More mouse settings</h2></div>
+<p class="note" id="optnote" hidden></p>
 <div class="opt" id="pv">
-<span>Polling rate (Hz)</span><div class="seg"><button>250</button><button>500</button><button>1000</button><button>2000</button><button>4000</button><button>8000</button></div>
-<span>Lift-off distance (mm)</span><div class="seg"><button>0.7</button><button>0.9</button><button>1.2</button><button>1.4</button><button>1.6</button></div>
-<span>Motion Sync</span><div class="seg"><button>Off</button><button>On</button></div>
-<span>Angle Snap</span><div class="seg"><button>Off</button><button>On</button></div>
-<span>Left button SPDT</span><div class="seg"><button>Off</button><button>On</button></div>
-<span>Right button SPDT</span><div class="seg"><button>Off</button><button>On</button></div>
-<span>Battery</span><span class="mut">not read yet</span>
+<span>Polling rate (Hz)</span><div class="seg" data-k="poll"><button data-v="250">250</button><button data-v="500">500</button><button data-v="1000">1000</button><button data-v="2000">2000</button><button data-v="4000">4000</button><button data-v="8000">8000</button></div>
+<span>Lift-off distance (mm)</span><div class="seg" data-k="lod"><button data-v="0.7">0.7</button><button data-v="0.9">0.9</button><button data-v="1.2">1.2</button><button data-v="1.4">1.4</button><button data-v="1.6">1.6</button></div>
+<span>Motion Sync</span><div class="seg" data-k="sync"><button data-v="0">Off</button><button data-v="1">On</button></div>
+<span>Angle Snap</span><div class="seg" data-k="snap"><button data-v="0">Off</button><button data-v="1">On</button></div>
+<span>Left button SPDT</span><div class="seg" data-k="spdt_l"><button data-v="0">Off</button><button data-v="1">On</button></div>
+<span>Right button SPDT</span><div class="seg" data-k="spdt_r"><button data-v="0">Off</button><button data-v="1">On</button></div>
+<span>Battery</span><span class="mut">not available yet</span>
 </div>
 <p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p></div>
 
@@ -150,6 +150,14 @@ function drawTune(){const el=$('tune');if(!S.tune)return;if(!el.children.length)
 if(dTune||Date.now()<holdT)return;el.querySelectorAll('input').forEach(i=>{if(document.activeElement!==i)i.value=S.tune[i.dataset.k]})}
 function saveTune(){const q=[...$('tune').querySelectorAll('input')].map(i=>i.dataset.a+'='+i.value).join('&');post('/api/tune?'+q).then(r=>{say(r,'Tuning saved');if(r.ok){dTune=false;holdT=Date.now()+1800}})}
 
+let optEdit={};
+// the mouse's other settings; S.opt null = Feather firmware too old, a null value = not read yet
+function drawOpt(){const o=S.opt,note=$('optnote'),btns=document.querySelectorAll('#pv .seg[data-k] button');
+if(!o){note.hidden=false;note.textContent='These need Feather firmware v14 or later.';btns.forEach(b=>b.disabled=true);return}
+btns.forEach(b=>b.disabled=false);
+document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>{const k=seg.dataset.k;if(optEdit[k]&&Date.now()-optEdit[k]<1500)return;const v=o[k];
+seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',v!==null&&v!==undefined&&(typeof v==='boolean'?(b.dataset.v==='1')===v:Number(b.dataset.v)===v)))});
+const missing=Object.values(o).some(v=>v===null);note.hidden=!missing;if(missing)note.textContent='Some of these haven\'t been read from the mouse yet: press Read from mouse.'}
 function drawRadio(){const r=S.radio;let s=r.mode==='sta'?'On '+r.ssid+' at '+r.ip:r.mode==='ap'?'Setup network GW-Settings at '+r.ip:'Joining…';
 s+=r.off_in_s<0?' · stays on':' · turns off in '+Math.ceil(r.off_in_s/60)+' min without use';
 const w=S.wifi;if(w&&r.mode==='sta'&&w.rssi)s+=' · signal '+w.rssi+' dBm'+(w.drops?' · '+w.drops+' dropout'+(w.drops>1?'s':'')+' since it started':'');$('radio').textContent=s;
@@ -162,7 +170,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 paintStages();
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
-drawChords();drawTune();drawRadio();
+drawChords();drawTune();drawRadio();drawOpt();
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
 // address answers and move there, so reloads and button presses don't need another .local name
@@ -174,7 +182,13 @@ const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch(
 if(touched)return false;location.replace('http://'+ip+'/');return true}
 function poll(){fetch('/api/status').then(r=>r.json()).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;render()}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,1000))}
 buildStages();bindSlider('angle');bindSlider('pos');
-document.querySelectorAll('#pv .seg button').forEach(b=>{b.onclick=()=>{b.parentNode.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');toast('Preview only: not sent to the mouse')}});
+document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>{b.onclick=()=>{
+if(!S||!S.opt)return;const k=seg.dataset.k;let key=k,val=b.dataset.v;
+if(k==='spdt_l'||k==='spdt_r'){if(S.opt.spdt_l===null||S.opt.spdt_r===null){toast('Press Read from mouse first',1);return}
+const l=k==='spdt_l'?val==='1':S.opt.spdt_l,r=k==='spdt_r'?val==='1':S.opt.spdt_r;S.opt.spdt_l=l;S.opt.spdt_r=r;key='spdt';val=(l?1:0)|(r?2:0)}
+else S.opt[k]=(k==='snap'||k==='sync')?val==='1':Number(val);
+optEdit[k]=Date.now();seg.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+post('/api/opt?k='+key+'&v='+val).then(r=>say(r,'Sent to the mouse'))}}));
 document.querySelectorAll('#keep button').forEach(b=>{b.onclick=()=>post('/api/wifimode?m='+b.dataset.m).then(r=>say(r,'Saved'))});
 poll();
 </script></body></html>)HTML";

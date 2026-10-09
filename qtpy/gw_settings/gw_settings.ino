@@ -29,8 +29,8 @@
 #define LINK_SDA 41  // STEMMA QT (Wire1)
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
-#define STATUS_LEN 64
-#define QT_FW 8        // this firmware's number, shown in /api/status
+#define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
+#define QT_FW 9        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -50,6 +50,8 @@
 #define C_REFRESH 0x08
 #define C_FLASH 0x09
 #define C_PALETTE_DEFAULT 0x0A
+#define C_SET_OPTION 0x0B  // Feather v14+: [option 0-4, value as the mouse stores it]
+#define C_RAW 0x0C         // Feather v14+: [16 bytes of report 8: a read (08) or the status query (04)]
 
 static WebServer server(80);
 static DNSServer dns;
@@ -57,6 +59,7 @@ static Preferences prefs;
 
 static uint8_t st[STATUS_LEN];
 static bool st_ok = false;
+static bool st_ext = false;  // bytes 64-127 valid (Feather v14+)
 static uint32_t st_at = 0;       // last good status
 static bool link_up = false;
 static bool toggles_known = false;
@@ -245,6 +248,7 @@ static bool poll_status() {
     }
     d_ok++;
     memcpy(st, b, STATUS_LEN);
+    st_ext = (b[64] == 'X') && (crc8(b + 64, 63) == b[127]);
     st_ok = true;
     st_at = millis();
     return true;
@@ -464,10 +468,132 @@ static void ok_json(bool ok, const char* err = nullptr) {
     server.send(ok ? 200 : 400, "application/json", s);
 }
 
+// ---- the mouse's other settings (Feather v14+, status bytes 57-62)
+// polling rate byte <-> Hz, lift-off byte (1-5) <-> tenths of a mm
+static const uint8_t POLL_RAW[7] = { 0x08, 0x04, 0x02, 0x01, 0x10, 0x20, 0x40 };
+static const uint16_t POLL_HZ[7] = { 125, 250, 500, 1000, 2000, 4000, 8000 };
+static const uint8_t LOD_TENTHS[5] = { 7, 9, 12, 14, 16 };
+
+static String opt_json() {
+    if (!st_ok || (st[56] < 14)) {
+        return "null";  // the Feather's firmware predates these settings
+    }
+    uint8_t known = st[62];
+    String o = "{\"poll\":";
+    String p = "null";
+    for (int i = 0; i < 7; i++) {
+        if ((known & 1) && (st[57] == POLL_RAW[i])) {
+            p = String(POLL_HZ[i]);
+        }
+    }
+    o += p + ",\"lod\":";
+    o += ((known & 2) && (st[58] >= 1) && (st[58] <= 5)) ? String(LOD_TENTHS[st[58] - 1] / 10.0, 1) : String("null");
+    o += ",\"snap\":" + String((known & 4) ? (st[59] ? "true" : "false") : "null");
+    o += ",\"sync\":" + String((known & 8) ? (st[60] ? "true" : "false") : "null");
+    o += ",\"spdt_l\":" + String((known & 16) ? ((st[61] & 1) ? "true" : "false") : "null");
+    o += ",\"spdt_r\":" + String((known & 16) ? ((st[61] & 2) ? "true" : "false") : "null");
+    return o + "}";
+}
+
+static bool arg_int(const char* name, long lo, long hi, long* out);
+
+static String hex_bytes(const uint8_t* p, uint8_t n) {
+    String o;
+    o.reserve(2 * n);
+    for (uint8_t i = 0; i < n; i++) {
+        char b[3];
+        snprintf(b, sizeof(b), "%02x", p[i]);
+        o += b;
+    }
+    return o;
+}
+
+// the mouse's reply to the status query (each refresh) and to the last probe, as they came (report ID first)
+static String ext_json() {
+    if (!st_ok || !st_ext) {
+        return ",\"info\":null,\"probe\":null";
+    }
+    uint8_t il = (st[66] <= 24) ? st[66] : 0, pl = (st[93] <= 24) ? st[93] : 0;
+    static const char* const PSTATE[4] = { "none", "waiting", "answered", "no answer" };
+    return ",\"info\":{\"n\":" + String(st[65]) + ",\"hex\":\"" + hex_bytes(st + 67, il) + "\"}" +
+           ",\"probe\":{\"n\":" + String(st[91]) + ",\"state\":\"" + String(PSTATE[st[92] & 3]) + "\",\"hex\":\"" + hex_bytes(st + 94, pl) + "\"}";
+}
+
+// POST /api/probe?cmd=08&addr=00e1&len=2 | cmd=04   one read or the status query, reply in /api/status "probe"
+static void h_probe() {
+    touch();
+    if (!st_ok || !st_ext) {
+        return ok_json(false, "needs Feather firmware v14");
+    }
+    long cmd = strtol(server.arg("cmd").c_str(), nullptr, 16);
+    long addr = strtol(server.arg("addr").c_str(), nullptr, 16);
+    long len = server.arg("len").toInt();
+    if (!(((cmd == 0x08) && (addr >= 0) && (addr <= 0xffff) && (len >= 1) && (len <= 10)) || ((cmd == 0x04) && (addr == 0) && (len == 0)))) {
+        return ok_json(false, "cmd=08 with addr (hex) and len 1-10, or cmd=04");
+    }
+    uint8_t r[16] = { (uint8_t) cmd, 0, (uint8_t) (addr >> 8), (uint8_t) addr, (uint8_t) len };
+    uint8_t sum = 8;
+    for (int i = 0; i < 15; i++) {
+        sum += r[i];
+    }
+    r[15] = 0x55 - sum;
+    ok_json(queue_cmd(C_RAW, r, 16));
+}
+
+// POST /api/opt?k=poll&v=1000 | k=lod&v=0.7..1.6 | k=snap|sync&v=0|1 | k=spdt&v=0-3 (bit 0 left, bit 1 right)
+static void h_opt() {
+    touch();
+    if (!st_ok || (st[56] < 14)) {
+        return ok_json(false, "needs Feather firmware v14");
+    }
+    String k = server.arg("k"), v = server.arg("v");
+    uint8_t d[2];
+    if (k == "poll") {
+        long hz = v.toInt();
+        int i = 0;
+        while ((i < 7) && (POLL_HZ[i] != hz)) {
+            i++;
+        }
+        if (i == 7) {
+            return ok_json(false, "bad rate");
+        }
+        d[0] = 0;
+        d[1] = POLL_RAW[i];
+    } else if (k == "lod") {
+        int tenths = (int) lround(v.toFloat() * 10);
+        int i = 0;
+        while ((i < 5) && (LOD_TENTHS[i] != tenths)) {
+            i++;
+        }
+        if (i == 5) {
+            return ok_json(false, "bad distance");
+        }
+        d[0] = 1;
+        d[1] = i + 1;
+    } else if ((k == "snap") || (k == "sync")) {
+        long b;
+        if (!arg_int("v", 0, 1, &b)) {
+            return ok_json(false, "bad value");
+        }
+        d[0] = (k == "snap") ? 2 : 3;
+        d[1] = b;
+    } else if (k == "spdt") {
+        long b;
+        if (!arg_int("v", 0, 3, &b)) {
+            return ok_json(false, "bad value");
+        }
+        d[0] = 4;
+        d[1] = b;
+    } else {
+        return ok_json(false, "unknown setting");
+    }
+    ok_json(queue_cmd(C_SET_OPTION, d, 2));
+}
+
 // not counted as use: an open tab alone shouldn't keep the radio on while playing
 static void h_status() {
     String j;
-    j.reserve(1200);
+    j.reserve(1600);
     j += "{\"link\":";
     j += link_up ? "true" : "false";
     if (st_ok) {
@@ -497,6 +623,8 @@ static void h_status() {
              ",\"flash_ms\":" + String(u16(47)) + ",\"pos_hold_ms\":" + String(u16(49)) +
              ",\"wheel_hold_ms\":" + String(u16(51)) + ",\"radio_hold_ms\":" + String(u16(53)) + "}";
     }
+    j += ",\"opt\":" + opt_json();
+    j += ext_json();
     j += ",\"qt_fw\":" + String(QT_FW);
     j += ",\"diag\":{\"polls\":" + String(d_polls) + ",\"ok\":" + String(d_ok) + ",\"short\":" + String(d_short) +
          ",\"bad\":" + String(d_bad) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
@@ -775,6 +903,8 @@ void setup() {
     server.on("/api/wifi", HTTP_POST, h_wifi);
     server.on("/api/wifimode", HTTP_POST, h_wifimode);
     server.on("/api/wifisleep", HTTP_POST, h_wifisleep);
+    server.on("/api/opt", HTTP_POST, h_opt);
+    server.on("/api/probe", HTTP_POST, h_probe);
     server.on("/api/update", HTTP_POST, h_update_done, h_update_upload);
     server.onNotFound(h_not_found);
     bool resume = prefs.getBool("resume", false);  // restarted by an update: back onto Wi-Fi

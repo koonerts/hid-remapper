@@ -568,6 +568,12 @@ static void dpi_tick(uint32_t now) {
 #define RS_ADDR_DPI_COUNT 0x0002  // guess; only shown in the Monitor
 #define RS_ADDR_LED_SLOT 0x002c   // + 4 per stage: R, G, B, then a byte making the 4 sum to 0x55
 #define RS_ADDR_DPI_TABLE 0x1b00  // + 6 per stage: X-1, Y-1 (16-bit LE), 00, a byte making the 6 sum to 0x55
+// Other settings, one byte each (warg-wired-polling+lod+anglesnap+motionsync+spdt.txt, 2026-10-09):
+#define RS_ADDR_POLL 0x0000  // polling rate: 125 Hz 08, 250 04, 500 02, 1000 01, 2000 10, 4000 20, 8000 40
+#define RS_ADDR_SPDT 0x0008  // SPDT switches: bit 0 left, bit 1 right
+#define RS_ADDR_LOD 0x000a   // lift-off distance: 1 = 0.7 mm, 2 = 0.9, 3 = 1.2, 4 = 1.4, 5 = 1.6
+#define RS_ADDR_SYNC 0x00ab  // Motion Sync 0/1
+#define RS_ADDR_SNAP 0x00af  // Angle Snap 0/1
 #define RS_DPI_STAGES 5  // as configured on the Warg (1600/5000/10000/20000/40000); not read yet
 #define RS_DPI_MIN 50
 #define RS_DPI_MAX 50000
@@ -885,10 +891,50 @@ enum class RsRead : uint8_t {
     LED_SLOT,
     LED_STAGE,
     REFRESH,
+    INFO,  // the status query (command 04), last item of a refresh
+    RAW,   // a probe from the QT Py (LINK_RAW)
 };
 
 // The QT Py page's "refresh": stage, angle, position, the 5 colours, the 5 DPI table entries.
-#define RS_REFRESH_ITEMS (3 + 2 * RS_DPI_STAGES)
+// Then the five option bytes (rs_opt_addr order), then the status query.
+#define RS_OPTS 5
+#define RS_REFRESH_ITEMS (3 + 2 * RS_DPI_STAGES + RS_OPTS + 1)
+static const uint16_t rs_opt_addr[RS_OPTS] = { RS_ADDR_POLL, RS_ADDR_LOD, RS_ADDR_SNAP, RS_ADDR_SYNC, RS_ADDR_SPDT };
+static uint8_t rs_opt_val[RS_OPTS];
+static uint8_t rs_opt_known = 0;  // bit n = rs_opt_val[n] read from or written to the mouse
+
+// only the values the web driver itself writes
+static bool rs_opt_ok(uint8_t k, uint8_t v) {
+    switch (k) {
+        case 0: return (v == 0x01) || (v == 0x02) || (v == 0x04) || (v == 0x08) || (v == 0x10) || (v == 0x20) || (v == 0x40);
+        case 1: return (v >= 1) && (v <= 5);
+        case 2:
+        case 3: return v <= 1;
+        case 4: return v <= 3;
+        default: return false;
+    }
+}
+
+// The web driver's status query (command 04, no address, no data), sent on its "Refresh"; the battery
+// level is somewhere in the reply (warg-wired-battery-check-by-clicking-refresh.txt, 2026-10-09: the
+// replies weren't captured). The reply goes to the QT Py as it is, to be decoded there.
+#define RS_INFO_CMD 0x04
+#define RS_RAW_MAX 24
+#define RS_RAW_TIMEOUT_US 250000
+static uint8_t rs_info[RS_RAW_MAX];  // last reply to 04, report ID first
+static uint8_t rs_info_len = 0;      // 0 = none since the mouse was plugged in
+static uint8_t rs_info_seq = 0;
+// A probe from the QT Py: one read (08) or status query (04), never a write; the reply is passed back.
+static uint8_t rs_raw_req[RS_LEN];
+static bool rs_raw_pending = false;
+static uint8_t rs_raw[RS_RAW_MAX];
+static uint8_t rs_raw_len = 0;
+static uint8_t rs_raw_seq = 0;
+static uint8_t rs_raw_state = 0;  // 0 none, 1 waiting, 2 answered, 3 no answer
+// what the reply to an INFO/RAW exchange must echo in its first data byte, and where it's kept meanwhile
+static uint8_t rs_cap_cmd = 0;
+static uint8_t rs_cap[RS_RAW_MAX];
+static uint8_t rs_cap_len = 0;
 
 static RsRead rs_read = RsRead::NONE;
 static uint8_t rs_read_setting = 0;
@@ -923,6 +969,8 @@ static void rs_forget(uint8_t dev_addr, bool mounted) {
     rs_dpi_last = -1;
     rs_cur_stage = -1;
     rs_dpi_known = 0;
+    rs_opt_known = 0;
+    rs_info_len = 0;
     rs_reads_worked = false;
     rs_refresh_next = -1;
     if (led.active && !mounted) {
@@ -974,6 +1022,15 @@ void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* repor
     if ((rs_read == RsRead::NONE) || (dev_addr != rs_read_dev) || (len < 8) || (report[0] != RS_REPORT_ID)) {
         return;
     }
+    if ((rs_read == RsRead::INFO) || (rs_read == RsRead::RAW)) {
+        // kept as it is; the first report 8 that echoes the command sent
+        if (!rs_reply_ready && (report[1] == rs_cap_cmd)) {
+            rs_cap_len = (len < RS_RAW_MAX) ? len : RS_RAW_MAX;
+            memcpy(rs_cap, report, rs_cap_len);
+            rs_reply_ready = true;
+        }
+        return;
+    }
     if (rs_inputs < RS_INPUT_LOG) {
         diag(0x720 + rs_inputs, (int32_t) ((uint32_t) report[1] << 24 | report[2] << 16 | report[3] << 8 | report[4]));
         diag(0x730 + rs_inputs, (int32_t) ((uint32_t) report[5] << 24 | report[6] << 16 | report[7] << 8 | (len & 0xFF)));
@@ -994,6 +1051,19 @@ static void rs_start_read(RsRead what, uint16_t addr, uint8_t len, uint32_t now)
     std::map<uint8_t, uint16_t> targets = rs_targets();
     uint8_t r[RS_LEN];
     rs_build(r, RS_READ, addr, NULL, len);
+    if (targets.count(rs_read_dev)) {
+        queue_out_report(targets[rs_read_dev], RS_REPORT_ID, r, RS_LEN);
+    }
+}
+
+// a status query or probe whose reply is kept as it is (r = the 16 bytes after the report ID)
+static void rs_start_exchange(RsRead what, const uint8_t* r, uint32_t now) {
+    rs_read = what;
+    rs_read_dev = rs_read_target();
+    rs_cap_cmd = r[0];
+    rs_reply_ready = false;
+    rs_deadline = now + RS_RAW_TIMEOUT_US;
+    std::map<uint8_t, uint16_t> targets = rs_targets();
     if (targets.count(rs_read_dev)) {
         queue_out_report(targets[rs_read_dev], RS_REPORT_ID, r, RS_LEN);
     }
@@ -1103,8 +1173,14 @@ static void rs_refresh_start(int8_t item, uint32_t now) {
         rs_try_read(RsRead::REFRESH, addr[item], 2, now);
     } else if (item < 3 + RS_DPI_STAGES) {
         rs_try_read(RsRead::REFRESH, RS_ADDR_LED_SLOT + 4 * (item - 3), 4, now);
-    } else {
+    } else if (item < 3 + 2 * RS_DPI_STAGES) {
         rs_try_read(RsRead::REFRESH, RS_ADDR_DPI_TABLE + 6 * (item - 3 - RS_DPI_STAGES), 6, now);
+    } else if (item < 3 + 2 * RS_DPI_STAGES + RS_OPTS) {
+        rs_try_read(RsRead::REFRESH, rs_opt_addr[item - 3 - 2 * RS_DPI_STAGES], 2, now);
+    } else {
+        uint8_t r[RS_LEN];
+        rs_build(r, RS_INFO_CMD, 0, NULL, 0);
+        rs_start_exchange(RsRead::INFO, r, now);
     }
 }
 
@@ -1136,11 +1212,17 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
             led.palette_done = true;
             led.palette_read = true;
         }
-    } else {
+    } else if (item < 3 + 2 * RS_DPI_STAGES) {
         int st = item - 3 - RS_DPI_STAGES;
         rs_dpi_x[st] = (uint16_t) (d[0] | d[1] << 8) + 1;
         rs_dpi_y[st] = (uint16_t) (d[2] | d[3] << 8) + 1;
         rs_dpi_known |= 1 << st;
+    } else {
+        int k = item - 3 - 2 * RS_DPI_STAGES;
+        if (rs_opt_ok(k, d[0])) {  // anything else stays unknown
+            rs_opt_val[k] = d[0];
+            rs_opt_known |= 1 << k;
+        }
     }
     rs_refresh_next = (item + 1 < RS_REFRESH_ITEMS) ? item + 1 : -1;
 }
@@ -1191,6 +1273,24 @@ static void rs_read_done(bool ok, uint32_t now) {
         case RsRead::REFRESH:
             rs_refresh_done(ok, rs_reply);
             break;
+        case RsRead::INFO:
+            if (ok) {
+                memcpy(rs_info, rs_cap, rs_cap_len);
+                rs_info_len = rs_cap_len;
+                rs_info_seq++;
+            }
+            rs_refresh_next = -1;  // the last refresh item
+            break;
+        case RsRead::RAW:
+            if (ok) {
+                memcpy(rs_raw, rs_cap, rs_cap_len);
+                rs_raw_len = rs_cap_len;
+            } else {
+                rs_raw_len = 0;
+            }
+            rs_raw_state = ok ? 2 : 3;
+            rs_raw_seq++;
+            break;
         default:
             break;
     }
@@ -1202,14 +1302,25 @@ static void rs_tick(uint32_t now) {
             rs_reply_ready = false;
             rs_read_done(true, now);
         } else if ((int32_t) (now - rs_deadline) >= 0) {
-            rs_fail |= 8;
-            rs_noread_dev = rs_read_dev;
-            rs_noread_at = now;
+            // a status query or probe going unanswered says nothing about whether reads work
+            if ((rs_read != RsRead::INFO) && (rs_read != RsRead::RAW)) {
+                rs_fail |= 8;
+                rs_noread_dev = rs_read_dev;
+                rs_noread_at = now;
+            }
             rs_read_done(false, now);
         }
     }
     if (rs_can_read()) {
-        if (rs_dpi_wanted) {
+        if (rs_raw_pending) {
+            rs_raw_pending = false;
+            if (rs_read_target() != 0) {
+                rs_start_exchange(RsRead::RAW, rs_raw_req, now);
+            } else {
+                rs_raw_state = 3;
+                rs_raw_seq++;
+            }
+        } else if (rs_dpi_wanted) {
             rs_dpi_wanted = false;
             rs_dpi_stage = -1;
             rs_fail = 0;
@@ -1288,9 +1399,15 @@ static void rs_tick(uint32_t now) {
 //   4 stage (0-based, 0xFF unknown)   5 angle (int8)   6 position (int8)   7 Mid+Right hold count
 //   8-22 stage colours (R,G,B x5)   23-42 DPI table (X,Y uint16 x5)   43-54 tuning (GwTune order:
 //   angle step, position step, angle home, position home, flash ms, position-reset hold ms, wheel
-//   hold ms, radio hold ms)   55 last command seq applied   56 firmware version   63 crc8 of 0-62
+//   hold ms, radio hold ms)   55 last command seq applied   56 firmware version
+//   57-61 option bytes as the mouse stores them (rs_opt_addr order: polling, lift-off, Angle Snap,
+//   Motion Sync, SPDT)   62 bit n = option n known   63 crc8 of 0-62
+// Bytes 64-127 (v14+; a QT Py reading only 64 bytes sees the block above unchanged):
+//   64 'X'   65 status query reply count   66 its length (0 = none)   67-90 the reply (report ID first)
+//   91 probe count   92 probe state (0 none, 1 waiting, 2 answered, 3 no answer)   93 reply length
+//   94-117 the reply (report ID first)   118-126 0   127 crc8 of 64-126
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 13
+#define GW_FW_VERSION 14
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1301,6 +1418,8 @@ static void rs_tick(uint32_t now) {
 #define LINK_REFRESH 0x08          // [] read stage, angle, position, colours, DPI table from the mouse
 #define LINK_FLASH 0x09            // [R,G,B] test flash
 #define LINK_PALETTE_DEFAULT 0x0A  // [R,G,B x5] built-in palette only (QT Py restoring it after a reboot)
+#define LINK_SET_OPTION 0x0B       // [option 0-4 (rs_opt_addr order), value as the mouse stores it]
+#define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
 
 static uint8_t link_seq = 0;
 static uint8_t radio_toggles = 0;
@@ -1347,7 +1466,20 @@ void gw_link_status(uint8_t* s) {
     put16(s + 53, tune.radio_hold_ms);
     s[55] = link_seq;
     s[56] = GW_FW_VERSION;
+    for (int k = 0; k < RS_OPTS; k++) {
+        s[57 + k] = rs_opt_val[k];
+    }
+    s[62] = rs_opt_known;
     s[63] = gw_crc8(s, 63);
+    s[64] = 'X';
+    s[65] = rs_info_seq;
+    s[66] = rs_info_len;
+    memcpy(s + 67, rs_info, rs_info_len);
+    s[91] = rs_raw_seq;
+    s[92] = rs_raw_state;
+    s[93] = rs_raw_len;
+    memcpy(s + 94, rs_raw, rs_raw_len);
+    s[127] = gw_crc8(s + 64, 63);
 }
 
 static bool tuning_ok(const uint8_t* d) {
@@ -1456,6 +1588,31 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
         case LINK_FLASH:
             if ((len == 3) && rs) {
                 rs_led_flash((uint32_t) d[0] << 16 | d[1] << 8 | d[2], now);
+            }
+            break;
+        case LINK_RAW: {
+            // reads and the status query only, with a valid check byte, and a read of at most 10 bytes
+            uint8_t sum = RS_REPORT_ID;
+            for (int i = 0; i < len; i++) {
+                sum += d[i];
+            }
+            bool ok = (len == RS_LEN) && (sum == 0x55) && (((d[0] == RS_READ) && (d[4] >= 1) && (d[4] <= 10)) || ((d[0] == RS_INFO_CMD) && (d[4] == 0)));
+            if (ok && rs && !rs_raw_pending) {
+                memcpy(rs_raw_req, d, RS_LEN);
+                rs_raw_pending = true;
+                rs_raw_state = 1;
+            } else {
+                rs_raw_state = 3;  // refused
+                rs_raw_len = 0;
+                rs_raw_seq++;
+            }
+            break;
+        }
+        case LINK_SET_OPTION:
+            if ((len == 2) && rs && (d[0] < RS_OPTS) && rs_opt_ok(d[0], d[1])) {
+                rs_write_value(rs_opt_addr[d[0]], d[1]);
+                rs_opt_val[d[0]] = d[1];
+                rs_opt_known |= 1 << d[0];
             }
             break;
         default:
