@@ -30,7 +30,7 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
-#define QT_FW 9        // this firmware's number, shown in /api/status
+#define QT_FW 10        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -60,6 +60,10 @@ static Preferences prefs;
 static uint8_t st[STATUS_LEN];
 static bool st_ok = false;
 static bool st_ext = false;  // bytes 64-127 valid (Feather v14+)
+static uint8_t info_seq_seen = 0;    // the Feather's status-query reply count when last noticed
+static uint32_t info_at = 0;         // millis() when a new reply was noticed (0 = none)
+static bool info_first = true;       // the first status after a restart: a reply already there is of unknown age
+static bool info_age_known = false;
 static uint32_t st_at = 0;       // last good status
 static bool link_up = false;
 static bool toggles_known = false;
@@ -249,6 +253,16 @@ static bool poll_status() {
     d_ok++;
     memcpy(st, b, STATUS_LEN);
     st_ext = (b[64] == 'X') && (crc8(b + 64, 63) == b[127]);
+    if (st_ext && info_first) {
+        info_first = false;
+        info_seq_seen = b[65];
+        info_at = (b[66] > 0) ? 1 : 0;
+        info_age_known = false;
+    } else if (st_ext && (b[66] > 0) && (b[65] != info_seq_seen)) {
+        info_seq_seen = b[65];
+        info_at = millis() | 1;
+        info_age_known = true;
+    }
     st_ok = true;
     st_at = millis();
     return true;
@@ -508,6 +522,17 @@ static String hex_bytes(const uint8_t* p, uint8_t n) {
     return o;
 }
 
+// Battery, from the Warg's reply to the status query (command 04), seen 2026-10-09:
+//   08 04 00 00 00 02 | 64 00 | 10 27 ...  -> 0x64 = 100 %, then 0x1027 = 4135 mV (big-endian)
+// The second byte (00) is not known yet (charging?).
+static String battery_json() {
+    if (!st_ok || !st_ext || (st[66] < 10) || (st[67] != 8) || (st[68] != 0x04) || (st[73] > 100) || !info_at) {
+        return "null";
+    }
+    uint16_t mv = (uint16_t) (st[75] << 8 | st[76]);
+    return "{\"pct\":" + String(st[73]) + ",\"mv\":" + String(mv) + ",\"age_s\":" + String(info_age_known ? (long) ((millis() - info_at) / 1000) : -1L) + "}";
+}
+
 // the mouse's reply to the status query (each refresh) and to the last probe, as they came (report ID first)
 static String ext_json() {
     if (!st_ok || !st_ext) {
@@ -633,6 +658,7 @@ static void h_status() {
     }
     j += ",\"opt\":" + opt_json();
     j += ext_json();
+    j += ",\"battery\":" + battery_json();
     j += ",\"qt_fw\":" + String(QT_FW);
     j += ",\"diag\":{\"polls\":" + String(d_polls) + ",\"ok\":" + String(d_ok) + ",\"short\":" + String(d_short) +
          ",\"bad\":" + String(d_bad) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
