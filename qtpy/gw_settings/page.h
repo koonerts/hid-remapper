@@ -2,7 +2,7 @@
 // The settings page, served at / (one file, no external resources).
 static const char PAGE_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Warg settings</title>
+<title>Warg settings</title><link rel="icon" id="fav" href="data:,">
 <style>
 :root{--bg:#f3f4f6;--card:#fff;--fg:#17191c;--mut:#646b75;--line:#dcdfe4;--soft:#eef0f3;--acc:#1f6fe0;--on:#fff;--ok:#1a8a4a;--bad:#c23b2e;--warn:#9a5a00;--warnbg:#fff4de}
 @media (prefers-color-scheme:dark){:root{--bg:#121416;--card:#1b1e22;--fg:#e8eaed;--mut:#9aa1ab;--line:#2e333a;--soft:#24282e;--acc:#5a9cf5;--on:#0c1420;--ok:#4cc27e;--bad:#f0796c;--warn:#f0b65a;--warnbg:#33290f}}
@@ -39,6 +39,23 @@ input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
 .fld+.fld{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
 .lbl{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
 .lbl b{font-size:17px;font-variant-numeric:tabular-nums}
+.sens{display:flex;gap:18px;align-items:center}
+.sens>svg{flex:none;width:170px;height:auto;touch-action:none;user-select:none;-webkit-user-select:none}
+.flds{flex:1;min-width:0}
+@media (max-width:540px){.sens{flex-direction:column;align-items:stretch}.sens>svg{align-self:center;width:200px}}
+.ms .bd{fill:var(--soft);stroke:var(--mut);stroke-opacity:.5;stroke-width:2;cursor:ns-resize}
+.ms .sm{fill:none;stroke:var(--mut);stroke-opacity:.35;stroke-width:1.5;pointer-events:none}
+.ms .ax{stroke:var(--mut);stroke-opacity:.5;stroke-width:1;stroke-dasharray:3 3}
+.ms .gh{fill:none;stroke:var(--mut);stroke-width:1.5;stroke-dasharray:4 3}
+.ms .ax,.ms .gh,.ms .arc,.ms text{pointer-events:none}
+.ms .sn{cursor:ns-resize}
+.ms .sn rect{fill:var(--acc);fill-opacity:.22;stroke:var(--acc);stroke-width:2}
+.ms .sn line,.ms .sn path{stroke:var(--acc);stroke-width:2.5;fill:var(--acc)}
+.ms .dot{fill:var(--acc)}
+.ms .arc{fill:none;stroke:var(--acc);stroke-width:1.5;stroke-opacity:.7}
+.ms .hit{fill:transparent;cursor:grab}
+.ms text{fill:var(--mut);font-size:11px}
+.ms.unk .sn,.ms.unk .arc{opacity:.3}
 /* segmented choice */
 .seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .seg button{border:0;border-radius:0;border-right:1px solid var(--line);padding:6px 11px;background:var(--card)}
@@ -72,10 +89,20 @@ ul.ch{margin:0 0 14px;padding-left:18px;font-size:14px}ul.ch li{margin:4px 0}
 <p class="mut" id="stnote">Tap a number to switch stage right away. Colour and DPI edits are sent when you press Apply.</p></div>
 
 <div class="card"><div class="hd"><h2>Sensor</h2></div>
+<div class="sens"><svg class="ms unk" id="ms" viewBox="0 0 200 300" role="img" aria-label="Sensor position and angle">
+<text x="100" y="13" text-anchor="middle">front</text>
+<path class="bd" d="M100,22 C146,22 160,62 160,112 C160,172 166,232 150,264 C138,284 62,284 50,264 C34,232 40,172 40,112 C40,62 54,22 100,22 Z"/>
+<path class="sm" d="M100,22 V118 M41,114 Q100,128 159,114"/><rect class="sm" x="94" y="44" width="12" height="30" rx="6"/>
+<rect class="sm" x="37" y="130" width="7" height="22" rx="3"/><rect class="sm" x="37" y="156" width="7" height="22" rx="3"/>
+<g id="msg"><rect class="gh" x="-13" y="-16" width="26" height="32" rx="5"/><line class="gh" x1="0" y1="-16" x2="0" y2="-42"/></g>
+<g id="msa"><line class="ax" x1="0" y1="-60" x2="0" y2="60"/><path class="arc" id="msarc"/></g>
+<g class="sn" id="mss"><rect x="-13" y="-16" width="26" height="32" rx="5"/><line x1="0" y1="-16" x2="0" y2="-42"/><path d="M0,-54 L-6.5,-41 L6.5,-41 Z"/><circle class="dot" r="3"/><circle class="hit" id="msh" cx="0" cy="-48" r="14"/></g>
+</svg><div class="flds">
 <div class="fld"><div class="lbl"><span>Angle</span><b id="anglev">–</b></div>
 <div class="row"><button class="sq" onclick="step('angle',-1)" aria-label="Angle down">−</button><input type="range" id="angle" min="-30" max="30" step="1" aria-label="Sensor angle"><button class="sq" onclick="step('angle',1)" aria-label="Angle up">+</button><button onclick="home('angle')">Reset to <span id="ahome">–</span>°</button></div></div>
 <div class="fld"><div class="lbl"><span>Position</span><b id="posv">–</b></div>
-<div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div>
+<div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div></div>
+<p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where Middle + Left resets to. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
 
 <div class="card"><div class="hd"><h2>More mouse settings</h2></div>
 <p class="note" id="optnote" hidden></p>
@@ -114,7 +141,10 @@ function post(u,b){return fetch(u,{method:'POST',body:b}).then(r=>r.json()).catc
 function toast(m,bad){const t=$('toast');t.textContent=m;t.className='toast show'+(bad?' bad':'');clearTimeout(tt);tt=setTimeout(()=>{t.className='toast'},2400)}
 function say(r,m){toast(r.ok?m:'Failed: '+(r.err||'error'),!r.ok);return r}
 function ink(c){const n=parseInt(c,16);return ((n>>16)*.299+(n>>8&255)*.587+(n&255)*.114)>140?'#111':'#fff'}
-function readMouse(){post('/api/refresh').then(r=>say(r,'Reading from the mouse'))}
+// tab icon: a mouse in the current DPI stage's colour
+let favC='';
+function fav(c){if(c===favC)return;favC=c;$('fav').href='data:image/svg+xml,'+encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M16 1.5C23.5 1.5 26 7.5 26 14v8c0 6-4.5 8.5-10 8.5S6 28 6 22v-8C6 7.5 8.5 1.5 16 1.5Z' fill='#"+c+"' stroke='#222' stroke-width='1.8'/><path d='M16 2v10M6.6 12.6Q16 15.6 25.4 12.6' fill='none' stroke='#222' stroke-width='1.8'/></svg>")}
+fav('1f6fe0');function readMouse(){post('/api/refresh').then(r=>say(r,'Reading from the mouse'))}
 
 function rows(){return [...$('rows').children]}
 function paintBtn(i,c){const b=rows()[i].querySelector('.st');b.style.background='#'+c;b.style.color=ink(c)}
@@ -139,9 +169,23 @@ const r=await post('/api/dpi?v='+v.join(','));if(!r.ok){say(r);return}}
 if(dCol){const r=await post('/api/palette?c='+rs.map(r=>r.querySelector('input[type=color]').value.slice(1)).join(','));if(!r.ok){say(r);return}}
 dCol=dDpi=false;hold=Date.now()+1800;dirty();toast('Sent to the mouse')}
 
-function setVal(k,v){if(v!=null)$(k).value=v;$(k+'v').textContent=v==null?'–':(k==='angle'?v+'°':v)}
+function setVal(k,v){if(v!=null)$(k).value=v;$(k+'v').textContent=v==null?'–':(k==='angle'?v+'°':v);drawSensor()}
 function send(k,v){post('/api/set?'+k+'='+v).then(r=>{if(!r.ok)say(r)})}
-function bindSlider(k){$(k).addEventListener('input',e=>{edit[k]=Date.now();$(k+'v').textContent=e.target.value+(k==='angle'?'°':'');clearTimeout(deb[k]);deb[k]=setTimeout(()=>send(k,e.target.value),150)})}
+function bindSlider(k){$(k).addEventListener('input',e=>{edit[k]=Date.now();$(k+'v').textContent=e.target.value+(k==='angle'?'°':'');drawSensor();clearTimeout(deb[k]);deb[k]=setTimeout(()=>send(k,e.target.value),150)})}
+function live(k,v){edit[k]=Date.now();setVal(k,v);clearTimeout(deb[k]);deb[k]=setTimeout(()=>send(k,v),150)}
+// sensor drawing: y0 = the sensor's spot at position 0, k = drawing units per position step (lower
+// positions are toward the front), dir = 1 draws a positive angle turned clockwise
+const MS={y0:162,k:.5,dir:1};
+function msY(p){return MS.y0+p*MS.k}
+function drawSensor(){const a=Number($('angle').value),p=Number($('pos').value),y=msY(p),t=a*MS.dir*Math.PI/180,R=34;
+$('mss').setAttribute('transform','translate(100 '+y+') rotate('+a*MS.dir+')');$('msa').setAttribute('transform','translate(100 '+y+')');
+$('msarc').setAttribute('d',a?'M0,'+(-R)+' A'+R+' '+R+' 0 0 '+(t>0?1:0)+' '+(R*Math.sin(t)).toFixed(1)+','+(-R*Math.cos(t)).toFixed(1):'');
+const tu=S&&S.tune;$('msg').style.display=tu?'':'none';if(tu)$('msg').setAttribute('transform','translate(100 '+msY(tu.pos_home)+') rotate('+tu.angle_home*MS.dir+')');
+$('ms').classList.toggle('unk',!S||(S.angle==null&&!edit.angle)||(S.pos==null&&!edit.pos));$('ms').setAttribute('aria-label','Sensor at position '+p+', angle '+a+'°')}
+let msDrag=null,msOff=0;
+function msMove(e){if(!msDrag)return;const q=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse());
+if(msDrag==='pos'){const p=Math.max(-100,Math.min(101,Math.round((q.y-msOff-MS.y0)/MS.k)));if(p!==Number($('pos').value))live('pos',p)}
+else{const y=msY(Number($('pos').value)),a=Math.max(-30,Math.min(30,Math.round(Math.atan2(q.x-100,y-q.y)*180/Math.PI*MS.dir)));if(a!==Number($('angle').value))live('angle',a)}}
 function step(k,d){if(!S)return;const t=S.tune||{};let v=Number($(k).value);if(k==='angle')v+=d*(t.angle_step||1);else{const st=t.pos_step||5;v=d>0?Math.floor(v/st)*st+st:Math.ceil(v/st)*st-st}v=Math.max(Number($(k).min),Math.min(Number($(k).max),v));edit[k]=Date.now();setVal(k,v);send(k,v)}
 function home(k){if(!S||!S.tune)return;const v=k==='angle'?S.tune.angle_home:S.tune.pos_home;edit[k]=Date.now();setVal(k,v);send(k,v)}
 
@@ -171,7 +215,7 @@ function saveWifi(){const b=new URLSearchParams({ssid:$('ssid').value,pass:$('pa
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
 else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it, then press Read from mouse.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
-paintStages();
+paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
 drawChords();drawTune();drawRadio();drawOpt();
@@ -187,6 +231,8 @@ const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch(
 if(touched)return false;location.replace('http://'+ip+'/');return true}
 function poll(){fetch('/api/status').then(r=>r.json()).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();render()}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,1000))}
 buildStages();bindSlider('angle');bindSlider('pos');
+$('ms').addEventListener('pointerdown',e=>{if(!S||e.target===$('ms'))return;msDrag=e.target.id==='msh'?'angle':'pos';msOff=0;if(msDrag==='pos'&&$('mss').contains(e.target))msOff=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse()).y-msY(Number($('pos').value));$('ms').setPointerCapture(e.pointerId);e.preventDefault();msMove(e)});
+$('ms').addEventListener('pointermove',msMove);['pointerup','pointercancel'].forEach(t=>$('ms').addEventListener(t,()=>{msDrag=null}));
 document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>seg.querySelectorAll('button').forEach(b=>{b.onclick=()=>{
 if(!S||!S.opt)return;const k=seg.dataset.k;let key=k,val=b.dataset.v;const now=Date.now(),set={};
 if(k==='spdt_l'||k==='spdt_r'){if(S.opt.spdt_l===null||S.opt.spdt_r===null){toast('Press Read from mouse first',1);return}
