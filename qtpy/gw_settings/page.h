@@ -141,6 +141,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut">The second button never reaches the game while it's part of a chord; the first one always does. Pressing them the other way round isn't a chord. A tap acts when the second button comes up; with no hold action it acts as soon as it goes down.</p>
 </div>
 <p class="mut" id="chstate"></p>
+<p class="mut" id="perf" hidden></p>
 <ul class="ch" id="chords"></ul>
 <h3 class="sub">Tuning</h3>
 <div class="tune" id="tune"></div>
@@ -261,7 +262,8 @@ function chSave(){const r=chEdit.map(x=>x.join('.')).join(',');chWait=S&&S.chord
 post('/api/chords?r='+encodeURIComponent(r)).then(x=>{say(x,'Sending the chords to the Feather');if(!x.ok){chWait=-1;chCheck()}})}
 function chDefaults(){if(!S||!S.chords||!confirm('Replace your chords with the built-in ones (as they came)?'))return;chWait=S.chords.seq;chWaitAt=Date.now();chLost=false;chCheck();$('chstate').textContent='Saving to the Feather…';
 post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(x.ok)chDirty=false;else chWait=-1;chCheck()})}
-function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords');
+function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
+$('perf').hidden=!pf;if(pf)$('perf').textContent='Feather work per 1 ms frame, last second: '+pf.avg_us.toFixed(1)+' µs on average, '+pf.max_us+' µs at most; of that, the chord check '+pf.chords_avg_us.toFixed(1)+' µs on average ('+pf.chords_max_us+' µs at most).';
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
 ed.hidden=false;leg.hidden=true;
 if(chWait>=0&&c.fresh&&c.seq!==chWait){chWait=-1;chDirty=false}

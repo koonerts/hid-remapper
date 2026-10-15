@@ -826,6 +826,13 @@ static void h_status() {
     }
     j += ",\"opt\":" + opt_json();
     j += ",\"chords\":" + chords_json();
+    // Feather v15+: its processing time per 1 ms frame over the last second (status bytes 84-89)
+    if (chords_supported()) {
+        j += ",\"perf\":{\"avg_us\":" + String(u16(84) / 10.0, 1) + ",\"max_us\":" + String(u16(86)) + ",\"chords_avg_us\":" +
+             String(st[88] / 10.0, 1) + ",\"chords_max_us\":" + String(st[89]) + "}";
+    } else {
+        j += ",\"perf\":null";
+    }
     j += ext_json();
     j += ",\"battery\":" + battery_json();
     j += ",\"qt_fw\":" + String(QT_FW);

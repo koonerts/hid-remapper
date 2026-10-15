@@ -1498,9 +1498,11 @@ static void rs_tick(uint32_t now) {
 //   57-61 option bytes as the mouse stores them (rs_opt_addr order: polling, lift-off, Angle Snap,
 //   Motion Sync, SPDT)   62 bit n = option n known   63 crc8 of 0-62
 // Bytes 64-127 (v14+; a QT Py reading only 64 bytes sees the block above unchanged):
-//   64 'X'   65 status query reply count   66 its length (0 = none)   67-90 the reply (report ID first)
-//   91 probe count   92 probe state (0 none, 1 waiting, 2 answered, 3 no answer)   93 reply length
-//   94-117 the reply (report ID first)   118 probes refused   119-122 the probe described (cmd, addr
+//   64 'X'   65 status query reply count   66 its length (0 = none)   67-83 the reply (report ID first,
+//   17 bytes at most)   84-85 average processing time per frame over the last second (0.1 us)
+//   86-87 the longest frame in it (us)   88 the chord filter's average (0.1 us, at most 255)   89 its longest
+//   (us, at most 255)   90 0   91 probe count   92 probe state (0 none, 1 waiting, 2 answered, 3 no answer)
+//   93 reply length   94-110 the reply (report ID first, 17 bytes at most)   111-117 0   118 probes refused   119-122 the probe described (cmd, addr
 //   hi, addr lo, len)   123 replies rejected (echoed the command, failed the checks)   124 chord table
 //   number (changes with every new table; 1 at power-up)   125 chord flags (GW_CH_* in gw_chords.h)
 //   126 chord count   127 crc8 of 64-126
@@ -1521,6 +1523,33 @@ static void rs_tick(uint32_t now) {
 #define LINK_SET_OPTION 0x0B       // [option 0-4 (rs_opt_addr order), value as the mouse stores it]
 #define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
 #define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
+
+// per-frame processing time (gw_frame_time), over a 1 s window
+static uint32_t ft_sum = 0, ft_n = 0, ft_max = 0, fc_sum = 0, fc_max = 0, ft_at = 0;
+static uint16_t ft_avg10 = 0, ft_peak = 0;
+static uint8_t fc_avg10 = 0, fc_peak = 0;
+
+void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
+    ft_sum += total_us;
+    fc_sum += chords_us;
+    ft_n++;
+    if (total_us > ft_max) {
+        ft_max = total_us;
+    }
+    if (chords_us > fc_max) {
+        fc_max = chords_us;
+    }
+    uint32_t now = time_us_32();
+    if ((now - ft_at) >= 1000000) {
+        uint32_t a = ft_sum * 10 / ft_n, c = fc_sum * 10 / ft_n;
+        ft_avg10 = (a > 65535) ? 65535 : a;
+        ft_peak = (ft_max > 65535) ? 65535 : ft_max;
+        fc_avg10 = (c > 255) ? 255 : c;
+        fc_peak = (fc_max > 255) ? 255 : fc_max;
+        ft_sum = ft_n = ft_max = fc_sum = fc_max = 0;
+        ft_at = now;
+    }
+}
 
 static uint8_t link_seq = 0;
 static uint8_t radio_toggles = 0;
@@ -1574,12 +1603,16 @@ void gw_link_status(uint8_t* s) {
     s[63] = gw_crc8(s, 63);
     s[64] = 'X';
     s[65] = rs_info_seq;
-    s[66] = rs_info_len;
-    memcpy(s + 67, rs_info, rs_info_len);
+    s[66] = (rs_info_len > 17) ? 17 : rs_info_len;  // a report 8 is 17 bytes with its ID
+    memcpy(s + 67, rs_info, s[66]);
+    put16(s + 84, ft_avg10);
+    put16(s + 86, ft_peak);
+    s[88] = fc_avg10;
+    s[89] = fc_peak;
     s[91] = rs_raw_seq;
     s[92] = rs_raw_state;
-    s[93] = rs_raw_len;
-    memcpy(s + 94, rs_raw, rs_raw_len);
+    s[93] = (rs_raw_len > 17) ? 17 : rs_raw_len;
+    memcpy(s + 94, rs_raw, s[93]);
     s[118] = rs_raw_refused;
     s[119] = rs_raw_cmd;
     s[120] = rs_raw_addr >> 8;

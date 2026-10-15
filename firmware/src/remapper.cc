@@ -1110,6 +1110,7 @@ void process_mapping(bool auto_repeat) {
 
     // chords take their buttons and the wheel out of what the mappings see (put back at the end)
     gw_chords_filter(gw_ch_in);
+    uint32_t gw_chords_us = (uint32_t) (get_time() - now);
 
     for (auto& tap_hold : tap_hold_usages) {
         if ((*tap_hold.input_state != 0) && (*(tap_hold.input_state + PREV_STATE_OFFSET) == 0)) {
@@ -1451,6 +1452,7 @@ void process_mapping(bool auto_repeat) {
     }
 
     gw_chords_restore(gw_ch_in);
+    gw_frame_time((uint32_t) (get_time() - now), gw_chords_us);
 
     processing_time += get_time() - now;
 }
