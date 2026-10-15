@@ -1736,7 +1736,7 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
             break;
         }
         case LINK_SET_CHORDS:
-            if (!gw_chords_link(d, len)) {
+            if (!gw_chords_link(d, len, seq)) {
                 diag(0x753, len);
             }
             break;
@@ -1783,6 +1783,19 @@ static void link_tick(uint32_t now) {
         gw_link_status(s);
         gw_link_set_status(s);
     }
+}
+
+bool gw_action_supported(uint8_t a) {
+    if (a == GA_RADIO) {
+        return true;  // the QT Py's radio, whatever the mouse
+    }
+    if (family_present(Family::RS)) {
+        return a != GA_NONE;
+    }
+    if (family_present(Family::VUK)) {
+        return (a == GA_DPI_NEXT) || (a == GA_ANGLE_RESET);  // the VUK: next stage, sensor switch
+    }
+    return false;
 }
 
 // A chord's action (gw_chords.h). Each does what the mouse at hand supports; the rest do nothing.

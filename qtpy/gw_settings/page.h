@@ -135,7 +135,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <details class="card"><summary><div><h2>Chords</h2><div class="mut">Hold one button, press another: what each pair does</div></div></summary>
 <div id="ched" hidden>
 <p class="note" id="chnote" hidden></p>
-<div id="chlist"></div>
+<fieldset id="chfs" style="border:0;padding:0;margin:0;min-width:0"><div id="chlist"></div></fieldset>
 <div class="row" style="margin-top:10px;justify-content:space-between"><div class="row"><button class="p" id="chSave" onclick="chSave()" disabled>Save chords</button><button id="chRevert" onclick="chRevert()" disabled>Revert</button></div>
 <div class="row"><button id="chAdd" onclick="chAdd()">Add chord</button><button onclick="chDefaults()">Built-in chords</button></div></div>
 <p class="mut">The second button never reaches the game while it's part of a chord; the first one always does. Pressing them the other way round isn't a chord. A tap acts when the second button comes up; with no hold action it acts as soon as it goes down.</p>
@@ -235,13 +235,13 @@ const missing=Object.values(o).some(v=>v===null);note.hidden=!missing;if(missing
 // ---- chord editor (Feather v15+): rows of [first button, second button, tap, hold, ms]
 const BTN=['','Left','Right','Middle','Back','Forward','Wheel'];
 const ACT=['Nothing','Next DPI stage','Previous DPI stage','DPI stage 1','DPI stage 2','DPI stage 3','DPI stage 4','DPI stage 5','Angle up','Angle down','Angle reset','Position up (toward the back)','Position down (toward the front)','Position reset','Wi-Fi on/off','Motion Sync on/off','Angle Snap on/off','Lift-off distance: next'];
-let chEdit=[],chDirty=false,chSeq=-1,chWait=-1;
+let chEdit=[],chDirty=false,chSeq=-1,chWait=-1,chWaitAt=0,chLost=false;
 function opts(list,from,sel){let h='';for(let i=from;i<list.length;i++)h+='<option value="'+i+'"'+(i===sel?' selected':'')+'>'+list[i]+'</option>';return h}
 function chProblems(){const seen={};return chEdit.map((r,i)=>{const [m,t,a,h,ms]=r,k=m+'.'+t;let e='';
 if(m===t)e='Pick two different buttons.';else if(!a&&!h)e='Pick at least one action.';else if(t!==6&&h&&ms<100)e='A hold needs at least 100 ms.';else if(seen[k]!==undefined)e='Same buttons as chord '+(seen[k]+1)+'.';
 if(seen[k]===undefined)seen[k]=i;return e})}
 function chCheck(){const p=chProblems();document.querySelectorAll('#chlist .crow').forEach((row,i)=>{row.querySelector('.cerr').textContent=p[i]||''});
-const ok=!p.some(Boolean)&&chEdit.length<=12;$('chSave').disabled=!chDirty||!ok||chWait>=0;$('chRevert').disabled=!chDirty;$('chAdd').disabled=chEdit.length>=12;
+const ok=!p.some(Boolean)&&chEdit.length<=12,busy=chWait>=0;$('chSave').disabled=!chDirty||!ok||busy;$('chRevert').disabled=!chDirty;$('chAdd').disabled=chEdit.length>=12||busy;$('chfs').disabled=busy;
 const wifi=chEdit.some(r=>r[2]===14||r[3]===14);$('chnote').hidden=wifi;$('chnote').textContent='No chord switches Wi-Fi. Unless Wi-Fi is set to stay on, the QT Py\'s own button would then be the only way to turn it on.'}
 function chBuild(){const el=$('chlist');el.innerHTML='';chEdit.forEach((r,i)=>{const w=r[1]===6,n=i+1;
 el.insertAdjacentHTML('beforeend','<div class="crow" data-i="'+i+'"><div class="cwhen"><span>Hold</span><select class="cm" aria-label="Chord '+n+': button held first">'+opts(BTN.slice(0,6),1,r[0])+'</select><span>then</span><select class="ct" aria-label="Chord '+n+': second button">'+opts(BTN,1,r[1])+'</select><button class="sq x" aria-label="Remove chord '+n+'">×</button></div>'+
@@ -256,18 +256,20 @@ row.querySelector('.cms').oninput=e=>set(4,Math.max(0,Math.min(2550,Math.round(+
 row.querySelector('.x').onclick=()=>{chEdit.splice(i,1);chDirty=true;chBuild()}});chCheck()}
 function chAdd(){const used=new Set(chEdit.map(r=>r[0]+'.'+r[1]));let m=3,t=1;for(const c of [[3,1],[3,2],[3,4],[3,5],[3,6],[4,1],[4,2],[5,1],[5,2],[4,6],[5,6],[1,6]])if(!used.has(c[0]+'.'+c[1])){[m,t]=c;break}
 chEdit.push([m,t,0,0,0]);chDirty=true;chBuild()}
-function chRevert(){chDirty=false;chSeq=-1;drawChordEditor()}
-function chSave(){const r=chEdit.map(x=>x.join('.')).join(',');chWait=S&&S.chords?S.chords.seq:-1;chCheck();$('chstate').textContent='Saving to the Feather…';
+function chRevert(){chDirty=false;chSeq=-1;chWait=-1;chLost=false;drawChordEditor()}
+function chSave(){const r=chEdit.map(x=>x.join('.')).join(',');chWait=S&&S.chords?S.chords.seq:-1;chWaitAt=Date.now();chLost=false;chCheck();$('chstate').textContent='Saving to the Feather…';
 post('/api/chords?r='+encodeURIComponent(r)).then(x=>{say(x,'Sending the chords to the Feather');if(!x.ok){chWait=-1;chCheck()}})}
-function chDefaults(){if(!S||!S.chords||!confirm('Replace your chords with the built-in ones (as they came)?'))return;chWait=S.chords.seq;chDirty=false;$('chstate').textContent='Saving to the Feather…';
-post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(!x.ok)chWait=-1})}
+function chDefaults(){if(!S||!S.chords||!confirm('Replace your chords with the built-in ones (as they came)?'))return;chWait=S.chords.seq;chWaitAt=Date.now();chLost=false;chCheck();$('chstate').textContent='Saving to the Feather…';
+post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(x.ok)chDirty=false;else chWait=-1;chCheck()})}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords');
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
 ed.hidden=false;leg.hidden=true;
 if(chWait>=0&&c.fresh&&c.seq!==chWait){chWait=-1;chDirty=false}
+// the Feather never showed a new table (a frame lost or refused): stop waiting, keep the edits
+if(chWait>=0&&Date.now()-chWaitAt>8000){chWait=-1;chLost=true}
 if(!chDirty&&c.fresh&&c.rules&&c.seq!==chSeq){chSeq=c.seq;chEdit=c.rules.map(r=>r.slice());chBuild()}else chCheck();
 let s=(c.flags&1)?'Saved on the Feather':'The Feather\'s built-in chords';if(c.saved_here)s+=', with a copy on the QT Py';s+='.';
-if((c.flags&2)||chWait>=0)s='Saving to the Feather…';if(c.flags&4)s+=' The last table sent was refused.';if(c.flags&8)s+=' The Feather couldn\'t write its flash.';
+if((c.flags&2)||chWait>=0)s='Saving to the Feather…';if(c.flags&4)s+=' The last table sent was refused.';if(c.flags&8)s+=' The Feather couldn\'t write its flash.';if(chLost&&chWait<0)s+=' The Feather didn\'t take the last table: press Save again.';
 $('chstate').textContent=s}
 // how Wi-Fi gets switched, for the Wi-Fi card
 function wifiChord(){const c=S.chords&&S.chords.rules;if(!S.chords)return 'Hold Middle + Right';if(!c)return '';const r=c.find(x=>x[2]===14||x[3]===14);return r?(r[3]===14?'Hold ':'Press ')+BTN[r[0]]+' + '+BTN[r[1]]:''}

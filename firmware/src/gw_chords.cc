@@ -94,8 +94,13 @@ static bool rec_parse(const uint8_t* b, gw_rule_t* rules, uint8_t* n) {
 #include "hardware/regs/addressmap.h"
 #include "hardware/sync.h"
 
-// HID Remapper keeps its config in the last PERSISTED_CONFIG_SIZE bytes (main.cc, RP2040)
-#define CH_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - PERSISTED_CONFIG_SIZE - FLASH_SECTOR_SIZE)
+// one sector below HID Remapper's config, placed by the same rule as main.cc's CONFIG_OFFSET_IN_FLASH
+#if PICO_RP2350
+#define CH_CONFIG_OFFSET (PICO_FLASH_SIZE_BYTES - PERSISTED_CONFIG_SIZE - 4096)
+#else
+#define CH_CONFIG_OFFSET (PICO_FLASH_SIZE_BYTES - PERSISTED_CONFIG_SIZE)
+#endif
+#define CH_FLASH_OFFSET (CH_CONFIG_OFFSET - FLASH_SECTOR_SIZE)
 static const uint8_t* flash_rec() {
     return (const uint8_t*) (XIP_BASE + CH_FLASH_OFFSET);
 }
@@ -105,8 +110,9 @@ static bool flash_write(const uint8_t* rec, uint8_t len) {
     if (rec != NULL) {
         memcpy(page, rec, len);
     }
-    // as main.cc's do_persist_config: this copy_to_ram image runs from RAM, so nothing needs
-    // flash while it's being written
+    // as main.cc's do_persist_config. Interrupts stay on (the PIO-USB frames must go on), so every
+    // interrupt handler that can run meanwhile must be in RAM: the SDK's and TinyUSB's are, the
+    // fork's own (firmware/src runs from flash) are marked __not_in_flash_func (gw_link.cc's I2C one)
 #if !PICO_COPY_TO_RAM
     uint32_t ints = save_and_disable_interrupts();
 #endif
@@ -172,11 +178,12 @@ struct Button {
     uint32_t down_at;  // when it went down
     int8_t latch;      // the rule whose chord this press is, or LATCH_*
     bool hold_fired;
+    bool has_hold;     // its rule has a hold action the plugged-in mouse supports (decided at the press)
 };
 // latch must start at LATCH_NONE: a zeroed one would mean "in a chord of rule 0" (every button
 // firing rule 0's tap at the first frame)
-static Button btn[GW_CH_BUTTONS] = { { false, 0, LATCH_NONE, false }, { false, 0, LATCH_NONE, false }, { false, 0, LATCH_NONE, false },
-    { false, 0, LATCH_NONE, false }, { false, 0, LATCH_NONE, false } };
+static Button btn[GW_CH_BUTTONS] = { { false, 0, LATCH_NONE, false, false }, { false, 0, LATCH_NONE, false, false },
+    { false, 0, LATCH_NONE, false, false }, { false, 0, LATCH_NONE, false, false }, { false, 0, LATCH_NONE, false, false } };
 static int32_t saved[GW_CH_BUTTONS];  // the slots' contents this frame, put back afterwards
 
 void gw_chords_filter(int32_t* const* in) {
@@ -194,17 +201,25 @@ void gw_chords_filter(int32_t* const* in) {
     }
     int32_t wheel = (in[GW_CH_WHEEL - 1] != NULL) ? *in[GW_CH_WHEEL - 1] : 0;
 
-    // a trigger going down while its modifier is down starts a chord (the first rule that matches)
+    // a trigger going down while its modifier is down starts a chord (the first rule that matches).
+    // A button that starts a chord in this same frame isn't a modifier for another one, so two buttons
+    // going down together can't each hold the other back.
+    uint8_t started = 0;
     for (int i = 0; i < GW_CH_BUTTONS; i++) {
         if (!raw[i] || btn[i].raw || (btn[i].latch != LATCH_NONE)) {
             continue;
         }
         for (uint8_t r = 0; r < n_rules; r++) {
             const gw_rule_t& rule = table[r];
-            if ((rule.trig == i + 1) && enabled(rule) && raw[rule.mod - 1]) {
-                btn[i].latch = r;
-                btn[i].hold_fired = false;
-                if (rule.hold == GA_NONE) {
+            if ((rule.trig == i + 1) && enabled(rule) && raw[rule.mod - 1] && !(started & (1 << (rule.mod - 1)))) {
+                Button& b = btn[i];
+                b.latch = r;
+                b.hold_fired = false;
+                // a hold the mouse can't do isn't waited for: the tap fires on the press, as v14 did for
+                // the VUK's sensor switch (Middle + Left, whose hold only means something on the Warg)
+                b.has_hold = (rule.hold != GA_NONE) && gw_action_supported(rule.hold);
+                started |= 1 << i;
+                if (!b.has_hold && (rule.tap != GA_NONE)) {
                     gw_action(rule.tap, now);
                 }
                 break;
@@ -225,12 +240,12 @@ void gw_chords_filter(int32_t* const* in) {
         }
         const gw_rule_t& rule = table[b.latch];
         if (raw[i]) {
-            if ((rule.hold != GA_NONE) && !b.hold_fired && ((now - b.down_at) >= rule.hold10 * 10000u)) {
+            if (b.has_hold && !b.hold_fired && ((now - b.down_at) >= rule.hold10 * 10000u)) {
                 b.hold_fired = true;
                 gw_action(rule.hold, now);
             }
         } else {
-            if ((rule.hold != GA_NONE) && !b.hold_fired) {
+            if (b.has_hold && !b.hold_fired && (rule.tap != GA_NONE)) {
                 gw_action(rule.tap, now);
             }
             b.latch = LATCH_NONE;
@@ -238,20 +253,22 @@ void gw_chords_filter(int32_t* const* in) {
     }
     // the wheel: held back while a wheel rule's modifier is down; acts once that has lasted long
     // enough, one step per frame with wheel movement (a high-resolution wheel reports 120 a notch)
+    // (with several wheel rules down at once, the first in table order whose hold has passed acts)
     bool hold_wheel = false;
+    bool acted = false;
     for (uint8_t r = 0; r < n_rules; r++) {
         const gw_rule_t& rule = table[r];
         if ((rule.trig != GW_CH_WHEEL) || !raw[rule.mod - 1]) {
             continue;
         }
         hold_wheel = true;
-        if ((wheel != 0) && ((now - btn[rule.mod - 1].down_at) >= rule.hold10 * 10000u)) {
+        if (!acted && (wheel != 0) && ((now - btn[rule.mod - 1].down_at) >= rule.hold10 * 10000u)) {
             uint8_t a = (wheel > 0) ? rule.tap : rule.hold;
             if (a != GA_NONE) {
                 gw_action(a, now);
             }
+            acted = true;
         }
-        break;
     }
 
     for (int i = 0; i < GW_CH_BUTTONS; i++) {
@@ -306,6 +323,7 @@ uint8_t gw_chords_flags() {
 
 static gw_rule_t staged[GW_CH_MAX];
 static uint8_t staged_total = 0;
+static uint8_t staged_seq = 0;  // the link seq of the staged first part
 static bool staging = false;
 static bool save_wanted = false;
 static bool erase_wanted = false;
@@ -332,7 +350,14 @@ static void apply(const gw_rule_t* rules, uint8_t n) {
 
 // [part, total, rules...]: part 0 holds rules 0-7, part 1 rules 8-11; total 0xFF in part 0 = the
 // built-in defaults (and the flash record is erased, so a later firmware's defaults apply)
-bool gw_chords_link(const uint8_t* d, uint8_t len) {
+// the QT Py numbers its frames 1-255, then 1 again
+static uint8_t seq_after(uint8_t s) {
+    return (s == 255) ? 1 : s + 1;
+}
+
+// The second part only completes the first one sent right before it (the next seq): a first part
+// that never arrived can't leave an older half-sent table to be completed with this one's rest.
+bool gw_chords_link(const uint8_t* d, uint8_t len, uint8_t link_seq) {
     if (!loaded) {
         load();
     }
@@ -364,7 +389,9 @@ bool gw_chords_link(const uint8_t* d, uint8_t len) {
     if (part == 0) {
         staging = true;
         staged_total = total;
-    } else if (!staging || (staged_total != total)) {
+        staged_seq = link_seq;
+    } else if (!staging || (staged_total != total) || (link_seq != seq_after(staged_seq))) {
+        staging = false;
         return false;
     }
     memcpy(staged + first, d + 2, count * GW_CH_RULE_BYTES);

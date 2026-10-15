@@ -69,7 +69,7 @@ uint8_t gw_chords_seq();
 uint8_t gw_chords_flags();
 // a LINK_SET_CHORDS payload; false = malformed (a well-formed but invalid table is dropped and
 // reported in the flags instead)
-bool gw_chords_link(const uint8_t* d, uint8_t len);
+bool gw_chords_link(const uint8_t* d, uint8_t len, uint8_t seq);
 // from gw_tick: writes a pending change to flash
 void gw_chords_service();
 // validation, shared with the tests
@@ -77,5 +77,7 @@ bool gw_chords_valid(const gw_rule_t* rules, uint8_t n);
 
 // implemented in gw_mouse.cc
 void gw_action(uint8_t action, uint32_t now);
+// whether an action does anything with the mice plugged in (a hold that does nothing isn't waited for)
+bool gw_action_supported(uint8_t action);
 
 #endif

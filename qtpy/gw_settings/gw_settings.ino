@@ -495,6 +495,7 @@ static void link_tick() {
     if (!link_up) {
         toggles_known = false;
         feather_init_done = false;
+        ch_ok = false;  // the Feather may come back restarted: its table number starts at 1 again
         return;
     }
     if (!ok) {
@@ -507,6 +508,7 @@ static void link_tick() {
     if (feather_init_done && !(st[2] & 1)) {
         feather_init_done = false;
         toggles_known = false;
+        ch_ok = false;
     }
     if (!feather_init_done && (cq_n == 0)) {
         push_saved();
@@ -736,8 +738,11 @@ static void h_chords() {
     }
     if (server.hasArg("defaults")) {
         uint8_t d[2] = { 0, 0xFF };
+        if (!queue_cmd(C_SET_CHORDS, d, 2)) {
+            return ok_json(false, "busy, try again");
+        }
         prefs.remove("chords");
-        return ok_json(queue_cmd(C_SET_CHORDS, d, 2));
+        return ok_json(true);
     }
     if (!server.hasArg("r")) {
         return ok_json(false, "need r");

@@ -41,7 +41,10 @@ static volatile uint8_t status_cur = 0;
 static volatile uint8_t status_reading = 0;
 static volatile uint8_t tx_i = 0;
 
-static void link_irq(i2c_inst_t* i2c, i2c_slave_event_t event) {
+// In RAM: firmware/src code runs from flash (remapper_single.ld), and this runs from the I2C
+// interrupt, which stays on while HID Remapper's config or the chord table is written to flash
+// (XIP is off then; a handler fetched from flash would fault and hang the Feather).
+static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t event) {
     switch (event) {
         case I2C_SLAVE_RECEIVE: {
             uint8_t b = i2c_read_byte_raw(i2c);

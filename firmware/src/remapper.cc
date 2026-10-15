@@ -1185,7 +1185,9 @@ void process_mapping(bool auto_repeat) {
     // evaluate all expressions
     // XXX should we do this before or after tap-hold/sticky/layer logic?
     port_register = 0;
-    for (uint8_t i = 0; i < NEXPRESSIONS; i++) {
+    // Not evaluated: every mapping from an expression or register is ignored (gw_chords_ignore_mapping),
+    // so their results would go nowhere; the chord table does the old chord JSON's work.
+    for (uint8_t i = 0; false && (i < NEXPRESSIONS); i++) {
         int32_t result = eval_expr(i, frame_counter, auto_repeat);
         int32_t* state_ptr = get_state_ptr(EXPR_USAGE_PAGE | (i + 1), 0);
         if (state_ptr != NULL) {
