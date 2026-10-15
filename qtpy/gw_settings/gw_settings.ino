@@ -1,6 +1,7 @@
 // G-Wolves settings page on an Adafruit QT Py ESP32-S3, plugged into the HID Remapper Feather's
 // STEMMA QT port. The QT Py is the I2C master; the Feather (gw_link.cc) answers at 0x42 with a
-// 64-byte status block and takes command frames (layout in firmware/src/gw_mouse.cc).
+// status block (128 bytes read every poll; 192 with the chord table, read when that changes) and takes
+// command frames (layouts in firmware/src/gw_mouse.cc and gw_chords.h).
 //
 // Radio: off at power-up. Holding Mid+Right on the mouse bumps a counter in the Feather's status
 // block; each bump switches Wi-Fi on or off (the QT Py's Boot button does the same). It switches
@@ -30,7 +31,8 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
-#define QT_FW 11        // this firmware's number, shown in /api/status
+#define STATUS_FULL 192 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes
+#define QT_FW 12        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -52,6 +54,11 @@
 #define C_PALETTE_DEFAULT 0x0A
 #define C_SET_OPTION 0x0B  // Feather v14+: [option 0-4, value as the mouse stores it]
 #define C_RAW 0x0C         // Feather v14+: [16 bytes of report 8: a read (08) or the status query (04)]
+#define C_SET_CHORDS 0x0D  // Feather v15+: [part, total, rules] (gw_chords.h)
+
+// chord table limits and action count (gw_chords.h)
+#define CH_MAX 12
+#define CH_ACTIONS 18
 
 static WebServer server(80);
 static DNSServer dns;
@@ -73,6 +80,9 @@ static bool feather_init_done = false;  // tuning/palette pushed since the Feath
 static uint32_t d_polls = 0, d_ok = 0, d_short = 0, d_bad = 0;
 static uint8_t d_last_n = 0, d_b0 = 0, d_b1 = 0;
 static bool last_answered = false;  // the last read returned a full block, valid or not
+// the Feather's chord table (status bytes 128-191), as last read
+static uint8_t ch[64];
+static bool ch_ok = false;
 
 enum class Radio : uint8_t { OFF, JOINING, STA, AP };
 static Radio radio = Radio::OFF;
@@ -268,6 +278,30 @@ static bool poll_status() {
     return true;
 }
 
+// the full 192-byte block, for its chord table; only when the table number (byte 124) moved
+static void read_chords() {
+    static uint8_t b[STATUS_FULL];
+    uint8_t n = Wire1.requestFrom((uint8_t) LINK_ADDR, (uint8_t) STATUS_FULL);
+    if (n != STATUS_FULL) {
+        while (Wire1.available()) {
+            Wire1.read();
+        }
+        return;
+    }
+    for (int i = 0; i < STATUS_FULL; i++) {
+        b[i] = Wire1.read();
+    }
+    if ((b[0] != 'G') || (crc8(b, 63) != b[63]) || (b[128] != 'C') || (crc8(b + 128, 63) != b[191]) || (b[130] > CH_MAX)) {
+        return;
+    }
+    memcpy(ch, b + 128, 64);
+    ch_ok = true;
+}
+
+static bool chords_supported() {
+    return st_ok && st_ext && (st[56] >= 15);
+}
+
 static int16_t s8(uint8_t i) {
     return (int8_t) st[i];
 }
@@ -409,6 +443,22 @@ static void radio_toggle() {
     }
 }
 
+// a chord table as one or two frames: [part, total, up to 8 rules]
+static bool queue_chords(const uint8_t* rules, uint8_t n) {
+    if ((cq_n + ((n > 8) ? 2 : 1)) > CMDQ) {
+        return false;
+    }
+    for (uint8_t part = 0; (part == 0) || (part * 8 < n); part++) {
+        uint8_t d[2 + 8 * 5];
+        uint8_t first = part * 8, cnt = (n - first > 8) ? 8 : n - first;
+        d[0] = part;
+        d[1] = n;
+        memcpy(d + 2, rules + first * 5, cnt * 5);
+        queue_cmd(C_SET_CHORDS, d, 2 + cnt * 5);
+    }
+    return true;
+}
+
 // ---- tuning / palette kept on the QT Py, given back to the Feather after it restarts
 
 static void push_saved() {
@@ -422,6 +472,13 @@ static void push_saved() {
     uint8_t p[15];
     if (prefs.getBytes("pal", p, 15) == 15) {
         queue_cmd(C_PALETTE_DEFAULT, p, 15);
+    }
+    // chords: the Feather keeps its own in flash; a Feather on its built-in table (new, or its record
+    // lost) gets the copy saved here, if there is one
+    uint8_t c[1 + CH_MAX * 5];
+    size_t cn = prefs.getBytes("chords", c, sizeof(c));
+    if (chords_supported() && !(st[125] & 1) && (cn >= 1) && (cn == (size_t) (1 + c[0] * 5)) && (c[0] <= CH_MAX)) {
+        queue_chords(c + 1, c[0]);
     }
 }
 
@@ -442,6 +499,9 @@ static void link_tick() {
     }
     if (!ok) {
         return;
+    }
+    if (chords_supported() && (!ch_ok || (ch[1] != st[124]))) {
+        read_chords();
     }
     // a restarted Feather has lost its tuning flag: re-baseline the counter, give back the settings
     if (feather_init_done && !(st[2] & 1)) {
@@ -623,10 +683,113 @@ static void h_opt() {
     ok_json(queue_cmd(C_SET_OPTION, d, 2));
 }
 
+// ---- chords (Feather v15+): the table it uses, as [modifier, trigger, tap, hold, hold ms] rows
+
+static bool chords_valid(const uint8_t* r, uint8_t n) {  // as gw_chords_valid on the Feather
+    if (n > CH_MAX) {
+        return false;
+    }
+    for (uint8_t i = 0; i < n; i++) {
+        const uint8_t* x = r + 5 * i;
+        if ((x[0] < 1) || (x[0] > 5) || (x[1] < 1) || (x[1] > 6) || (x[0] == x[1]) || (x[2] >= CH_ACTIONS) || (x[3] >= CH_ACTIONS) ||
+            ((x[2] == 0) && (x[3] == 0)) || ((x[1] != 6) && (x[3] != 0) && (x[4] < 10))) {
+            return false;
+        }
+        for (uint8_t j = 0; j < i; j++) {
+            if ((r[5 * j] == x[0]) && (r[5 * j + 1] == x[1])) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static String chords_json() {
+    if (!chords_supported()) {
+        return "null";
+    }
+    String o = "{\"seq\":" + String(st[124]) + ",\"flags\":" + String(st[125]) + ",\"count\":" + String(st[126]);
+    o += ",\"fresh\":" + String((ch_ok && (ch[1] == st[124])) ? "true" : "false");
+    o += ",\"saved_here\":" + String(prefs.isKey("chords") ? "true" : "false");
+    o += ",\"rules\":";
+    if (!ch_ok) {
+        return o + "null}";
+    }
+    o += "[";
+    for (uint8_t i = 0; i < ch[2]; i++) {
+        const uint8_t* x = ch + 3 + 5 * i;
+        o += (i ? ",[" : "[") + String(x[0]) + "," + String(x[1]) + "," + String(x[2]) + "," + String(x[3]) + "," + String(x[4] * 10) + "]";
+    }
+    return o + "]}";
+}
+
+// POST /api/chords?r=mod.trig.tap.hold.ms,...   the whole table (r= empty: no chords at all)
+//      /api/chords?defaults=1                   back to the Feather's built-in table
+// Kept on the Feather (flash) and here, so a Feather on its built-in table gets it back.
+static void h_chords() {
+    touch();
+    if (!st_ok || !link_up) {
+        return ok_json(false, "no answer from the Feather");
+    }
+    if (!chords_supported()) {
+        return ok_json(false, "needs Feather firmware v15");
+    }
+    if (server.hasArg("defaults")) {
+        uint8_t d[2] = { 0, 0xFF };
+        prefs.remove("chords");
+        return ok_json(queue_cmd(C_SET_CHORDS, d, 2));
+    }
+    if (!server.hasArg("r")) {
+        return ok_json(false, "need r");
+    }
+    String s = server.arg("r");
+    uint8_t rules[CH_MAX * 5];
+    uint8_t n = 0;
+    int at = 0;
+    while (at < (int) s.length()) {
+        int comma = s.indexOf(',', at);
+        String part = (comma < 0) ? s.substring(at) : s.substring(at, comma);
+        long v[5];
+        char extra;
+        if (sscanf(part.c_str(), "%ld.%ld.%ld.%ld.%ld%c", &v[0], &v[1], &v[2], &v[3], &v[4], &extra) != 5) {
+            return ok_json(false, "each chord: modifier.trigger.tap.hold.ms");
+        }
+        if (n == CH_MAX) {
+            return ok_json(false, "at most 12 chords");
+        }
+        if ((v[0] < 0) || (v[0] > 255) || (v[1] < 0) || (v[1] > 255) || (v[2] < 0) || (v[2] > 255) || (v[3] < 0) || (v[3] > 255) ||
+            (v[4] < 0) || (v[4] > 2550)) {
+            return ok_json(false, "a value is out of range");
+        }
+        uint8_t* x = rules + 5 * n;
+        x[0] = v[0];
+        x[1] = v[1];
+        x[2] = v[2];
+        x[3] = v[3];
+        x[4] = (uint8_t) ((v[4] + 5) / 10);
+        n++;
+        if (comma < 0) {
+            break;
+        }
+        at = comma + 1;
+    }
+    if (!chords_valid(rules, n)) {
+        return ok_json(false, "invalid chord table");
+    }
+    if (!queue_chords(rules, n)) {
+        return ok_json(false, "busy, try again");
+    }
+    uint8_t c[1 + CH_MAX * 5];
+    c[0] = n;
+    memcpy(c + 1, rules, n * 5);
+    prefs.putBytes("chords", c, 1 + n * 5);
+    ok_json(true);
+}
+
 // not counted as use: an open tab alone shouldn't keep the radio on while playing
 static void h_status() {
     String j;
-    j.reserve(1600);
+    j.reserve(2200);
     j += "{\"link\":";
     j += link_up ? "true" : "false";
     if (st_ok) {
@@ -657,6 +820,7 @@ static void h_status() {
              ",\"wheel_hold_ms\":" + String(u16(51)) + ",\"radio_hold_ms\":" + String(u16(53)) + "}";
     }
     j += ",\"opt\":" + opt_json();
+    j += ",\"chords\":" + chords_json();
     j += ext_json();
     j += ",\"battery\":" + battery_json();
     j += ",\"qt_fw\":" + String(QT_FW);
@@ -923,6 +1087,7 @@ void setup() {
     if (wmode > 2) {
         wmode = 0;
     }
+    Wire1.setBufferSize(256);  // the 192-byte block with the chord table (default 128)
     Wire1.begin(LINK_SDA, LINK_SCL, LINK_HZ);
     Wire1.setTimeOut(50);
     server.on("/", HTTP_GET, h_page);
@@ -939,6 +1104,7 @@ void setup() {
     server.on("/api/wifisleep", HTTP_POST, h_wifisleep);
     server.on("/api/opt", HTTP_POST, h_opt);
     server.on("/api/probe", HTTP_POST, h_probe);
+    server.on("/api/chords", HTTP_POST, h_chords);
     server.on("/api/update", HTTP_POST, h_update_done, h_update_upload);
     server.onNotFound(h_not_found);
     bool resume = prefs.getBool("resume", false);  // restarted by an update: back onto Wi-Fi

@@ -73,6 +73,21 @@ details[open]>summary::after{transform:rotate(-135deg);margin-bottom:-4px}
 details[open]>summary{margin-bottom:12px}
 ul.ch{margin:0 0 14px;padding-left:18px;font-size:14px}ul.ch li{margin:4px 0}
 .tune{display:grid;grid-template-columns:1fr 92px;gap:8px 10px;align-items:center;font-size:14px}
+/* chord editor */
+select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--fg);min-width:0;max-width:100%}
+select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.crow{border:1px solid var(--line);border-radius:12px;padding:10px;margin:0 0 8px}
+.cwhen{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:14px}
+.cwhen select{font-weight:600}
+.cwhen .x{margin-left:auto}
+.cdo{display:grid;grid-template-columns:1fr 1fr 120px;gap:8px;margin-top:8px}
+.cdo label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--mut);min-width:0}
+.cdo select{width:100%}
+.cdo input:disabled{opacity:.45}
+@media (max-width:540px){.cdo{grid-template-columns:1fr}}
+.cerr{color:var(--bad);font-size:12.5px;margin:6px 0 0}
+.cerr:empty{display:none}
+h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 .toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translate(-50%,20px);background:var(--fg);color:var(--bg);padding:9px 14px;border-radius:10px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .15s,transform .15s;max-width:90vw}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.bad{background:var(--bad);color:#fff}
@@ -102,7 +117,7 @@ ul.ch{margin:0 0 14px;padding-left:18px;font-size:14px}ul.ch li{margin:4px 0}
 <div class="row"><button class="sq" onclick="step('angle',-1)" aria-label="Angle down">−</button><input type="range" id="angle" min="-30" max="30" step="1" aria-label="Sensor angle"><button class="sq" onclick="step('angle',1)" aria-label="Angle up">+</button><button onclick="home('angle')">Reset to <span id="ahome">–</span>°</button></div></div>
 <div class="fld"><div class="lbl"><span>Position</span><b id="posv">–</b></div>
 <div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div></div>
-<p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where Middle + Left resets to. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
+<p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where the reset chords put it. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
 
 <div class="card"><div class="hd"><h2>More mouse settings</h2></div>
 <p class="note" id="optnote" hidden></p>
@@ -117,15 +132,24 @@ ul.ch{margin:0 0 14px;padding-left:18px;font-size:14px}ul.ch li{margin:4px 0}
 </div>
 <p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p></div>
 
-<details class="card"><summary><div><h2>Chords</h2><div class="mut">What each chord does, and its tuning</div></div></summary>
+<details class="card"><summary><div><h2>Chords</h2><div class="mut">Hold one button, press another: what each pair does</div></div></summary>
+<div id="ched" hidden>
+<p class="note" id="chnote" hidden></p>
+<div id="chlist"></div>
+<div class="row" style="margin-top:10px;justify-content:space-between"><div class="row"><button class="p" id="chSave" onclick="chSave()" disabled>Save chords</button><button id="chRevert" onclick="chRevert()" disabled>Revert</button></div>
+<div class="row"><button id="chAdd" onclick="chAdd()">Add chord</button><button onclick="chDefaults()">Built-in chords</button></div></div>
+<p class="mut">The second button never reaches the game while it's part of a chord; the first one always does. Pressing them the other way round isn't a chord. A tap acts when the second button comes up; with no hold action it acts as soon as it goes down.</p>
+</div>
+<p class="mut" id="chstate"></p>
 <ul class="ch" id="chords"></ul>
+<h3 class="sub">Tuning</h3>
 <div class="tune" id="tune"></div>
 <div class="row" style="margin-top:12px"><button class="p" onclick="saveTune()">Save tuning</button></div></details>
 
 <div class="card"><div class="hd"><h2>Wi-Fi</h2><button onclick="post('/api/radio_off')">Turn off now</button></div>
 <p class="mut" id="radio" style="margin:0 0 12px"></p>
 <div class="opt"><span>Turns itself off</span><div class="seg" id="keep"><button data-m="0">after 10 min</button><button data-m="1">after 1 hour</button><button data-m="2">never</button></div></div>
-<p class="mut" id="keepnote" hidden>Wi-Fi stays on and comes on by itself at power-up. Hold Middle + Right to switch it off for a session.</p>
+<p class="mut" id="keepnote" hidden></p>
 <details style="margin-top:12px"><summary><span>Change Wi-Fi network</span></summary>
 <p class="mut" style="margin:0 0 8px">The QT Py joins this network when its Wi-Fi comes on. 2.4 GHz only.</p>
 <input type="text" id="ssid" placeholder="Network name" aria-label="Network name"><div style="height:6px"></div><input type="password" id="pass" placeholder="Password" aria-label="Password">
@@ -190,7 +214,9 @@ function step(k,d){if(!S)return;const t=S.tune||{};let v=Number($(k).value);if(k
 function home(k){if(!S||!S.tune)return;const v=k==='angle'?S.tune.angle_home:S.tune.pos_home;edit[k]=Date.now();setVal(k,v);send(k,v)}
 
 function drawChords(){const t=S.tune;if(!t)return;$('chords').innerHTML='<li><b>Middle + Right</b>, tap: next DPI stage. Hold '+t.radio_hold_ms+' ms: Wi-Fi on or off.</li><li><b>Middle + Left</b>, tap: angle back to '+t.angle_home+'°. Hold '+t.pos_hold_ms+' ms: position back to '+t.pos_home+'.</li><li><b>Middle + Back</b> / <b>Forward</b>: position up / down by '+t.pos_step+'.</li><li><b>Middle held '+t.wheel_hold_ms+' ms, then wheel</b>: angle up / down by '+t.angle_step+'°.</li>'}
-function drawTune(){const el=$('tune');if(!S.tune)return;if(!el.children.length){TUNE.forEach(([k,a,l,lo,hi])=>el.insertAdjacentHTML('beforeend','<label for="t_'+a+'">'+l+'</label><input type="number" id="t_'+a+'" data-k="'+k+'" data-a="'+a+'" min="'+lo+'" max="'+hi+'">'));el.querySelectorAll('input').forEach(i=>{i.oninput=()=>{dTune=true}})}
+function drawTune(){const el=$('tune');if(!S.tune)return;if(!el.children.length){TUNE.forEach(([k,a,l,lo,hi])=>{const h=/_hold_ms$/.test(k)?' class="th"':'';el.insertAdjacentHTML('beforeend','<label for="t_'+a+'"'+h+'>'+l+'</label><input type="number" id="t_'+a+'"'+h+' data-k="'+k+'" data-a="'+a+'" min="'+lo+'" max="'+hi+'">')});el.querySelectorAll('input').forEach(i=>{i.oninput=()=>{dTune=true}})}
+// since Feather v15 each chord has its own hold time; these three only matter to older firmware
+el.querySelectorAll('.th').forEach(x=>{x.hidden=!!S.chords});
 if(dTune||Date.now()<holdT)return;el.querySelectorAll('input').forEach(i=>{if(document.activeElement!==i)i.value=S.tune[i.dataset.k]})}
 function saveTune(){const q=[...$('tune').querySelectorAll('input')].map(i=>i.dataset.a+'='+i.value).join('&');post('/api/tune?'+q).then(r=>{say(r,'Tuning saved');if(r.ok){dTune=false;holdT=Date.now()+1800}})}
 
@@ -206,10 +232,50 @@ btns.forEach(b=>b.disabled=false);
 document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>{const k=seg.dataset.k;const v=o[k];
 seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',v!==null&&v!==undefined&&(typeof v==='boolean'?(b.dataset.v==='1')===v:Number(b.dataset.v)===v)))});
 const missing=Object.values(o).some(v=>v===null);note.hidden=!missing;if(missing)note.textContent='Some of these haven\'t been read from the mouse yet: press Read from mouse.'}
+// ---- chord editor (Feather v15+): rows of [first button, second button, tap, hold, ms]
+const BTN=['','Left','Right','Middle','Back','Forward','Wheel'];
+const ACT=['Nothing','Next DPI stage','Previous DPI stage','DPI stage 1','DPI stage 2','DPI stage 3','DPI stage 4','DPI stage 5','Angle up','Angle down','Angle reset','Position up (toward the back)','Position down (toward the front)','Position reset','Wi-Fi on/off','Motion Sync on/off','Angle Snap on/off','Lift-off distance: next'];
+let chEdit=[],chDirty=false,chSeq=-1,chWait=-1;
+function opts(list,from,sel){let h='';for(let i=from;i<list.length;i++)h+='<option value="'+i+'"'+(i===sel?' selected':'')+'>'+list[i]+'</option>';return h}
+function chProblems(){const seen={};return chEdit.map((r,i)=>{const [m,t,a,h,ms]=r,k=m+'.'+t;let e='';
+if(m===t)e='Pick two different buttons.';else if(!a&&!h)e='Pick at least one action.';else if(t!==6&&h&&ms<100)e='A hold needs at least 100 ms.';else if(seen[k]!==undefined)e='Same buttons as chord '+(seen[k]+1)+'.';
+if(seen[k]===undefined)seen[k]=i;return e})}
+function chCheck(){const p=chProblems();document.querySelectorAll('#chlist .crow').forEach((row,i)=>{row.querySelector('.cerr').textContent=p[i]||''});
+const ok=!p.some(Boolean)&&chEdit.length<=12;$('chSave').disabled=!chDirty||!ok||chWait>=0;$('chRevert').disabled=!chDirty;$('chAdd').disabled=chEdit.length>=12;
+const wifi=chEdit.some(r=>r[2]===14||r[3]===14);$('chnote').hidden=wifi;$('chnote').textContent='No chord switches Wi-Fi. Unless Wi-Fi is set to stay on, the QT Py\'s own button would then be the only way to turn it on.'}
+function chBuild(){const el=$('chlist');el.innerHTML='';chEdit.forEach((r,i)=>{const w=r[1]===6,n=i+1;
+el.insertAdjacentHTML('beforeend','<div class="crow" data-i="'+i+'"><div class="cwhen"><span>Hold</span><select class="cm" aria-label="Chord '+n+': button held first">'+opts(BTN.slice(0,6),1,r[0])+'</select><span>then</span><select class="ct" aria-label="Chord '+n+': second button">'+opts(BTN,1,r[1])+'</select><button class="sq x" aria-label="Remove chord '+n+'">×</button></div>'+
+'<div class="cdo"><label><span>'+(w?'Wheel up':'Tap')+'</span><select class="ca">'+opts(ACT,0,r[2])+'</select></label><label><span>'+(w?'Wheel down':'Hold')+'</span><select class="ch">'+opts(ACT,0,r[3])+'</select></label>'+
+'<label><span>'+(w?'Held first (ms)':'Hold time (ms)')+'</span><input type="number" class="cms" min="0" max="2550" step="10" value="'+r[4]+'"'+((!w&&!r[3])?' disabled':'')+'></label></div><p class="cerr"></p></div>')});
+el.querySelectorAll('.crow').forEach(row=>{const i=+row.dataset.i;const set=(k,v,rebuild)=>{chEdit[i][k]=v;chDirty=true;rebuild?chBuild():chCheck()};
+row.querySelector('.cm').onchange=e=>set(0,+e.target.value);
+row.querySelector('.ct').onchange=e=>set(1,+e.target.value,true);
+row.querySelector('.ca').onchange=e=>set(2,+e.target.value);
+row.querySelector('.ch').onchange=e=>{const v=+e.target.value;if(v&&!chEdit[i][3]&&chEdit[i][1]!==6&&chEdit[i][4]<100)chEdit[i][4]=500;set(3,v,true)};
+row.querySelector('.cms').oninput=e=>set(4,Math.max(0,Math.min(2550,Math.round(+e.target.value||0))));
+row.querySelector('.x').onclick=()=>{chEdit.splice(i,1);chDirty=true;chBuild()}});chCheck()}
+function chAdd(){const used=new Set(chEdit.map(r=>r[0]+'.'+r[1]));let m=3,t=1;for(const c of [[3,1],[3,2],[3,4],[3,5],[3,6],[4,1],[4,2],[5,1],[5,2],[4,6],[5,6],[1,6]])if(!used.has(c[0]+'.'+c[1])){[m,t]=c;break}
+chEdit.push([m,t,0,0,0]);chDirty=true;chBuild()}
+function chRevert(){chDirty=false;chSeq=-1;drawChordEditor()}
+function chSave(){const r=chEdit.map(x=>x.join('.')).join(',');chWait=S&&S.chords?S.chords.seq:-1;chCheck();$('chstate').textContent='Saving to the Feather…';
+post('/api/chords?r='+encodeURIComponent(r)).then(x=>{say(x,'Sending the chords to the Feather');if(!x.ok){chWait=-1;chCheck()}})}
+function chDefaults(){if(!S||!S.chords||!confirm('Replace your chords with the built-in ones (as they came)?'))return;chWait=S.chords.seq;chDirty=false;$('chstate').textContent='Saving to the Feather…';
+post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(!x.ok)chWait=-1})}
+function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords');
+if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
+ed.hidden=false;leg.hidden=true;
+if(chWait>=0&&c.fresh&&c.seq!==chWait){chWait=-1;chDirty=false}
+if(!chDirty&&c.fresh&&c.rules&&c.seq!==chSeq){chSeq=c.seq;chEdit=c.rules.map(r=>r.slice());chBuild()}else chCheck();
+let s=(c.flags&1)?'Saved on the Feather':'The Feather\'s built-in chords';if(c.saved_here)s+=', with a copy on the QT Py';s+='.';
+if((c.flags&2)||chWait>=0)s='Saving to the Feather…';if(c.flags&4)s+=' The last table sent was refused.';if(c.flags&8)s+=' The Feather couldn\'t write its flash.';
+$('chstate').textContent=s}
+// how Wi-Fi gets switched, for the Wi-Fi card
+function wifiChord(){const c=S.chords&&S.chords.rules;if(!S.chords)return 'Hold Middle + Right';if(!c)return '';const r=c.find(x=>x[2]===14||x[3]===14);return r?(r[3]===14?'Hold ':'Press ')+BTN[r[0]]+' + '+BTN[r[1]]:''}
 function drawRadio(){const r=S.radio;let s=r.mode==='sta'?'On '+r.ssid+' at '+r.ip:r.mode==='ap'?'Setup network GW-Settings at '+r.ip:'Joining…';
 s+=r.off_in_s<0?' · stays on':' · turns off in '+Math.ceil(r.off_in_s/60)+' min without use';
 const w=S.wifi;if(w&&r.mode==='sta'&&w.rssi)s+=' · signal '+w.rssi+' dBm'+(w.drops?' · '+w.drops+' dropout'+(w.drops>1?'s':'')+' since it started':'');$('radio').textContent=s;
-document.querySelectorAll('#keep button').forEach(b=>b.classList.toggle('on',Number(b.dataset.m)===r.keep));$('keepnote').hidden=r.keep!==2}
+document.querySelectorAll('#keep button').forEach(b=>b.classList.toggle('on',Number(b.dataset.m)===r.keep));$('keepnote').hidden=r.keep!==2;
+const wc=wifiChord();$('keepnote').textContent='Wi-Fi stays on and comes on by itself at power-up. '+(wc?wc+' to switch it off for a session.':'The QT Py\'s own button switches it off for a session.')}
 function saveWifi(){const b=new URLSearchParams({ssid:$('ssid').value,pass:$('pass').value});fetch('/api/wifi',{method:'POST',body:b}).then(()=>{$('radio').textContent='Joining '+$('ssid').value+'… reconnect to that network and open gwolves.local'})}
 
 function render(){const st=$('state');
@@ -218,7 +284,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
-drawChords();drawTune();drawRadio();drawOpt();
+drawChordEditor();drawTune();drawRadio();drawOpt();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain

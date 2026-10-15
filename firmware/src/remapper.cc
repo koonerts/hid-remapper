@@ -17,6 +17,7 @@
 #include "platform.h"
 #include "remapper.h"
 #include "gw_mouse.h"
+#include "gw_chords.h"
 
 #define MAX_REPORT_SIZE 64
 
@@ -114,6 +115,9 @@ uint8_t monitor_report_idx = 0;
 
 #define NREGISTERS 32
 int32_t registers[NREGISTERS] = { 0 };
+
+// input_state slots of buttons 1-5 and the wheel, for the chord table (gw_chords.h); NULL = none
+static int32_t* gw_ch_in[GW_CH_IN] = { NULL };
 std::vector<register_ptrs_t> register_ptrs;
 uint8_t port_register = 0;
 
@@ -404,6 +408,9 @@ void set_mapping_from_config() {
     uint32_t gpio_out_mask_ = 0;
 
     for (auto const& mapping : config_mappings) {
+        if (gw_chords_ignore_mapping(mapping.source_usage)) {
+            continue;  // the old chord JSON's wiring; the chord table does that job now
+        }
         uint8_t layer_mask = mapping.layer_mask;
         uint8_t source_port = mapping.hub_ports & 0x0F;
         uint8_t orig_source_port = source_port;
@@ -702,6 +709,11 @@ void set_mapping_from_config() {
 
     set_gpio_inout_masks(gpio_in_mask_, gpio_out_mask_);
     update_their_descriptor_derivates();
+
+    for (int i = 0; i < GW_CH_BUTTONS; i++) {
+        gw_ch_in[i] = get_state_ptr(0x00090001 + i, 0);
+    }
+    gw_ch_in[GW_CH_WHEEL - 1] = get_state_ptr(V_SCROLL_USAGE, 0);
 }
 
 bool differ_on_absolute(const uint8_t* report1, const uint8_t* report2, uint8_t report_id) {
@@ -1096,6 +1108,9 @@ void process_mapping(bool auto_repeat) {
     uint64_t now = get_time();
     frame_counter++;
 
+    // chords take their buttons and the wheel out of what the mappings see (put back at the end)
+    gw_chords_filter(gw_ch_in);
+
     for (auto& tap_hold : tap_hold_usages) {
         if ((*tap_hold.input_state != 0) && (*(tap_hold.input_state + PREV_STATE_OFFSET) == 0)) {
             tap_hold.pressed_at = now;
@@ -1432,6 +1447,8 @@ void process_mapping(bool auto_repeat) {
         }
         memset(report, 0, out_report_sizes[interface_report_id]);
     }
+
+    gw_chords_restore(gw_ch_in);
 
     processing_time += get_time() - now;
 }

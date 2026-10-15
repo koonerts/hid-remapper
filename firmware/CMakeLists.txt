@@ -33,6 +33,7 @@ add_executable(remapper
     src/remapper.cc
     src/remapper_single.cc
     src/gw_mouse.cc
+    src/gw_chords.cc
     src/gw_link.cc
     src/crc.cc
     src/descriptor_parser.cc
@@ -93,6 +94,7 @@ add_executable(remapper_dual_a
     src/main.cc
     src/remapper.cc
     src/gw_mouse.cc
+    src/gw_chords.cc
     src/gw_link.cc
     src/remapper_dual_a.cc
     src/crc.cc
@@ -167,6 +169,7 @@ add_executable(remapper_serial
     src/main.cc
     src/remapper.cc
     src/gw_mouse.cc
+    src/gw_chords.cc
     src/gw_link.cc
     src/remapper_serial.cc
     src/crc.cc

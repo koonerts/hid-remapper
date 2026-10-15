@@ -9,6 +9,7 @@
 #include <tusb.h>
 
 #include "globals.h"
+#include "gw_chords.h"
 #include "gw_link.h"
 #include "gw_payloads.h"
 #include "out_report.h"
@@ -69,6 +70,7 @@ void __verbose_terminate_handler() {
 //   0xFFF40750  Mid+Right holds (QT Py radio switches requested)
 //   0xFFF40751  QT Py link: rejected frame (length shown)
 //   0xFFF40752  QT Py link: unknown command
+//   0xFFF40753  QT Py link: malformed chord table frame (length shown)
 //   0xFFF407Fn  G-Wolves device n: dev_addr<<24 | family<<16 | PID (family 1 VUK, 2 Warg, 0 unknown: gets nothing)
 #define GW_DIAG(n) (0xFFF40000 | (n))
 
@@ -599,6 +601,9 @@ static void dpi_tick(uint32_t now) {
 #define GW_LED_RESET 0xffffffu     // white: angle reset (Mid+Left tap) or position reset (hold)
 #define GW_LED_LIMIT 0x000000u     // off: a step at the end of the range, nothing changed
 #define GW_LED_RADIO_ON 0x0080ffu  // azure: the QT Py's radio came on (Mid+Right hold); off = GW_LED_LIMIT
+#define GW_LED_ON 0x00ff00u        // green: a chord switched Motion Sync or Angle Snap on
+#define GW_LED_OFF 0xff0000u       // red: ... or off
+#define GW_LED_LOD 0x8000ffu       // violet: a chord stepped the lift-off distance
 #define GW_LED_FLASH_MS 1200
 #define GW_LED_RESTORE_DELAY_US 300000  // after a replug, so all the mouse's interfaces are up
 // The stage colours as set in the web app (2026-10-02). Used to put a slot back when the mouse
@@ -617,12 +622,13 @@ struct GwTune {
     int8_t angle_home;
     int8_t pos_home;
     uint16_t flash_ms;
-    uint16_t pos_hold_ms;    // Mid+Left hold: position reset
-    uint16_t wheel_hold_ms;  // Middle down this long before the wheel steps the angle
-    uint16_t radio_hold_ms;  // Mid+Right hold: QT Py radio on/off
+    // the three holds as the old chords used them; since v15 each chord rule has its own hold time,
+    // and these are only kept and shown so a QT Py that still sends them stays in step
+    uint16_t pos_hold_ms;
+    uint16_t wheel_hold_ms;
+    uint16_t radio_hold_ms;
 };
-static GwTune tune = { RS_ANGLE_STEP, RS_POS_STEP, GW_ANGLE_HOME, GW_POS_HOME, GW_LED_FLASH_MS,
-    GW_POS_RESET_HOLD_MS, GW_WHEEL_HOLD_US / 1000, GW_RADIO_HOLD_MS };
+static GwTune tune = { RS_ANGLE_STEP, RS_POS_STEP, GW_ANGLE_HOME, GW_POS_HOME, GW_LED_FLASH_MS, GW_POS_RESET_HOLD_MS, 300, 600 };
 
 static void rs_build(uint8_t* r, uint8_t cmd, uint16_t addr, const uint8_t* data, uint8_t len) {
     memset(r, 0, RS_LEN);
@@ -976,6 +982,7 @@ static bool rs_refresh_asked = false;
 static bool rs_dpi_wanted = false;
 static int rs_dpi_stage = -1;  // 0-based, as read; -1 = not read
 static int rs_dpi_last = -1;   // 0-based, last written; -1 = none since the mouse was plugged in
+static int rs_dpi_dir = 1;     // the step rs_dpi_wanted asks for: +1 next stage, -1 previous
 
 static void rs_forget(uint8_t dev_addr, bool mounted) {
     if (rs_noread_dev == dev_addr) {
@@ -1130,7 +1137,7 @@ static void rs_dpi_finish() {
     int cur = ((rs_dpi_stage >= 0) && (rs_dpi_stage < n)) ? rs_dpi_stage
               : ((rs_dpi_last >= 0) && (rs_dpi_last < n)) ? rs_dpi_last
                                                            : 0;
-    int next = (cur + 1) % n;
+    int next = (cur + rs_dpi_dir + n) % n;
     rs_write_value(RS_ADDR_DPI_STAGE, next);
     rs_dpi_last = next;
     rs_cur_stage = next;
@@ -1494,10 +1501,13 @@ static void rs_tick(uint32_t now) {
 //   64 'X'   65 status query reply count   66 its length (0 = none)   67-90 the reply (report ID first)
 //   91 probe count   92 probe state (0 none, 1 waiting, 2 answered, 3 no answer)   93 reply length
 //   94-117 the reply (report ID first)   118 probes refused   119-122 the probe described (cmd, addr
-//   hi, addr lo, len)   123 replies rejected (echoed the command, failed the checks)   124-126 0
-//   127 crc8 of 64-126
+//   hi, addr lo, len)   123 replies rejected (echoed the command, failed the checks)   124 chord table
+//   number (changes with every new table; 1 at power-up)   125 chord flags (GW_CH_* in gw_chords.h)
+//   126 chord count   127 crc8 of 64-126
+// Bytes 128-191 (v15+; read only when byte 124 changes): 128 'C'   129 chord table number   130 count
+//   131-190 the rules, 5 bytes each (gw_rule_t), unused ones 0   191 crc8 of 128-190
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 14
+#define GW_FW_VERSION 15
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1510,6 +1520,7 @@ static void rs_tick(uint32_t now) {
 #define LINK_PALETTE_DEFAULT 0x0A  // [R,G,B x5] built-in palette only (QT Py restoring it after a reboot)
 #define LINK_SET_OPTION 0x0B       // [option 0-4 (rs_opt_addr order), value as the mouse stores it]
 #define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
+#define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
 
 static uint8_t link_seq = 0;
 static uint8_t radio_toggles = 0;
@@ -1575,7 +1586,15 @@ void gw_link_status(uint8_t* s) {
     s[121] = rs_raw_addr & 0xFF;
     s[122] = rs_raw_rlen;
     s[123] = rs_cap_rejects;
+    s[124] = gw_chords_seq();
+    s[125] = gw_chords_flags();
+    s[126] = gw_chords_count();
     s[127] = gw_crc8(s + 64, 63);
+    s[128] = 'C';
+    s[129] = s[124];
+    s[130] = s[126];
+    memcpy(s + 131, gw_chords_rules(), s[126] * GW_CH_RULE_BYTES);
+    s[191] = gw_crc8(s + 128, 63);
 }
 
 static bool tuning_ok(const uint8_t* d) {
@@ -1716,6 +1735,11 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
             }
             break;
         }
+        case LINK_SET_CHORDS:
+            if (!gw_chords_link(d, len)) {
+                diag(0x753, len);
+            }
+            break;
         case LINK_SET_OPTION:
             if ((len == 2) && rs && (d[0] < RS_OPTS) && rs_opt_ok(d[0], d[1])) {
                 rs_write_value(rs_opt_addr[d[0]], d[1]);
@@ -1733,21 +1757,6 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
 }
 
 // ---------------------------------------------------------------------------------------------
-
-static int32_t prev_regs[8] = { 0 };
-static uint32_t sensor_down_at = 0;
-static bool sensor_hold_fired = false;
-static uint32_t dpi_down_at = 0;
-static bool dpi_hold_fired = false;
-static uint32_t middle_down_at = 0;
-
-static bool rose(const int32_t* regs, int reg) {
-    return (regs[reg - 1] != 0) && (prev_regs[reg - 1] == 0);
-}
-
-static bool fell(const int32_t* regs, int reg) {
-    return (regs[reg - 1] == 0) && (prev_regs[reg - 1] != 0);
-}
 
 // a setting step, with its LED flash: the setting's colour, or off when nothing could change
 static void rs_step_with_flash(int setting, int dir, uint32_t colour, uint32_t now) {
@@ -1776,87 +1785,103 @@ static void link_tick(uint32_t now) {
     }
 }
 
+// A chord's action (gw_chords.h). Each does what the mouse at hand supports; the rest do nothing.
+void gw_action(uint8_t a, uint32_t now) {
+    bool rs = family_present(Family::RS);
+    bool vuk = family_present(Family::VUK);
+    switch (a) {
+        case GA_DPI_NEXT:
+        case GA_DPI_PREV:
+            dpi_trigger_count++;
+            diag(3, dpi_trigger_count);
+            if ((a == GA_DPI_NEXT) && (dpi_phase == DpiPhase::IDLE) && vuk) {
+                dpi_start(now);
+            }
+            if (rs) {
+                led_restore_now();  // the new stage's own colour is the feedback
+                led.requested = false;
+                rs_dpi_dir = (a == GA_DPI_NEXT) ? 1 : -1;
+                rs_dpi_wanted = true;
+            }
+            break;
+        case GA_ANGLE_UP:
+        case GA_ANGLE_DOWN:
+            if (rs) {
+                rs_step_with_flash(RS_ANGLE, (a == GA_ANGLE_UP) ? 1 : -1, GW_LED_ANGLE, now);
+            }
+            break;
+        case GA_POS_UP:
+        case GA_POS_DOWN:
+            if (rs) {
+                rs_step_with_flash(RS_POS, (a == GA_POS_UP) ? 1 : -1, GW_LED_POS, now);
+            }
+            break;
+        case GA_ANGLE_RESET:
+            // VUK: front/rear sensor toggle (what Middle + Left always did there)
+            trigger_count++;
+            completions = 0;
+            if (vuk) {
+                front_selected = !front_selected;
+                if (front_selected) {
+                    send_all(VUK_SELECT_FRONT, sizeof(VUK_SELECT_FRONT) / sizeof(VUK_SELECT_FRONT[0]));
+                } else {
+                    send_all(VUK_SELECT_REAR, sizeof(VUK_SELECT_REAR) / sizeof(VUK_SELECT_REAR[0]));
+                }
+            }
+            if (rs) {
+                diag(1, trigger_count);
+                rs_setting_reset(rs_settings[RS_ANGLE], now);
+                rs_led_flash(GW_LED_RESET, now);
+            }
+            break;
+        case GA_POS_RESET:
+            if (rs) {
+                rs_setting_reset(rs_settings[RS_POS], now);
+                rs_led_flash(GW_LED_RESET, now);
+            }
+            break;
+        case GA_RADIO:
+            // the QT Py sees the count go up in the status block and switches its radio
+            radio_toggles++;
+            diag(0x750, radio_toggles);
+            break;
+        case GA_SYNC:
+        case GA_SNAP:
+        case GA_LOD: {
+            if (!rs) {
+                break;
+            }
+            uint8_t k = (a == GA_LOD) ? 1 : (a == GA_SNAP) ? 2 : 3;  // rs_opt_addr order
+            if (!(rs_opt_known & (1 << k))) {
+                // not read since the mouse was plugged in: read everything now, so the next press works
+                if (rs_refresh_next < 0) {
+                    rs_refresh_next = 0;
+                }
+                rs_led_flash(GW_LED_LIMIT, now);
+                break;
+            }
+            uint8_t v = (a == GA_LOD) ? (uint8_t) (rs_opt_val[k] % 5 + 1) : (uint8_t) !rs_opt_val[k];
+            rs_write_value(rs_opt_addr[k], v);
+            rs_opt_val[k] = v;
+            rs_led_flash((a == GA_LOD) ? GW_LED_LOD : (v ? GW_LED_ON : GW_LED_OFF), now);
+            break;
+        }
+        default:
+            if ((a >= GA_DPI_1) && (a < GA_DPI_1 + RS_DPI_STAGES) && rs) {
+                led_restore_now();
+                led.requested = false;
+                rs_write_value(RS_ADDR_DPI_STAGE, a - GA_DPI_1);
+                rs_cur_stage = a - GA_DPI_1;
+                rs_dpi_last = rs_cur_stage;
+            }
+            break;
+    }
+}
+
+// regs: the expression registers; unused since v15 (chords come from gw_chords_filter)
 void gw_tick(const int32_t* regs) {
     uint32_t now = time_us_32();
-    bool rs = family_present(Family::RS);
-    // Mid+Left. VUK: sensor toggle on the press. Warg: a tap resets the angle (on release), a
-    // hold resets the position (as soon as it has lasted the position-reset hold).
-    int32_t sensor = regs[GW_SENSOR_REGISTER - 1];
-    if (rose(regs, GW_SENSOR_REGISTER)) {
-        trigger_count++;
-        completions = 0;
-        sensor_down_at = now;
-        sensor_hold_fired = false;
-        if (family_present(Family::VUK)) {
-            front_selected = !front_selected;
-            if (front_selected) {
-                send_all(VUK_SELECT_FRONT, sizeof(VUK_SELECT_FRONT) / sizeof(VUK_SELECT_FRONT[0]));
-            } else {
-                send_all(VUK_SELECT_REAR, sizeof(VUK_SELECT_REAR) / sizeof(VUK_SELECT_REAR[0]));
-            }
-        }
-        if (rs) {
-            diag(1, trigger_count);
-        }
-    }
-    if ((sensor != 0) && !sensor_hold_fired && ((now - sensor_down_at) >= tune.pos_hold_ms * 1000u)) {
-        sensor_hold_fired = true;
-        if (rs) {
-            rs_setting_reset(rs_settings[RS_POS], now);
-            rs_led_flash(GW_LED_RESET, now);
-        }
-    }
-    if (fell(regs, GW_SENSOR_REGISTER) && !sensor_hold_fired && rs) {
-        rs_setting_reset(rs_settings[RS_ANGLE], now);
-        rs_led_flash(GW_LED_RESET, now);
-    }
-    // Mid+Right: a tap steps the DPI stage (on release), a hold switches the QT Py's radio (the QT
-    // Py sees the count go up in the status block).
-    if (rose(regs, GW_DPI_REGISTER)) {
-        dpi_down_at = now;
-        dpi_hold_fired = false;
-    }
-    if ((regs[GW_DPI_REGISTER - 1] != 0) && !dpi_hold_fired && ((now - dpi_down_at) >= tune.radio_hold_ms * 1000u)) {
-        dpi_hold_fired = true;
-        radio_toggles++;
-        diag(0x750, radio_toggles);
-    }
-    if (fell(regs, GW_DPI_REGISTER) && !dpi_hold_fired) {
-        dpi_trigger_count++;
-        diag(3, dpi_trigger_count);
-        if ((dpi_phase == DpiPhase::IDLE) && family_present(Family::VUK)) {
-            dpi_start(now);
-        }
-        if (rs) {
-            led_restore_now();  // the new stage's own colour is the feedback
-            led.requested = false;
-            rs_dpi_wanted = true;
-        }
-    }
-    if (rs) {
-        if (rose(regs, GW_POS_DOWN_REGISTER)) {
-            rs_step_with_flash(RS_POS, -1, GW_LED_POS, now);
-        }
-        if (rose(regs, GW_POS_UP_REGISTER)) {
-            rs_step_with_flash(RS_POS, +1, GW_LED_POS, now);
-        }
-        if (rose(regs, GW_ANGLE_DOWN_REGISTER)) {
-            rs_step_with_flash(RS_ANGLE, -1, GW_LED_ANGLE, now);
-        }
-        if (rose(regs, GW_ANGLE_UP_REGISTER)) {
-            rs_step_with_flash(RS_ANGLE, +1, GW_LED_ANGLE, now);
-        }
-    }
-    if (rose(regs, GW_MIDDLE_REGISTER)) {
-        middle_down_at = now;
-    }
-    // one step per frame with wheel movement (notches arrive in separate reports; the size isn't
-    // trusted, a high-resolution wheel would report 120 per notch)
-    int32_t wheel = regs[GW_WHEEL_REGISTER - 1];
-    if ((wheel != 0) && (regs[GW_MIDDLE_REGISTER - 1] != 0) && ((now - middle_down_at) >= tune.wheel_hold_ms * 1000u) && rs) {
-        rs_step_with_flash(RS_ANGLE, (wheel > 0) ? 1 : -1, GW_LED_ANGLE, now);
-    }
-    memcpy(prev_regs, regs, sizeof(prev_regs));
+    gw_chords_service();
     dpi_tick(now);
     rs_tick(now);
     link_tick(now);
