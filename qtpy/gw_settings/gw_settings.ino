@@ -32,7 +32,7 @@
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
 #define STATUS_FULL 192 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes
-#define QT_FW 13        // this firmware's number, shown in /api/status
+#define QT_FW 14        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -77,7 +77,7 @@ static bool toggles_known = false;
 static uint8_t last_toggles = 0;
 static bool feather_init_done = false;  // tuning/palette pushed since the Feather (re)started
 // link diagnostics (/api/status "diag")
-static uint32_t d_polls = 0, d_ok = 0, d_short = 0, d_bad = 0;
+static uint32_t d_polls = 0, d_ok = 0, d_short = 0, d_bad = 0, d_i2c_resets = 0;
 static uint8_t d_last_n = 0, d_b0 = 0, d_b1 = 0;
 static bool last_answered = false;  // the last read returned a full block, valid or not
 // the Feather's chord table (status bytes 128-191), as last read
@@ -496,6 +496,17 @@ static void link_tick() {
         toggles_known = false;
         feather_init_done = false;
         ch_ok = false;  // the Feather may come back restarted: its table number starts at 1 again
+        // A Feather that resets in the middle of a read (flashed, or restarted on its own) can leave this I2C master
+        // stuck: every read then comes back empty until the QT Py restarts (seen 2026-10-16). Start the bus over every
+        // 3 s while nothing answers.
+        static uint32_t reinit_at = 0;
+        if ((millis() - st_at >= 3000) && (millis() - reinit_at >= 3000)) {
+            reinit_at = millis();
+            Wire1.end();
+            Wire1.begin(LINK_SDA, LINK_SCL, LINK_HZ);
+            Wire1.setTimeOut(50);
+            d_i2c_resets++;
+        }
         return;
     }
     if (!ok) {
@@ -845,7 +856,7 @@ static void h_status() {
     j += ",\"battery\":" + battery_json();
     j += ",\"qt_fw\":" + String(QT_FW);
     j += ",\"diag\":{\"polls\":" + String(d_polls) + ",\"ok\":" + String(d_ok) + ",\"short\":" + String(d_short) +
-         ",\"bad\":" + String(d_bad) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
+         ",\"bad\":" + String(d_bad) + ",\"i2c_resets\":" + String(d_i2c_resets) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
          ",\"up_s\":" + String(millis() / 1000) + "}";
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
