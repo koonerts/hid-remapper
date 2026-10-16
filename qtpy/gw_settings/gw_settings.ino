@@ -32,7 +32,7 @@
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
 #define STATUS_FULL 192 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes
-#define QT_FW 12        // this firmware's number, shown in /api/status
+#define QT_FW 13        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -826,10 +826,18 @@ static void h_status() {
     }
     j += ",\"opt\":" + opt_json();
     j += ",\"chords\":" + chords_json();
-    // Feather v15+: its processing time per 1 ms frame over the last second (status bytes 84-89)
+    // Feather v15+: its processing time per 1 ms frame over the last second (status bytes 84-89); v19+ also the
+    // whole frame: ticks merged (frames never processed, 90 and 111-112) and, in 4 us steps, how long after its tick each
+    // frame was done (113-114) and the SOF interrupt (115-116)
     if (chords_supported()) {
         j += ",\"perf\":{\"avg_us\":" + String(u16(84) / 10.0, 1) + ",\"max_us\":" + String(u16(86)) + ",\"chords_avg_us\":" +
-             String(st[88] / 10.0, 1) + ",\"chords_max_us\":" + String(st[89]) + "}";
+             String(st[88] / 10.0, 1) + ",\"chords_max_us\":" + String(st[89]);
+        if (st[56] >= 19) {
+            j += ",\"missed_1s\":" + String(st[90]) + ",\"missed_total\":" + String(u16(111)) + ",\"tick_avg_us\":" +
+                 String(st[113] * 4) + ",\"tick_max_us\":" + String(st[114] * 4) + ",\"usb_avg_us\":" + String(st[115] * 4) +
+                 ",\"usb_max_us\":" + String(st[116] * 4);
+        }
+        j += "}";
     } else {
         j += ",\"perf\":null";
     }

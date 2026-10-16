@@ -262,8 +262,9 @@ function chSave(){const r=chEdit.map(x=>x.join('.')).join(',');chWait=S&&S.chord
 post('/api/chords?r='+encodeURIComponent(r)).then(x=>{say(x,'Sending the chords to the Feather');if(!x.ok){chWait=-1;chCheck()}})}
 function chDefaults(){if(!S||!S.chords||!confirm('Replace your chords with the built-in ones (as they came)?'))return;chWait=S.chords.seq;chWaitAt=Date.now();chLost=false;chCheck();$('chstate').textContent='Saving to the Feather…';
 post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(x.ok)chDirty=false;else chWait=-1;chCheck()})}
+function us(v){return v>=1020?'1020+':String(v)}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
-$('perf').hidden=!pf;if(pf)$('perf').textContent='Feather work per 1 ms frame, last second: '+pf.avg_us.toFixed(1)+' µs on average, '+pf.max_us+' µs at most; of that, the chord check '+pf.chords_avg_us.toFixed(1)+' µs on average ('+pf.chords_max_us+' µs at most).';
+$('perf').hidden=!pf;if(pf)$('perf').textContent='Feather work per 1 ms frame, last second: '+pf.avg_us.toFixed(1)+' µs on average, '+pf.max_us+' µs at most; of that, the chord check '+pf.chords_avg_us.toFixed(1)+' µs on average ('+pf.chords_max_us+' µs at most).'+(pf.missed_1s===undefined?'':' Whole 1 ms frame: USB to the mouse '+us(pf.usb_avg_us)+' µs on average ('+us(pf.usb_max_us)+' at most); each frame finished '+us(pf.tick_avg_us)+' µs after its tick on average ('+us(pf.tick_max_us)+' at most). Frames skipped: '+pf.missed_1s+' in the last second, '+pf.missed_total+' since the Feather started (plugging in or switching to a device stops it for about half a second).');
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
 ed.hidden=false;leg.hidden=true;
 if(chWait>=0&&c.fresh&&c.seq!==chWait){chWait=-1;chDirty=false}

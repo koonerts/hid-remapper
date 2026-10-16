@@ -14,6 +14,7 @@
 #include "gw_payloads.h"
 #include "out_report.h"
 #include "remapper.h"
+#include "tick.h"
 #include "pico/time.h"
 
 // Arm's prebuilt toolchains ship libstdc++ with the verbose terminate handler, which drags in
@@ -1501,15 +1502,18 @@ static void rs_tick(uint32_t now) {
 //   64 'X'   65 status query reply count   66 its length (0 = none)   67-83 the reply (report ID first,
 //   17 bytes at most)   84-85 average processing time per frame over the last second (0.1 us)
 //   86-87 the longest frame in it (us)   88 the chord filter's average (0.1 us, at most 255)   89 its longest
-//   (us, at most 255)   90 0   91 probe count   92 probe state (0 none, 1 waiting, 2 answered, 3 no answer)
-//   93 reply length   94-110 the reply (report ID first, 17 bytes at most)   111-117 0   118 probes refused   119-122 the probe described (cmd, addr
+//   (us, at most 255)   90 ticks merged in the last second (v19+: frames the main loop never processed, at most 255)   91 probe count   92 probe state (0 none, 1 waiting, 2 answered, 3 no answer)
+//   93 reply length   94-110 the reply (report ID first, 17 bytes at most)   111-117 (v19+) frame timing, all in 4 us steps
+//   at most 255 except 111-112: 111-112 ticks merged since boot (at most 65535)   113 how long after its tick each frame's
+//   processing was done, average over the last second   114 the longest   115 the 1 ms SOF interrupt (USB host frame:
+//   SOF + the transfers to the mouse), average   116 its longest   117 0   118 probes refused   119-122 the probe described (cmd, addr
 //   hi, addr lo, len)   123 replies rejected (echoed the command, failed the checks)   124 chord table
 //   number (changes with every new table; 1 at power-up)   125 chord flags (GW_CH_* in gw_chords.h)
 //   126 chord count   127 crc8 of 64-126
 // Bytes 128-191 (v15+; read only when byte 124 changes): 128 'C'   129 chord table number   130 count
 //   131-190 the rules, 5 bytes each (gw_rule_t), unused ones 0   191 crc8 of 128-190
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 18
+#define GW_FW_VERSION 19
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1524,10 +1528,16 @@ static void rs_tick(uint32_t now) {
 #define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
 #define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
 
-// per-frame processing time (gw_frame_time), over a 1 s window
-static uint32_t ft_sum = 0, ft_n = 0, ft_max = 0, fc_sum = 0, fc_max = 0, ft_at = 0;
-static uint16_t ft_avg10 = 0, ft_peak = 0;
-static uint8_t fc_avg10 = 0, fc_peak = 0;
+// per-frame processing time (gw_frame_time), over a 1 s window; since v19 also how long after its tick each frame was
+// done (td_*), the SOF interrupt's time and the ticks merged (frames never processed), from tick.cc
+static uint32_t ft_sum = 0, ft_n = 0, ft_max = 0, fc_sum = 0, fc_max = 0, ft_at = 0, td_sum = 0, td_max = 0, merged_at = 0;
+static uint16_t ft_avg10 = 0, ft_peak = 0, merged_total = 0;
+static uint8_t fc_avg10 = 0, fc_peak = 0, td_avg4 = 0, td_peak4 = 0, sof_avg4 = 0, sof_peak4 = 0, merged_1s = 0;
+
+static uint8_t in_4us(uint32_t us) {
+    uint32_t q = (us + 2) / 4;
+    return (q > 255) ? 255 : q;
+}
 
 void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
     ft_sum += total_us;
@@ -1540,13 +1550,28 @@ void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
         fc_max = chords_us;
     }
     uint32_t now = time_us_32();
+    uint32_t td = now - tick_taken_time();
+    td_sum += td;
+    if (td > td_max) {
+        td_max = td;
+    }
     if ((now - ft_at) >= 1000000) {
         uint32_t a = ft_sum * 10 / ft_n, c = fc_sum * 10 / ft_n;
         ft_avg10 = (a > 65535) ? 65535 : a;
         ft_peak = (ft_max > 65535) ? 65535 : ft_max;
         fc_avg10 = (c > 255) ? 255 : c;
         fc_peak = (fc_max > 255) ? 255 : fc_max;
-        ft_sum = ft_n = ft_max = fc_sum = fc_max = 0;
+        td_avg4 = in_4us(td_sum / ft_n);
+        td_peak4 = in_4us(td_max);
+        uint32_t s_sum, s_n, s_max;
+        tick_sof_take(&s_sum, &s_n, &s_max);
+        sof_avg4 = s_n ? in_4us(s_sum / s_n) : 0;
+        sof_peak4 = in_4us(s_max);
+        uint32_t m = ticks_merged();
+        merged_1s = ((m - merged_at) > 255) ? 255 : (m - merged_at);
+        merged_total = (m > 65535) ? 65535 : m;
+        merged_at = m;
+        ft_sum = ft_n = ft_max = fc_sum = fc_max = td_sum = td_max = 0;
         ft_at = now;
     }
 }
@@ -1609,6 +1634,12 @@ void gw_link_status(uint8_t* s) {
     put16(s + 86, ft_peak);
     s[88] = fc_avg10;
     s[89] = fc_peak;
+    s[90] = merged_1s;
+    put16(s + 111, merged_total);
+    s[113] = td_avg4;
+    s[114] = td_peak4;
+    s[115] = sof_avg4;
+    s[116] = sof_peak4;
     s[91] = rs_raw_seq;
     s[92] = rs_raw_state;
     s[93] = (rs_raw_len > 17) ? 17 : rs_raw_len;
