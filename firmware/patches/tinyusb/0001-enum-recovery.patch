@@ -3,22 +3,24 @@ away from this port mid-enumeration left the hub unconfigured and its ports unpo
 usbh.c: root removal ends any enumeration; stale attaches dropped; attach waits for a busy control
 pipe; stuck control transfers/enumerations failed after 5 s; failed enumerations start over from a
 port reset (3 in a row at most). hub.c: failed hub requests keep the status endpoint polled; a port
-switched off by over-current is powered again (3 per hub at most).
+switched off by over-current is powered again once the fault is gone (3 per hub at most); port changes
+are handled round-robin; a request that can't be queued still re-polls the hub.
 Applied by .github/workflows/build-feather*.yml before the build.
 
 diff --git a/src/host/hub.c b/src/host/hub.c
-index e970144..4566926 100644
+index e970144..9294f6c 100644
 --- a/src/host/hub.c
 +++ b/src/host/hub.c
-@@ -45,6 +45,7 @@ typedef struct
+@@ -45,6 +45,8 @@ typedef struct
    uint8_t itf_num;
    uint8_t ep_in;
    uint8_t port_count;
 +  uint8_t oc_repowers; // hid-remapper: ports powered again after an over-current, see port_over_current_cleared()
++  uint8_t last_port;   // hid-remapper: port whose change was handled last, see hub_xfer_cb()
  
    CFG_TUH_MEM_ALIGN uint8_t status_change;
    CFG_TUH_MEM_ALIGN hub_port_status_response_t port_status;
-@@ -235,6 +236,8 @@ void hub_close(uint8_t dev_addr)
+@@ -235,6 +237,8 @@ void hub_close(uint8_t dev_addr)
  bool hub_edpt_status_xfer(uint8_t dev_addr)
  {
    hub_interface_t* hub_itf = get_itf(dev_addr);
@@ -27,7 +29,7 @@ index e970144..4566926 100644
    return usbh_edpt_xfer(dev_addr, hub_itf->ep_in, &hub_itf->status_change, 1);
  }
  
-@@ -329,12 +332,22 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer);
+@@ -329,12 +333,28 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer);
  static void hub_get_status_complete (tuh_xfer_t* xfer);
  static void connection_clear_conn_change_complete (tuh_xfer_t* xfer);
  static void connection_port_reset_complete (tuh_xfer_t* xfer);
@@ -41,6 +43,12 @@ index e970144..4566926 100644
 +{
 +  return hub_port_reset(hub_addr, hub_port, connection_port_reset_complete, 0);
 +}
++
++// a request that can't even be queued leaves nothing in flight to poll again afterwards
++static void clear_feature_or_poll(uint8_t daddr, uint8_t port, uint8_t feature, tuh_xfer_cb_t complete_cb)
++{
++  if (!hub_port_clear_feature(daddr, port, feature, complete_cb, 0)) hub_edpt_status_xfer(daddr);
++}
  
  // callback as response of interrupt endpoint polling
  bool hub_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
@@ -51,7 +59,21 @@ index e970144..4566926 100644
  
    hub_interface_t* p_hub = get_itf(dev_addr);
  
-@@ -374,13 +387,16 @@ bool hub_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t result, uint32
+@@ -357,8 +377,12 @@ bool hub_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t result, uint32
+   }
+   else {
+     // Hub bits 1 to n are hub port events
+-    for (uint8_t port=1; port <= p_hub->port_count; port++) {
++    // hid-remapper: start after the port handled last, so a port whose change keeps coming back
++    // (a request that keeps failing, a lasting over-current) can't hide the other ports' changes
++    for (uint8_t i = 0; i < p_hub->port_count; i++) {
++      uint8_t const port = (uint8_t) ((p_hub->last_port + i) % p_hub->port_count + 1);
+       if ( tu_bit_test(status_change, port) ) {
++        p_hub->last_port = port;
+         if (hub_port_get_status(dev_addr, port, &p_hub->port_status, hub_port_get_status_complete, 0) == false) {
+           //Hub status control transfer failed, retry
+           hub_edpt_status_xfer(dev_addr);
+@@ -374,13 +398,16 @@ bool hub_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t result, uint32
  
  static void hub_clear_feature_complete_stub(tuh_xfer_t* xfer)
  {
@@ -70,14 +92,23 @@ index e970144..4566926 100644
  
    uint8_t const daddr = xfer->daddr;
    hub_interface_t* p_hub = get_itf(daddr);
-@@ -399,11 +415,18 @@ static void hub_get_status_complete (tuh_xfer_t* xfer)
-     TU_LOG1("HUB Over Current, addr = %u\r\n", daddr);
-     hub_port_clear_feature(daddr, port_num, HUB_FEATURE_HUB_OVER_CURRENT_CHANGE, hub_clear_feature_complete_stub, 0);
+@@ -392,18 +419,25 @@ static void hub_get_status_complete (tuh_xfer_t* xfer)
+   if (p_hub->hub_status.change.local_power_source)
+   {
+     TU_LOG2("HUB Local Power Change, addr = %u\r\n", daddr);
+-    hub_port_clear_feature(daddr, port_num, HUB_FEATURE_HUB_LOCAL_POWER_CHANGE, hub_clear_feature_complete_stub, 0);
++    clear_feature_or_poll(daddr, port_num, HUB_FEATURE_HUB_LOCAL_POWER_CHANGE, hub_clear_feature_complete_stub);
    }
+   else if (p_hub->hub_status.change.over_current)
+   {
+     TU_LOG1("HUB Over Current, addr = %u\r\n", daddr);
+-    hub_port_clear_feature(daddr, port_num, HUB_FEATURE_HUB_OVER_CURRENT_CHANGE, hub_clear_feature_complete_stub, 0);
++    clear_feature_or_poll(daddr, port_num, HUB_FEATURE_HUB_OVER_CURRENT_CHANGE, hub_clear_feature_complete_stub);
++  }
 +  else
 +  {
 +    hub_edpt_status_xfer(daddr); // hid-remapper: nothing to clear, keep polling
-+  }
+   }
  }
  
  static void hub_port_get_status_complete (tuh_xfer_t* xfer)
@@ -90,29 +121,53 @@ index e970144..4566926 100644
  
    uint8_t const daddr = xfer->daddr;
    hub_interface_t* p_hub = get_itf(daddr);
-@@ -430,7 +453,7 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer)
+@@ -416,25 +450,25 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer)
+     //TU_VERIFY(port_status.status_current.port_power && port_status.status_current.port_enable, );
+ 
+     // Acknowledge Port Connection Change
+-    hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_CONNECTION_CHANGE, connection_clear_conn_change_complete, 0);
++    clear_feature_or_poll(daddr, port_num, HUB_FEATURE_PORT_CONNECTION_CHANGE, connection_clear_conn_change_complete);
+   }else
+   {
+     // Clear other port status change interrupts. TODO Not currently handled - just cleared.
+     if (p_hub->port_status.change.port_enable)
+     {
+-      hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_ENABLE_CHANGE, hub_clear_feature_complete_stub, 0);
++      clear_feature_or_poll(daddr, port_num, HUB_FEATURE_PORT_ENABLE_CHANGE, hub_clear_feature_complete_stub);
+     }
+     else if (p_hub->port_status.change.suspend)
+     {
+-      hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_SUSPEND_CHANGE, hub_clear_feature_complete_stub, 0);
++      clear_feature_or_poll(daddr, port_num, HUB_FEATURE_PORT_SUSPEND_CHANGE, hub_clear_feature_complete_stub);
      }
      else if (p_hub->port_status.change.over_current)
      {
 -      hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_OVER_CURRENT_CHANGE, hub_clear_feature_complete_stub, 0);
-+      hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_OVER_CURRENT_CHANGE, port_over_current_cleared, 0);
++      clear_feature_or_poll(daddr, port_num, HUB_FEATURE_PORT_OVER_CURRENT_CHANGE, port_over_current_cleared);
      }
      else if (p_hub->port_status.change.reset)
      {
-@@ -448,9 +471,29 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer)
+-      hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_RESET_CHANGE, hub_clear_feature_complete_stub, 0);
++      clear_feature_or_poll(daddr, port_num, HUB_FEATURE_PORT_RESET_CHANGE, hub_clear_feature_complete_stub);
+     }
+     // Other changes are: L1 state
+     // TODO clear change
+@@ -448,9 +482,31 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer)
    }
  }
  
 +// hid-remapper: a hub with per-port over-current protection switches the port off, and upstream only
 +// cleared the change, so the port stayed unpowered until the hub was configured again. Power it
-+// again, a few times at most per hub, so a device that really is shorted doesn't cycle forever.
++// again once the fault has gone (the hub reports a new over-current change then), a few times at most
++// per hub, so a device that really is shorted doesn't cycle forever.
 +static void port_over_current_cleared (tuh_xfer_t* xfer)
 +{
 +  uint8_t const daddr = xfer->daddr;
 +  hub_interface_t* p_hub = get_itf(daddr);
 +  uint8_t const port_num = (uint8_t) tu_le16toh(xfer->setup->wIndex);
 +
-+  if (xfer->result == XFER_RESULT_SUCCESS && !p_hub->port_status.status.port_power && p_hub->oc_repowers < 3) {
++  if (xfer->result == XFER_RESULT_SUCCESS && !p_hub->port_status.status.port_power &&
++      !p_hub->port_status.status.over_current && p_hub->oc_repowers < 3) {
 +    TU_LOG1("HUB Port %u powered again after over current, addr = %u\r\n", port_num, daddr);
 +    p_hub->oc_repowers++;
 +    if (hub_port_set_feature(daddr, port_num, HUB_FEATURE_PORT_POWER, hub_clear_feature_complete_stub, 0)) return;
@@ -130,7 +185,16 @@ index e970144..4566926 100644
  
    uint8_t const daddr = xfer->daddr;
    hub_interface_t* p_hub = get_itf(daddr);
-@@ -480,7 +523,9 @@ static void connection_clear_conn_change_complete (tuh_xfer_t* xfer)
+@@ -459,7 +515,7 @@ static void connection_clear_conn_change_complete (tuh_xfer_t* xfer)
+   if ( p_hub->port_status.status.connection )
+   {
+     // Reset port if attach event
+-    hub_port_reset(daddr, port_num, connection_port_reset_complete, 0);
++    if (!hub_port_reset(daddr, port_num, connection_port_reset_complete, 0)) hub_edpt_status_xfer(daddr); // hid-remapper
+   }else
+   {
+     // submit detach event
+@@ -480,7 +536,9 @@ static void connection_clear_conn_change_complete (tuh_xfer_t* xfer)
  
  static void connection_port_reset_complete (tuh_xfer_t* xfer)
  {
@@ -156,7 +220,7 @@ index 385efe6..ac3ddd6 100644
  TU_ATTR_ALWAYS_INLINE static inline
  bool hub_port_reset(uint8_t hub_addr, uint8_t hub_port, tuh_xfer_cb_t complete_cb, uintptr_t user_data) {
 diff --git a/src/host/usbh.c b/src/host/usbh.c
-index 88f3101..f5b261f 100644
+index 88f3101..cf50cec 100644
 --- a/src/host/usbh.c
 +++ b/src/host/usbh.c
 @@ -266,6 +266,19 @@ CFG_TUH_MEM_SECTION struct {
@@ -222,7 +286,7 @@ index 88f3101..f5b261f 100644
            TU_LOG_USBH("[%u:] USBH Defer Attach until current enumeration complete\r\n", event.rhport);
  
            bool is_empty = osal_queue_empty(_usbh_q);
-@@ -512,13 +543,17 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
+@@ -512,13 +543,18 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
          } else {
            TU_LOG_USBH("[%u:] USBH DEVICE ATTACH\r\n", event.rhport);
            _dev0.enumerating = 1;
@@ -238,10 +302,11 @@ index 88f3101..f5b261f 100644
          TU_LOG_USBH("[%u:%u:%u] USBH DEVICE REMOVED\r\n", event.rhport, event.connection.hub_addr, event.connection.hub_port);
          process_removing_device(event.rhport, event.connection.hub_addr, event.connection.hub_port);
 +        if (event.connection.hub_addr == 0) enum_abort(event.rhport);
++        _enum_redo_count = 0; // hid-remapper: whatever is plugged in next gets its own retries
  
          #if CFG_TUH_HUB
          // TODO remove
-@@ -630,6 +665,8 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
+@@ -630,6 +666,8 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
  
    bool const is_idle = (_ctrl_xfer.stage == CONTROL_STAGE_IDLE);
    if (is_idle) {
@@ -250,7 +315,7 @@ index 88f3101..f5b261f 100644
      _ctrl_xfer.stage       = CONTROL_STAGE_SETUP;
      _ctrl_xfer.daddr       = daddr;
      _ctrl_xfer.actual_len  = 0;
-@@ -651,7 +688,12 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
+@@ -651,7 +689,12 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
    TU_LOG_BUF_USBH(xfer->setup, 8);
  
    if (xfer->complete_cb) {
@@ -264,7 +329,7 @@ index 88f3101..f5b261f 100644
    }else {
      // blocking if complete callback is not provided
      // change callback to internal blocking, and result as user argument
-@@ -661,7 +703,10 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
+@@ -661,7 +704,10 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
      _ctrl_xfer.user_data   = (uintptr_t) &result;
      _ctrl_xfer.complete_cb = _control_blocking_complete_cb;
  
@@ -276,7 +341,7 @@ index 88f3101..f5b261f 100644
  
      while (result == XFER_RESULT_INVALID) {
        // Note: this can be called within an callback ie. part of tuh_task()
-@@ -715,6 +760,13 @@ static void _control_xfer_complete(uint8_t daddr, xfer_result_t result) {
+@@ -715,6 +761,13 @@ static void _control_xfer_complete(uint8_t daddr, xfer_result_t result) {
  static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
    (void) ep_addr;
  
@@ -290,7 +355,7 @@ index 88f3101..f5b261f 100644
    const uint8_t rhport = usbh_get_rhport(daddr);
    tusb_control_request_t const * request = &_ctrl_xfer.request;
  
-@@ -978,8 +1030,10 @@ TU_ATTR_FAST_FUNC void hcd_event_handler(hcd_event_t const* event, bool in_isr)
+@@ -978,8 +1031,10 @@ TU_ATTR_FAST_FUNC void hcd_event_handler(hcd_event_t const* event, bool in_isr)
        // mark device as removing to prevent further xfer before the event is processed in usbh task
  
        // Check if dev0 is removed
@@ -303,7 +368,7 @@ index 88f3101..f5b261f 100644
          _dev0.enumerating = 0;
        }
        break;
-@@ -1321,6 +1375,92 @@ static bool enum_request_set_addr(void);
+@@ -1321,6 +1376,92 @@ static bool enum_request_set_addr(void);
  static bool _parse_configuration_descriptor (uint8_t dev_addr, tusb_desc_configuration_t const* desc_cfg);
  static void enum_full_complete(void);
  
@@ -396,7 +461,7 @@ index 88f3101..f5b261f 100644
  // process device enumeration
  static void process_enumeration(tuh_xfer_t* xfer) {
    // Retry a few times with transfers in enumeration since device can be unstable when starting up
-@@ -1328,25 +1468,31 @@ static void process_enumeration(tuh_xfer_t* xfer) {
+@@ -1328,25 +1469,31 @@ static void process_enumeration(tuh_xfer_t* xfer) {
      ATTEMPT_COUNT_MAX = 3,
      ATTEMPT_DELAY_MS = 100
    };
@@ -434,7 +499,7 @@ index 88f3101..f5b261f 100644
  
    uint8_t const daddr = xfer->daddr;
    uintptr_t const state = xfer->user_data;
-@@ -1738,6 +1884,7 @@ void usbh_driver_set_config_complete(uint8_t dev_addr, uint8_t itf_num) {
+@@ -1738,6 +1885,7 @@ void usbh_driver_set_config_complete(uint8_t dev_addr, uint8_t itf_num) {
  
    // all interface are configured
    if (itf_num == CFG_TUH_INTERFACE_MAX) {
