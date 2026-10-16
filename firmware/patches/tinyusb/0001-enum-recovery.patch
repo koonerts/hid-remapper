@@ -1,34 +1,197 @@
-hid-remapper: recover the USB host when the root port goes away mid-enumeration (an ATEN switch
-moving past this port), and from control transfers or enumerations that never finish.
+hid-remapper: keep the USB host working when devices behind a hub come and go (an ATEN switch moving
+away from this port mid-enumeration left the hub unconfigured and its ports unpowered until a reboot).
+usbh.c: root removal ends any enumeration; stale attaches dropped; attach waits for a busy control
+pipe; stuck control transfers/enumerations failed after 5 s; failed enumerations start over from a
+port reset (3 in a row at most). hub.c: failed hub requests keep the status endpoint polled; a port
+switched off by over-current is powered again (3 per hub at most).
 Applied by .github/workflows/build-feather*.yml before the build.
 
+diff --git a/src/host/hub.c b/src/host/hub.c
+index e970144..4566926 100644
+--- a/src/host/hub.c
++++ b/src/host/hub.c
+@@ -45,6 +45,7 @@ typedef struct
+   uint8_t itf_num;
+   uint8_t ep_in;
+   uint8_t port_count;
++  uint8_t oc_repowers; // hid-remapper: ports powered again after an over-current, see port_over_current_cleared()
+ 
+   CFG_TUH_MEM_ALIGN uint8_t status_change;
+   CFG_TUH_MEM_ALIGN hub_port_status_response_t port_status;
+@@ -235,6 +236,8 @@ void hub_close(uint8_t dev_addr)
+ bool hub_edpt_status_xfer(uint8_t dev_addr)
+ {
+   hub_interface_t* hub_itf = get_itf(dev_addr);
++  // hid-remapper: a closed hub has ep_in 0, which would queue a 1-byte transfer on EP0
++  TU_VERIFY(hub_itf->ep_in);
+   return usbh_edpt_xfer(dev_addr, hub_itf->ep_in, &hub_itf->status_change, 1);
+ }
+ 
+@@ -329,12 +332,22 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer);
+ static void hub_get_status_complete (tuh_xfer_t* xfer);
+ static void connection_clear_conn_change_complete (tuh_xfer_t* xfer);
+ static void connection_port_reset_complete (tuh_xfer_t* xfer);
++static void port_over_current_cleared (tuh_xfer_t* xfer);
++
++// hid-remapper: every request below that fails used to return without polling the status endpoint
++// again, so the hub was never heard from again (no attach, no detach). A failed request leaves the
++// change bit set, so polling again brings the same change back.
++
++bool hub_port_reenumerate(uint8_t hub_addr, uint8_t hub_port)
++{
++  return hub_port_reset(hub_addr, hub_port, connection_port_reset_complete, 0);
++}
+ 
+ // callback as response of interrupt endpoint polling
+ bool hub_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
+   (void) xferred_bytes; // TODO can be more than 1 for hub with lots of ports
+   (void) ep_addr;
+-  TU_VERIFY(result == XFER_RESULT_SUCCESS);
++  if (result != XFER_RESULT_SUCCESS) return hub_edpt_status_xfer(dev_addr); // hid-remapper
+ 
+   hub_interface_t* p_hub = get_itf(dev_addr);
+ 
+@@ -374,13 +387,16 @@ bool hub_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t result, uint32
+ 
+ static void hub_clear_feature_complete_stub(tuh_xfer_t* xfer)
+ {
+-  TU_ASSERT(xfer->result == XFER_RESULT_SUCCESS, );
++  // hid-remapper: poll again whether it worked or not
+   hub_edpt_status_xfer(xfer->daddr);
+ }
+ 
+ static void hub_get_status_complete (tuh_xfer_t* xfer)
+ {
+-  TU_ASSERT(xfer->result == XFER_RESULT_SUCCESS, );
++  if (xfer->result != XFER_RESULT_SUCCESS) {
++    hub_edpt_status_xfer(xfer->daddr); // hid-remapper
++    return;
++  }
+ 
+   uint8_t const daddr = xfer->daddr;
+   hub_interface_t* p_hub = get_itf(daddr);
+@@ -399,11 +415,18 @@ static void hub_get_status_complete (tuh_xfer_t* xfer)
+     TU_LOG1("HUB Over Current, addr = %u\r\n", daddr);
+     hub_port_clear_feature(daddr, port_num, HUB_FEATURE_HUB_OVER_CURRENT_CHANGE, hub_clear_feature_complete_stub, 0);
+   }
++  else
++  {
++    hub_edpt_status_xfer(daddr); // hid-remapper: nothing to clear, keep polling
++  }
+ }
+ 
+ static void hub_port_get_status_complete (tuh_xfer_t* xfer)
+ {
+-  TU_ASSERT(xfer->result == XFER_RESULT_SUCCESS, );
++  if (xfer->result != XFER_RESULT_SUCCESS) {
++    hub_edpt_status_xfer(xfer->daddr); // hid-remapper
++    return;
++  }
+ 
+   uint8_t const daddr = xfer->daddr;
+   hub_interface_t* p_hub = get_itf(daddr);
+@@ -430,7 +453,7 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer)
+     }
+     else if (p_hub->port_status.change.over_current)
+     {
+-      hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_OVER_CURRENT_CHANGE, hub_clear_feature_complete_stub, 0);
++      hub_port_clear_feature(daddr, port_num, HUB_FEATURE_PORT_OVER_CURRENT_CHANGE, port_over_current_cleared, 0);
+     }
+     else if (p_hub->port_status.change.reset)
+     {
+@@ -448,9 +471,29 @@ static void hub_port_get_status_complete (tuh_xfer_t* xfer)
+   }
+ }
+ 
++// hid-remapper: a hub with per-port over-current protection switches the port off, and upstream only
++// cleared the change, so the port stayed unpowered until the hub was configured again. Power it
++// again, a few times at most per hub, so a device that really is shorted doesn't cycle forever.
++static void port_over_current_cleared (tuh_xfer_t* xfer)
++{
++  uint8_t const daddr = xfer->daddr;
++  hub_interface_t* p_hub = get_itf(daddr);
++  uint8_t const port_num = (uint8_t) tu_le16toh(xfer->setup->wIndex);
++
++  if (xfer->result == XFER_RESULT_SUCCESS && !p_hub->port_status.status.port_power && p_hub->oc_repowers < 3) {
++    TU_LOG1("HUB Port %u powered again after over current, addr = %u\r\n", port_num, daddr);
++    p_hub->oc_repowers++;
++    if (hub_port_set_feature(daddr, port_num, HUB_FEATURE_PORT_POWER, hub_clear_feature_complete_stub, 0)) return;
++  }
++  hub_edpt_status_xfer(daddr);
++}
++
+ static void connection_clear_conn_change_complete (tuh_xfer_t* xfer)
+ {
+-  TU_ASSERT(xfer->result == XFER_RESULT_SUCCESS, );
++  if (xfer->result != XFER_RESULT_SUCCESS) {
++    hub_edpt_status_xfer(xfer->daddr); // hid-remapper
++    return;
++  }
+ 
+   uint8_t const daddr = xfer->daddr;
+   hub_interface_t* p_hub = get_itf(daddr);
+@@ -480,7 +523,9 @@ static void connection_clear_conn_change_complete (tuh_xfer_t* xfer)
+ 
+ static void connection_port_reset_complete (tuh_xfer_t* xfer)
+ {
+-  TU_ASSERT(xfer->result == XFER_RESULT_SUCCESS, );
++  // hid-remapper: submit the attach even if the reset request failed. The connection change is
++  // already cleared, so nothing would bring this device back; its enumeration fails instead and
++  // enum_give_up() resets the port again.
+ 
+   uint8_t const daddr = xfer->daddr;
+   // hub_interface_t* p_hub = get_itf(daddr);
+diff --git a/src/host/hub.h b/src/host/hub.h
+index 385efe6..ac3ddd6 100644
+--- a/src/host/hub.h
++++ b/src/host/hub.h
+@@ -186,6 +186,9 @@ bool hub_port_get_status    (uint8_t hub_addr, uint8_t hub_port, void* resp,
+ // Get status from Interrupt endpoint
+ bool hub_edpt_status_xfer(uint8_t dev_addr);
+ 
++// hid-remapper: reset a port and enumerate whatever is on it again (after a failed enumeration)
++bool hub_port_reenumerate(uint8_t hub_addr, uint8_t hub_port);
++
+ // Reset a port
+ TU_ATTR_ALWAYS_INLINE static inline
+ bool hub_port_reset(uint8_t hub_addr, uint8_t hub_port, tuh_xfer_cb_t complete_cb, uintptr_t user_data) {
 diff --git a/src/host/usbh.c b/src/host/usbh.c
-index 88f3101..ac9da8c 100644
+index 88f3101..f5b261f 100644
 --- a/src/host/usbh.c
 +++ b/src/host/usbh.c
-@@ -266,6 +266,11 @@ CFG_TUH_MEM_SECTION struct {
+@@ -266,6 +266,19 @@ CFG_TUH_MEM_SECTION struct {
    volatile uint16_t actual_len;
  }_ctrl_xfer;
  
 +// hid-remapper: recovery from enumerations and control transfers that never finish, see
-+// enum_abort() and recovery_check(). Real ones move every few ms; this one is 1 ms frames.
-+enum { RECOVERY_STUCK_MS = 5000 };
++// enum_abort(), recovery_check() and enum_give_up(). Real ones move every few ms; the clock is
++// the 1 ms frame number.
++enum {
++  RECOVERY_STUCK_MS = 5000,
++  RECOVERY_RECHECK_MS = 100, // second look when nothing was in flight to abort
++  ENUM_REDO_MAX = 3          // enumerations of one port started over in a row
++};
 +static uint32_t _last_progress_ms; // last control transfer start/stage or enumeration start
++static bool _ctrl_lost;            // recovery_check found the stuck transfer no longer in flight
++static uint8_t _enum_failed_count; // failed requests of the current enumeration (retried)
++static uint8_t _enum_redo_count;   // enumerations started over since the last one that completed
 +
  //------------- Helper Function -------------//
  
  TU_ATTR_ALWAYS_INLINE static inline usbh_device_t* get_device(uint8_t dev_addr) {
-@@ -277,6 +282,9 @@ static bool enum_new_device(hcd_event_t* event);
+@@ -277,6 +290,11 @@ static bool enum_new_device(hcd_event_t* event);
  static void process_removing_device(uint8_t rhport, uint8_t hub_addr, uint8_t hub_port);
  static bool usbh_edpt_control_open(uint8_t dev_addr, uint8_t max_packet_size);
  static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes);
++static inline void _set_control_xfer_stage(uint8_t stage);
 +static void enum_full_complete(void);
 +static void enum_abort(uint8_t rhport);
++static void enum_give_up(void);
 +static void recovery_check(void);
  
  #if CFG_TUSB_OS == OPT_OS_NONE
  // TODO rework time-related function later
-@@ -490,6 +498,8 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
+@@ -490,6 +508,8 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
    // Skip if stack is not initialized
    if (!tuh_inited()) return;
  
@@ -37,7 +200,7 @@ index 88f3101..ac9da8c 100644
    // Loop until there is no more events in the queue
    while (1) {
      hcd_event_t event;
-@@ -497,9 +507,20 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
+@@ -497,9 +517,20 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
  
      switch (event.event_id) {
        case HCD_EVENT_DEVICE_ATTACH:
@@ -59,11 +222,12 @@ index 88f3101..ac9da8c 100644
            TU_LOG_USBH("[%u:] USBH Defer Attach until current enumeration complete\r\n", event.rhport);
  
            bool is_empty = osal_queue_empty(_usbh_q);
-@@ -512,13 +533,16 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
+@@ -512,13 +543,17 @@ void tuh_task_ext(uint32_t timeout_ms, bool in_isr) {
          } else {
            TU_LOG_USBH("[%u:] USBH DEVICE ATTACH\r\n", event.rhport);
            _dev0.enumerating = 1;
 -          enum_new_device(&event);
++          _enum_failed_count = 0;
 +          _last_progress_ms = hcd_frame_number(_usbh_controller);
 +          // hid-remapper: one that can't even start must not leave the flag set
 +          if (!enum_new_device(&event)) enum_full_complete();
@@ -77,24 +241,56 @@ index 88f3101..ac9da8c 100644
  
          #if CFG_TUH_HUB
          // TODO remove
-@@ -630,6 +654,7 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
+@@ -630,6 +665,8 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
  
    bool const is_idle = (_ctrl_xfer.stage == CONTROL_STAGE_IDLE);
    if (is_idle) {
 +    _last_progress_ms      = hcd_frame_number(_usbh_controller);
++    _ctrl_lost             = false;
      _ctrl_xfer.stage       = CONTROL_STAGE_SETUP;
      _ctrl_xfer.daddr       = daddr;
      _ctrl_xfer.actual_len  = 0;
-@@ -715,6 +740,8 @@ static void _control_xfer_complete(uint8_t daddr, xfer_result_t result) {
+@@ -651,7 +688,12 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
+   TU_LOG_BUF_USBH(xfer->setup, 8);
+ 
+   if (xfer->complete_cb) {
+-    TU_ASSERT( hcd_setup_send(rhport, daddr, (uint8_t const*) &_ctrl_xfer.request) );
++    // hid-remapper: a setup the HCD won't take must not leave the pipe marked busy (the caller
++    // sees false and never gets a completion)
++    if (!hcd_setup_send(rhport, daddr, (uint8_t const*) &_ctrl_xfer.request)) {
++      _set_control_xfer_stage(CONTROL_STAGE_IDLE);
++      TU_ASSERT(false);
++    }
+   }else {
+     // blocking if complete callback is not provided
+     // change callback to internal blocking, and result as user argument
+@@ -661,7 +703,10 @@ bool tuh_control_xfer (tuh_xfer_t* xfer) {
+     _ctrl_xfer.user_data   = (uintptr_t) &result;
+     _ctrl_xfer.complete_cb = _control_blocking_complete_cb;
+ 
+-    TU_ASSERT( hcd_setup_send(rhport, daddr, (uint8_t*) &_ctrl_xfer.request) );
++    if (!hcd_setup_send(rhport, daddr, (uint8_t*) &_ctrl_xfer.request)) {
++      _set_control_xfer_stage(CONTROL_STAGE_IDLE);
++      TU_ASSERT(false);
++    }
+ 
+     while (result == XFER_RESULT_INVALID) {
+       // Note: this can be called within an callback ie. part of tuh_task()
+@@ -715,6 +760,13 @@ static void _control_xfer_complete(uint8_t daddr, xfer_result_t result) {
  static bool usbh_control_xfer_cb (uint8_t daddr, uint8_t ep_addr, xfer_result_t result, uint32_t xferred_bytes) {
    (void) ep_addr;
  
++  // hid-remapper: a completion for a transfer that isn't the current one (it was failed by
++  // recovery_check, or its device was removed) must not drive the pipe
++  if (_ctrl_xfer.stage == CONTROL_STAGE_IDLE || daddr != _ctrl_xfer.daddr) return false;
++
 +  _last_progress_ms = hcd_frame_number(_usbh_controller);
++  _ctrl_lost = false;
 +
    const uint8_t rhport = usbh_get_rhport(daddr);
    tusb_control_request_t const * request = &_ctrl_xfer.request;
  
-@@ -978,8 +1005,10 @@ TU_ATTR_FAST_FUNC void hcd_event_handler(hcd_event_t const* event, bool in_isr)
+@@ -978,8 +1030,10 @@ TU_ATTR_FAST_FUNC void hcd_event_handler(hcd_event_t const* event, bool in_isr)
        // mark device as removing to prevent further xfer before the event is processed in usbh task
  
        // Check if dev0 is removed
@@ -107,7 +303,7 @@ index 88f3101..ac9da8c 100644
          _dev0.enumerating = 0;
        }
        break;
-@@ -1321,6 +1350,42 @@ static bool enum_request_set_addr(void);
+@@ -1321,6 +1375,92 @@ static bool enum_request_set_addr(void);
  static bool _parse_configuration_descriptor (uint8_t dev_addr, tusb_desc_configuration_t const* desc_cfg);
  static void enum_full_complete(void);
  
@@ -124,29 +320,125 @@ index 88f3101..ac9da8c 100644
 +    _set_control_xfer_stage(CONTROL_STAGE_IDLE);
 +  }
 +  _dev0.enumerating = 0;
++  _enum_failed_count = 0;
++  _enum_redo_count = 0;
 +}
 +
 +// hid-remapper: a control transfer or an enumeration that hasn't moved for RECOVERY_STUCK_MS has lost
 +// its completion somewhere, and holds up every later attach and control request. Fail the transfer,
-+// so its owner sees an error and retries or gives up as it would for any failed request, or end an
-+// enumeration that has nothing in flight.
++// so its owner sees an error and retries or gives up as it would for any failed request, or give up
++// on an enumeration that has nothing in flight.
 +static void recovery_check(void) {
 +  bool const ctrl_busy = (_ctrl_xfer.stage != CONTROL_STAGE_IDLE);
 +  if (!ctrl_busy && !_dev0.enumerating) return;
-+  if (hcd_frame_number(_usbh_controller) - _last_progress_ms < RECOVERY_STUCK_MS) return;
++  uint32_t const now = hcd_frame_number(_usbh_controller);
++  if (now - _last_progress_ms < RECOVERY_STUCK_MS) return;
 +
-+  _last_progress_ms = hcd_frame_number(_usbh_controller);
 +  if (ctrl_busy) {
 +    uint8_t const daddr = _ctrl_xfer.daddr;
++    // one endpoint serves both directions of EP0
++    if (!hcd_edpt_abort_xfer(usbh_get_rhport(daddr), daddr, 0) && !_ctrl_lost) {
++      // Nothing in flight: it may have completed just now with its event still queued, and failing
++      // it as well would let that event drive the next transfer. Look again once the queue has run.
++      _ctrl_lost = true;
++      _last_progress_ms = now - RECOVERY_STUCK_MS + RECOVERY_RECHECK_MS;
++      return;
++    }
 +    TU_LOG_USBH("[:%u] USBH control transfer stuck, failing it\r\n", daddr);
-+    hcd_edpt_abort_xfer(usbh_get_rhport(daddr), daddr, 0); // one endpoint serves both directions of EP0
++    _ctrl_lost = false;
++    _last_progress_ms = now;
 +    _control_xfer_complete(daddr, XFER_RESULT_FAILED);
 +  } else {
 +    TU_LOG_USBH("[%u:] USBH enumeration stuck, giving up\r\n", _dev0.rhport);
++    _last_progress_ms = now;
++    enum_give_up();
++  }
++}
++
++// hid-remapper: upstream ends a failed enumeration and leaves the device dead until it is replugged.
++// A hub then has its downstream ports unpowered and nothing behind it ever comes up. Instead, drop
++// whatever got an address on that port and enumerate it again from a port reset, a few times in a row.
++static void enum_give_up(void) {
++  uint8_t const rhport = _dev0.rhport;
++  uint8_t const hub_addr = _dev0.hub_addr;
++  uint8_t const hub_port = _dev0.hub_port;
++
++  if (_enum_redo_count >= ENUM_REDO_MAX) {
 +    enum_full_complete();
++    return;
++  }
++  _enum_redo_count++;
++  TU_LOG_USBH("[%u:%u:%u] USBH enumeration failed, starting over\r\n", rhport, hub_addr, hub_port);
++
++  _dev0.enumerating = 0;
++  process_removing_device(rhport, hub_addr, hub_port);
++  hcd_device_close(rhport, 0);
++
++  #if CFG_TUH_HUB
++  if (hub_addr) {
++    // as for any attach, the hub's status pipe stays idle until this enumeration completes, so the
++    // hub driver doesn't clear the reset change the enumeration looks for
++    if (!hub_port_reenumerate(hub_addr, hub_port)) hub_edpt_status_xfer(hub_addr);
++    return;
++  }
++  #endif
++
++  if (hcd_port_connect_status(rhport)) {
++    hcd_event_t const event = {
++      .rhport = rhport,
++      .event_id = HCD_EVENT_DEVICE_ATTACH,
++      .connection = { .hub_addr = 0, .hub_port = 0 }
++    };
++    queue_event(&event, false);
 +  }
 +}
 +
  // process device enumeration
  static void process_enumeration(tuh_xfer_t* xfer) {
    // Retry a few times with transfers in enumeration since device can be unstable when starting up
+@@ -1328,25 +1468,31 @@ static void process_enumeration(tuh_xfer_t* xfer) {
+     ATTEMPT_COUNT_MAX = 3,
+     ATTEMPT_DELAY_MS = 100
+   };
+-  static uint8_t failed_count = 0;
++  // hid-remapper: the failure count is _enum_failed_count, zeroed when an enumeration starts. A
++  // function static outlived enumerations that ended on a removal and cut the next one's retries.
+ 
+   if (XFER_RESULT_SUCCESS != xfer->result) {
+     // retry if not reaching max attempt
+-    bool retry = _dev0.enumerating && (failed_count < ATTEMPT_COUNT_MAX);
++    bool retry = _dev0.enumerating && (_enum_failed_count < ATTEMPT_COUNT_MAX);
+     if ( retry ) {
+-      failed_count++;
++      _enum_failed_count++;
+       osal_task_delay(ATTEMPT_DELAY_MS); // delay a bit
+-      TU_LOG1("Enumeration attempt %u\r\n", failed_count);
++      TU_LOG1("Enumeration attempt %u\r\n", _enum_failed_count);
+       retry = tuh_control_xfer(xfer);
+     }
+ 
+     if (!retry) {
+-      enum_full_complete();
++      // hid-remapper: start the port over, unless the device was removed (that cleared the flag)
++      if (_dev0.enumerating) {
++        enum_give_up();
++      } else {
++        enum_full_complete();
++      }
+     }
+ 
+     return;
+   }
+-  failed_count = 0;
++  _enum_failed_count = 0;
+ 
+   uint8_t const daddr = xfer->daddr;
+   uintptr_t const state = xfer->user_data;
+@@ -1738,6 +1884,7 @@ void usbh_driver_set_config_complete(uint8_t dev_addr, uint8_t itf_num) {
+ 
+   // all interface are configured
+   if (itf_num == CFG_TUH_INTERFACE_MAX) {
++    _enum_redo_count = 0; // hid-remapper: see enum_give_up()
+     enum_full_complete();
+ 
+     if (is_hub_addr(dev_addr)) {
