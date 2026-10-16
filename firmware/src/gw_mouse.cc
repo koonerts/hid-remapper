@@ -57,9 +57,11 @@ void __verbose_terminate_handler() {
 //   0xFFF40706  Warg: input reports with ID 8 seen during the last read
 //   0xFFF40710  Warg angle: read from the mouse (0x7FFF = not read)
 //   0xFFF40711  Warg angle: written
+//   0xFFF40712  Warg angle: last write read back (v20; 0x7FFF = no answer)
 //   0xFFF40713  Warg angle: chord count since boot (steps + resets)
 //   0xFFF40718  Warg position: read from the mouse (0x7FFF = not read)
 //   0xFFF40719  Warg position: written
+//   0xFFF4071A  Warg position: last write read back (v20; 0x7FFF = no answer)
 //   0xFFF4071B  Warg position: chord count since boot (steps + resets)
 //   0xFFF40740  Warg LED: flashes since boot
 //   0xFFF40741  Warg LED: stage whose colour slot was flashed, 1-based (0 = all stages: stage unknown)
@@ -615,6 +617,8 @@ static uint32_t gw_palette_default[RS_DPI_STAGES] = { 0xff0000, 0xff8000, 0xffff
 #define RS_READ_TIMEOUT_US 150000
 #define RS_NOREAD_HOLD_US 1000000  // after a read timed out, input from the device this much later means it's awake
 #define RS_SETTLE_US 40000  // one write for a quick run of presses or notches
+#define RS_VERIFY_DELAY_US 150000  // v20: a write is read back this long after it went out
+#define RS_VERIFY_TRIES 3  // v20: writes again (read back different, or unanswered then awake) per value set
 #define RS_INPUT_LOG 8
 
 struct GwTune {
@@ -801,6 +805,13 @@ struct RsSetting {
     int pending;  // steps that came in before the value was known
     uint32_t changed_at;
     int32_t ops;
+    // v20: what the mouse has, as far as the Feather knows. A write is read back (verify_*); one the mouse
+    // didn't answer is written again once it sends input (it was asleep), see rs_verify_tick()
+    bool confirmed;        // the mouse's value is value: read from it, or a write read back
+    bool verify_wanted;    // read back at verify_at
+    bool rewrite_on_wake;  // the read-back went unanswered: write again when the mouse is awake
+    uint8_t verify_tries;  // writes again after a read-back that differed
+    uint32_t verify_at;
 };
 
 #define RS_ANGLE 0
@@ -906,6 +917,7 @@ enum class RsRead : uint8_t {
     REFRESH,
     INFO,  // the status query (command 04), last item of a refresh
     RAW,   // a probe from the QT Py (LINK_RAW)
+    VERIFY,  // v20: an angle/position write read back (rs_read_setting)
 };
 
 // The QT Py page's "refresh": stage, angle, position, the 5 colours, the 5 DPI table entries.
@@ -992,6 +1004,8 @@ static void rs_forget(uint8_t dev_addr, bool mounted) {
     for (RsSetting& s : rs_settings) {
         s.known = false;
         s.sent = RS_NONE;
+        s.confirmed = s.verify_wanted = s.rewrite_on_wake = false;
+        s.verify_tries = 0;
     }
     rs_dpi_last = -1;
     rs_cur_stage = -1;
@@ -1151,9 +1165,18 @@ static void rs_dpi_finish() {
 }
 
 // absolute, so it needs no read
+// v20: an exact value from a reset or the page is always written: what the Feather last sent may never have reached
+// the mouse (it was asleep), and the web driver can change it behind the Feather's back. Before v20 a value the Feather
+// thought was already there wasn't sent, so the page could show 0 while the mouse stayed at 15.
+static void rs_setting_force(RsSetting& s, int v) {
+    s.sent = RS_NONE;
+    s.verify_tries = 0;
+    s.value = v;
+}
+
 static void rs_setting_reset(RsSetting& s, uint32_t now) {
     s.ops++;
-    s.value = s.home;
+    rs_setting_force(s, s.home);
     s.known = true;
     s.pending = 0;
     s.wanted = false;
@@ -1163,7 +1186,7 @@ static void rs_setting_reset(RsSetting& s, uint32_t now) {
 // an exact value from the QT Py page: written at once (no settle wait)
 static void rs_setting_set(RsSetting& s, int v, uint32_t now) {
     s.ops++;
-    s.value = clamp(v, s.lo, s.hi);
+    rs_setting_force(s, clamp(v, s.lo, s.hi));
     s.known = true;
     s.pending = 0;
     s.wanted = false;
@@ -1183,6 +1206,7 @@ static int rs_setting_step(RsSetting& s, int dir, uint32_t now) {
         return 0;
     }
     s.value = v;
+    s.verify_tries = 0;
     s.changed_at = now;
     return 1;
 }
@@ -1196,6 +1220,7 @@ static void rs_setting_read_done(RsSetting& s, int32_t raw, uint32_t now) {
     bool ok = (v != RS_NONE);
     s.value = ok ? v : s.home;
     s.sent = ok ? v : RS_NONE;
+    s.confirmed = ok;  // a value assumed for an unanswered read is only a guess
     if (!ok) {
         rs_fail |= 4;
     }
@@ -1208,6 +1233,26 @@ static void rs_setting_read_done(RsSetting& s, int32_t raw, uint32_t now) {
         s.value = s.step(s.value, -1);
     }
     s.changed_at = now;
+}
+
+// v20: the read-back of a write (raw = the byte read, -1 = no reply)
+static void rs_verify_done(RsSetting& s, int32_t raw) {
+    int v = (raw >= 0) ? s.decode(raw) : RS_NONE;
+    diag(s.diag + 2, v);
+    if (s.value != s.sent) {
+        return;  // changed again meanwhile: that write gets its own read-back
+    }
+    if (raw < 0) {
+        s.rewrite_on_wake = true;  // no answer, so asleep: written again once it sends input
+    } else if (v == s.value) {
+        s.confirmed = true;
+    } else if (s.verify_tries < RS_VERIFY_TRIES) {
+        s.verify_tries++;
+        s.sent = RS_NONE;  // it didn't take: write it again
+    } else if (v != RS_NONE) {
+        s.value = s.sent = v;  // the mouse keeps another value: show that one rather than pretend
+        s.confirmed = true;
+    }
 }
 
 static bool rs_refresh_reading() {
@@ -1278,6 +1323,7 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
             s.sent = v;
             s.known = true;
             s.wanted = false;
+            s.confirmed = true;
             for (; s.pending > 0; s.pending--) {
                 s.value = s.step(s.value, 1);
             }
@@ -1291,6 +1337,8 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
             s.sent = v;
             s.pending = 0;
             s.wanted = false;
+            s.confirmed = true;
+            s.verify_wanted = s.rewrite_on_wake = false;
         }
     } else if (item < 3 + RS_DPI_STAGES) {
         led.palette[item - 3] = (uint32_t) d[0] << 16 | d[1] << 8 | d[2];
@@ -1339,6 +1387,9 @@ static void rs_read_done(bool ok, uint32_t now) {
             break;
         case RsRead::SETTING:
             rs_setting_read_done(rs_settings[rs_read_setting], byte, now);
+            break;
+        case RsRead::VERIFY:
+            rs_verify_done(rs_settings[rs_read_setting], byte);
             break;
         case RsRead::LED_SLOT:
             if (ok) {
@@ -1439,6 +1490,19 @@ static void rs_tick(uint32_t now) {
                 }
                 started = true;  // one read at a time
             }
+            for (uint8_t i = 0; (i < RS_SETTINGS) && !started; i++) {
+                RsSetting& s = rs_settings[i];
+                if (!s.verify_wanted || ((int32_t) (now - s.verify_at) < 0)) {
+                    continue;
+                }
+                s.verify_wanted = false;
+                rs_read_setting = i;
+                if (rs_try_read(RsRead::VERIFY, s.addr, 2, now)) {
+                    started = true;
+                } else {
+                    s.rewrite_on_wake = true;  // the mouse isn't answering reads: asleep, most likely
+                }
+            }
             if (!started && led.requested) {
                 // the stage colours once per plug-in, the current stage before each flash
                 if (!led.palette_done && rs_reads_work()) {
@@ -1470,12 +1534,26 @@ static void rs_tick(uint32_t now) {
         led.restored++;
         diag(0x745, led.restored);
     }
+    // v20: a write the mouse didn't answer the read-back of goes out again once it's awake (sending input)
+    for (RsSetting& s : rs_settings) {
+        if (s.rewrite_on_wake && s.known && rs_reads_work()) {
+            s.rewrite_on_wake = false;
+            if (s.verify_tries < RS_VERIFY_TRIES) {
+                s.verify_tries++;
+                s.sent = RS_NONE;
+            }
+        }
+    }
     // one setting per tick
     for (RsSetting& s : rs_settings) {
         if (s.known && (s.value != s.sent) && ((now - s.changed_at) >= RS_SETTLE_US)) {
             rs_write_value(s.on_addr, 0x01);
             rs_write_value(s.addr, s.encode(s.value));
             s.sent = s.value;
+            s.confirmed = false;
+            s.verify_wanted = true;
+            s.rewrite_on_wake = false;
+            s.verify_at = now + RS_VERIFY_DELAY_US;
             diag(s.diag + 1, s.value);
             diag(s.diag + 3, s.ops);
             diag(0x703, (int32_t) rs_targets().size());
@@ -1506,14 +1584,16 @@ static void rs_tick(uint32_t now) {
 //   93 reply length   94-110 the reply (report ID first, 17 bytes at most)   111-117 (v19+) frame timing, all in 4 us steps
 //   at most 255 except 111-112: 111-112 ticks merged since boot (at most 65535)   113 how long after its tick each frame's
 //   processing was done, average over the last second   114 the longest   115 the 1 ms SOF interrupt (USB host frame:
-//   SOF + the transfers to the mouse), average   116 its longest   117 0   118 probes refused   119-122 the probe described (cmd, addr
+//   SOF + the transfers to the mouse), average   116 its longest   117 angle/position confirmed (v20, see below)   118 probes refused   119-122 the probe described (cmd, addr
 //   hi, addr lo, len)   123 replies rejected (echoed the command, failed the checks)   124 chord table
 //   number (changes with every new table; 1 at power-up)   125 chord flags (GW_CH_* in gw_chords.h)
 //   126 chord count   127 crc8 of 64-126
+//   (byte 117, v20+) bit 0 angle confirmed by the mouse (read, or a write read back), bit 1 position confirmed, bit 2 angle
+//   write waiting for the mouse to wake, bit 3 position write waiting
 // Bytes 128-191 (v15+; read only when byte 124 changes): 128 'C'   129 chord table number   130 count
 //   131-190 the rules, 5 bytes each (gw_rule_t), unused ones 0   191 crc8 of 128-190
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 19
+#define GW_FW_VERSION 20
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1640,6 +1720,8 @@ void gw_link_status(uint8_t* s) {
     s[114] = td_peak4;
     s[115] = sof_avg4;
     s[116] = sof_peak4;
+    s[117] = (rs_settings[RS_ANGLE].confirmed ? 1 : 0) | (rs_settings[RS_POS].confirmed ? 2 : 0) |
+             (rs_settings[RS_ANGLE].rewrite_on_wake ? 4 : 0) | (rs_settings[RS_POS].rewrite_on_wake ? 8 : 0);
     s[91] = rs_raw_seq;
     s[92] = rs_raw_state;
     s[93] = (rs_raw_len > 17) ? 17 : rs_raw_len;

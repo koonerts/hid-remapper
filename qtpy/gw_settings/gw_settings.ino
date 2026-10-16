@@ -32,7 +32,7 @@
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
 #define STATUS_FULL 192 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes
-#define QT_FW 14        // this firmware's number, shown in /api/status
+#define QT_FW 15        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -817,6 +817,12 @@ static void h_status() {
         j += ",\"stage\":" + String((f & 8) ? String(st[4]) : String("null"));
         j += ",\"angle\":" + String((f & 16) ? String(s8(5)) : String("null"));
         j += ",\"pos\":" + String((f & 32) ? String(s8(6)) : String("null"));
+        // Feather v20+: whether the mouse confirmed them (read, or a write read back), or a write waits for it to wake (byte 117)
+        if (st_ext && (st[56] >= 20)) {
+            uint8_t c = st[117];
+            j += String(",\"sens\":{\"angle_ok\":") + ((c & 1) ? "true" : "false") + ",\"pos_ok\":" + ((c & 2) ? "true" : "false") +
+                 ",\"angle_wait\":" + ((c & 4) ? "true" : "false") + ",\"pos_wait\":" + ((c & 8) ? "true" : "false") + "}";
+        }
         j += ",\"colours_read\":" + String((f & 64) ? "true" : "false");
         j += ",\"dpi_known\":" + String((f & 128) ? "true" : "false");
         j += ",\"refreshing\":" + String((st[2] & 4) ? "true" : "false");
