@@ -30,9 +30,15 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
-      - name: Build (Feather RP2040 USB Host only)
+      # hid-remapper fixes to the pinned TinyUSB (see each patch's header)
+      - name: Apply TinyUSB patches
         run: |
           git config --global --add safe.directory '*'
+          for p in firmware/patches/tinyusb/*.patch; do
+            git -C firmware/tinyusb apply --verbose "$GITHUB_WORKSPACE/$p"
+          done
+      - name: Build (Feather RP2040 USB Host only)
+        run: |
           mkdir build-feather
           cd build-feather
           PICO_BOARD=feather_host cmake ..

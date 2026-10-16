@@ -28,6 +28,10 @@ __attribute__((weak)) void gw_on_get_report_complete(uint8_t dev_addr, uint8_t i
 __attribute__((weak)) void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* report, uint16_t len) {}
 
 static bool ready_to_send = true;
+// The report in flight while !ready_to_send. TinyUSB drops a control transfer without a completion
+// callback when its device is unplugged, so that device going away has to free the queue too.
+static uint8_t in_flight_dev_addr;
+static uint8_t in_flight_instance;
 
 void do_queue_out_report(const uint8_t* report, uint16_t len, uint8_t report_id, uint8_t dev_addr, uint8_t interface, OutType type) {
     if (oor_items == OOR_BUFSIZE) {
@@ -69,20 +73,29 @@ uint8_t out_report_free_slots() {
 }
 
 void do_send_out_report() {
+    if (!ready_to_send && !tuh_hid_mounted(in_flight_dev_addr, in_flight_instance)) {
+        ready_to_send = true;
+    }
     if ((oor_items > 0) && ready_to_send) {
         outgoing_out_report_t* out = &(outgoing_out_reports[oor_head]);
+        // one for a device that's gone would never send and would hold up the queue for good
+        if (!tuh_hid_mounted(out->dev_addr, out->interface)) {
+            oor_head = (oor_head + 1) % OOR_BUFSIZE;
+            oor_items--;
+            return;
+        }
+        bool sent = false;
         if ((out->type == OutType::OUTPUT) || (out->type == OutType::SET_FEATURE)) {
-            if (tuh_hid_set_report(out->dev_addr, out->interface, out->report_id, (out->type == OutType::OUTPUT) ? HID_REPORT_TYPE_OUTPUT : HID_REPORT_TYPE_FEATURE, out->report, out->len)) {
-                ready_to_send = false;
-                oor_head = (oor_head + 1) % OOR_BUFSIZE;
-                oor_items--;
-            }
+            sent = tuh_hid_set_report(out->dev_addr, out->interface, out->report_id, (out->type == OutType::OUTPUT) ? HID_REPORT_TYPE_OUTPUT : HID_REPORT_TYPE_FEATURE, out->report, out->len);
         } else if (out->type == OutType::GET_FEATURE) {
-            if (tuh_hid_get_report(out->dev_addr, out->interface, out->report_id, HID_REPORT_TYPE_FEATURE, get_buffer, out->len)) {
-                ready_to_send = false;
-                oor_head = (oor_head + 1) % OOR_BUFSIZE;
-                oor_items--;
-            }
+            sent = tuh_hid_get_report(out->dev_addr, out->interface, out->report_id, HID_REPORT_TYPE_FEATURE, get_buffer, out->len);
+        }
+        if (sent) {
+            ready_to_send = false;
+            in_flight_dev_addr = out->dev_addr;
+            in_flight_instance = out->interface;
+            oor_head = (oor_head + 1) % OOR_BUFSIZE;
+            oor_items--;
         }
     }
 }

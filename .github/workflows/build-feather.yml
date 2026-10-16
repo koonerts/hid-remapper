@@ -29,6 +29,12 @@ jobs:
           mkdir -p ~/apt-debs/partial
           sudo apt-get -o Dir::Cache::archives="$HOME/apt-debs" -o Acquire::Retries=3 install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib srecord
           sudo chown -R "$USER" ~/apt-debs
+      # hid-remapper fixes to the pinned TinyUSB (see each patch's header)
+      - name: Apply TinyUSB patches
+        run: |
+          for p in firmware/patches/tinyusb/*.patch; do
+            git -C firmware/tinyusb apply --verbose "$GITHUB_WORKSPACE/$p"
+          done
       - name: Build (Feather RP2040 USB Host only)
         run: |
           mkdir build-feather

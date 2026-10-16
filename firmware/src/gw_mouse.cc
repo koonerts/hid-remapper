@@ -1509,7 +1509,7 @@ static void rs_tick(uint32_t now) {
 // Bytes 128-191 (v15+; read only when byte 124 changes): 128 'C'   129 chord table number   130 count
 //   131-190 the rules, 5 bytes each (gw_rule_t), unused ones 0   191 crc8 of 128-190
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 15
+#define GW_FW_VERSION 16
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
