@@ -9,6 +9,8 @@
 //   trigger   button 1-5, or 6 = the wheel
 //   button trigger: tap = action on release, hold = action once held hold10 x 10 ms; with no
 //     hold action the tap action fires on the press instead (nothing to wait for)
+//   (v21) a tap action with GA_DOUBLE set acts only on a double tap: the second tap within
+//     GW_DOUBLE_TAP_US of the first (release to release; press to press when there's no hold action)
 //   wheel trigger: tap = action per frame of wheel up, hold = per frame of wheel down, once the
 //     modifier has been held hold10 x 10 ms (the wheel nudging as the modifier goes down then
 //     does nothing)
@@ -47,6 +49,9 @@ struct gw_rule_t {
 #define GA_SNAP 16   // Angle Snap on/off
 #define GA_LOD 17    // lift-off distance, next step (wraps)
 #define GA_COUNT 18
+#define GA_DOUBLE 0x80  // v21, on a tap action of a button trigger: only a double tap acts
+#define GA_ACTION(a) ((uint8_t) ((a) & 0x7F))
+#define GW_DOUBLE_TAP_US 500000
 
 // flags (status byte 125)
 #define GW_CH_FROM_FLASH 1  // the table came from flash (else: the built-in defaults)
@@ -75,8 +80,15 @@ void gw_chords_service();
 // validation, shared with the tests
 bool gw_chords_valid(const gw_rule_t* rules, uint8_t n);
 
-// implemented in gw_mouse.cc
-void gw_action(uint8_t action, uint32_t now);
+// implemented in gw_mouse.cc. src/mod/trig say where it came from, for the page's list of recent actions
+// (v21): GW_SRC_*, and the chord's buttons (0 for a page command)
+#define GW_SRC_TAP 1
+#define GW_SRC_HOLD 2
+#define GW_SRC_DOUBLE 3
+#define GW_SRC_WHEEL_UP 4
+#define GW_SRC_WHEEL_DOWN 5
+void gw_action_src(uint8_t action, uint8_t src, uint8_t mod, uint8_t trig, uint32_t now);
+inline void gw_action(uint8_t action, uint32_t now) { gw_action_src(action, 0, 0, 0, now); }
 // whether an action does anything with the mice plugged in (a hold that does nothing isn't waited for)
 bool gw_action_supported(uint8_t action);
 

@@ -31,8 +31,9 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
-#define STATUS_FULL 192 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes
-#define QT_FW 15        // this firmware's number, shown in /api/status
+#define STATUS_FULL 256 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
+                        // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192)
+#define QT_FW 16        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -278,17 +279,29 @@ static bool poll_status() {
     return true;
 }
 
-// the full 192-byte block, for its chord table; only when the table number (byte 124) moved
+// recent actions (Feather v21+): its block 192-255 as read, when, and the change counter it went with
+static uint8_t evb[64];
+static bool ev_ok = false;
+static uint32_t ev_read_at = 0;
+static uint8_t ev_nib = 0xFF;
+
+static bool events_supported() {
+    return st_ok && st_ext && (st[56] >= 21);
+}
+
+// the full block, for its chord table (when the table number, byte 124, moved) and, from Feather v21, its recent
+// actions (when byte 117's high nibble moved)
 static void read_chords() {
     static uint8_t b[STATUS_FULL];
-    uint8_t n = Wire1.requestFrom((uint8_t) LINK_ADDR, (uint8_t) STATUS_FULL);
-    if (n != STATUS_FULL) {
+    size_t len = events_supported() ? 256 : 192;
+    size_t n = Wire1.requestFrom((uint16_t) LINK_ADDR, len);
+    if (n != len) {
         while (Wire1.available()) {
             Wire1.read();
         }
         return;
     }
-    for (int i = 0; i < STATUS_FULL; i++) {
+    for (size_t i = 0; i < len; i++) {
         b[i] = Wire1.read();
     }
     if ((b[0] != 'G') || (crc8(b, 63) != b[63]) || (b[128] != 'C') || (crc8(b + 128, 63) != b[191]) || (b[130] > CH_MAX)) {
@@ -296,6 +309,12 @@ static void read_chords() {
     }
     memcpy(ch, b + 128, 64);
     ch_ok = true;
+    if ((len == 256) && (b[192] == 'E') && (crc8(b + 192, 63) == b[255]) && (b[193] <= 8)) {
+        memcpy(evb, b + 192, 64);
+        ev_ok = true;
+        ev_read_at = millis();
+        ev_nib = b[117] >> 4;
+    }
 }
 
 static bool chords_supported() {
@@ -512,7 +531,7 @@ static void link_tick() {
     if (!ok) {
         return;
     }
-    if (chords_supported() && (!ch_ok || (ch[1] != st[124]))) {
+    if (chords_supported() && (!ch_ok || (ch[1] != st[124]) || (events_supported() && ((st[117] >> 4) != ev_nib)))) {
         read_chords();
     }
     // a restarted Feather has lost its tuning flag: re-baseline the counter, give back the settings
@@ -704,8 +723,10 @@ static bool chords_valid(const uint8_t* r, uint8_t n) {  // as gw_chords_valid o
     }
     for (uint8_t i = 0; i < n; i++) {
         const uint8_t* x = r + 5 * i;
-        if ((x[0] < 1) || (x[0] > 5) || (x[1] < 1) || (x[1] > 6) || (x[0] == x[1]) || (x[2] >= CH_ACTIONS) || (x[3] >= CH_ACTIONS) ||
-            ((x[2] == 0) && (x[3] == 0)) || ((x[1] != 6) && (x[3] != 0) && (x[4] < 10))) {
+        // tap bit 7 (Feather v21): only a double tap acts; button triggers only
+        uint8_t tap = x[2] & 0x7F;
+        if ((x[0] < 1) || (x[0] > 5) || (x[1] < 1) || (x[1] > 6) || (x[0] == x[1]) || (tap >= CH_ACTIONS) || (x[3] >= CH_ACTIONS) ||
+            ((tap == 0) && (x[3] == 0)) || ((x[1] != 6) && (x[3] != 0) && (x[4] < 10)) || ((x[2] & 0x80) && ((x[1] == 6) || (tap == 0)))) {
             return false;
         }
         for (uint8_t j = 0; j < i; j++) {
@@ -843,6 +864,19 @@ static void h_status() {
     }
     j += ",\"opt\":" + opt_json();
     j += ",\"chords\":" + chords_json();
+    // Feather v21+: recent actions, newest first: [age s, source, buttons, action, value]
+    if (events_supported() && ev_ok) {
+        uint32_t extra = (millis() - ev_read_at) / 1000;
+        j += ",\"events\":[";
+        for (uint8_t k = 0; k < evb[1]; k++) {
+            const uint8_t* q = evb + 2 + 6 * k;
+            j += (k ? ",[" : "[") + String((uint32_t) (q[0] | q[1] << 8) + extra) + "," + String(q[2]) + "," + String(q[3]) + "," + String(q[4]) + "," +
+                 String((int8_t) q[5]) + "]";
+        }
+        j += "]";
+    } else {
+        j += ",\"events\":null";
+    }
     // Feather v15+: its processing time per 1 ms frame over the last second (status bytes 84-89); v19+ also the
     // whole frame: ticks merged (frames never processed, 90 and 111-112) and, in 4 us steps, how long after its tick each
     // frame was done (113-114) and the SOF interrupt (115-116)

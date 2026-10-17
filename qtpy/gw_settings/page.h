@@ -84,6 +84,8 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .cdo label{display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--mut);min-width:0}
 .cdo select{width:100%}
 .cdo input:disabled{opacity:.45}
+.cdo .dbl{display:flex;flex-direction:row;align-items:center;gap:6px;font-size:12.5px;margin-top:4px}
+#evbox{margin:0 0 10px;font-size:13px}#evbox summary{cursor:pointer;color:var(--mut)}#evlist{margin:6px 0 0;padding-left:18px;color:var(--mut)}#evlist li{margin:2px 0}
 @media (max-width:540px){.cdo{grid-template-columns:1fr}}
 .cerr{color:var(--bad);font-size:12.5px;margin:6px 0 0}
 .cerr:empty{display:none}
@@ -105,6 +107,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 
 <div class="card"><div class="hd"><h2>Sensor</h2></div>
 <p class="mut" id="sensok" hidden style="margin:0 0 10px"></p>
+<details id="evbox" hidden><summary id="evlast"></summary><ol id="evlist"></ol></details>
 <div class="sens"><svg class="ms unk" id="ms" viewBox="0 0 200 300" role="img" aria-label="Sensor position and angle">
 <text x="100" y="13" text-anchor="middle">front</text>
 <path class="bd" d="M100,22 C146,22 160,62 160,112 C160,172 166,232 150,264 C138,284 62,284 50,264 C34,232 40,172 40,112 C40,62 54,22 100,22 Z"/>
@@ -240,20 +243,21 @@ const BTN=['','Left','Right','Middle','Back','Forward','Wheel'];
 const ACT=['Nothing','Next DPI stage','Previous DPI stage','DPI stage 1','DPI stage 2','DPI stage 3','DPI stage 4','DPI stage 5','Angle up','Angle down','Angle reset','Position up (toward the back)','Position down (toward the front)','Position reset','Wi-Fi on/off','Motion Sync on/off','Angle Snap on/off','Lift-off distance: next'];
 let chEdit=[],chDirty=false,chSeq=-1,chWait=-1,chWaitAt=0,chLost=false;
 function opts(list,from,sel){let h='';for(let i=from;i<list.length;i++)h+='<option value="'+i+'"'+(i===sel?' selected':'')+'>'+list[i]+'</option>';return h}
-function chProblems(){const seen={};return chEdit.map((r,i)=>{const [m,t,a,h,ms]=r,k=m+'.'+t;let e='';
-if(m===t)e='Pick two different buttons.';else if(!a&&!h)e='Pick at least one action.';else if(t!==6&&h&&ms<100)e='A hold needs at least 100 ms.';else if(seen[k]!==undefined)e='Same buttons as chord '+(seen[k]+1)+'.';
+function chProblems(){const seen={};return chEdit.map((r,i)=>{const [m,t,a0,h,ms]=r,a=a0&127,k=m+'.'+t;let e='';
+if(m===t)e='Pick two different buttons.';else if(!a&&!h)e='Pick at least one action.';else if((a0&128)&&!a)e='A double tap needs a tap action.';else if(t!==6&&h&&ms<100)e='A hold needs at least 100 ms.';else if(seen[k]!==undefined)e='Same buttons as chord '+(seen[k]+1)+'.';
 if(seen[k]===undefined)seen[k]=i;return e})}
 function chCheck(){const p=chProblems();document.querySelectorAll('#chlist .crow').forEach((row,i)=>{row.querySelector('.cerr').textContent=p[i]||''});
 const ok=!p.some(Boolean)&&chEdit.length<=12,busy=chWait>=0;$('chSave').disabled=!chDirty||!ok||busy;$('chRevert').disabled=!chDirty;$('chAdd').disabled=chEdit.length>=12||busy;$('chfs').disabled=busy;
-const wifi=chEdit.some(r=>r[2]===14||r[3]===14);$('chnote').hidden=wifi;$('chnote').textContent='No chord switches Wi-Fi. Unless Wi-Fi is set to stay on, the QT Py\'s own button would then be the only way to turn it on.'}
+const wifi=chEdit.some(r=>(r[2]&127)===14||r[3]===14);$('chnote').hidden=wifi;$('chnote').textContent='No chord switches Wi-Fi. Unless Wi-Fi is set to stay on, the QT Py\'s own button would then be the only way to turn it on.'}
 function chBuild(){const el=$('chlist');el.innerHTML='';chEdit.forEach((r,i)=>{const w=r[1]===6,n=i+1;
 el.insertAdjacentHTML('beforeend','<div class="crow" data-i="'+i+'"><div class="cwhen"><span>Hold</span><select class="cm" aria-label="Chord '+n+': button held first">'+opts(BTN.slice(0,6),1,r[0])+'</select><span>then</span><select class="ct" aria-label="Chord '+n+': second button">'+opts(BTN,1,r[1])+'</select><button class="sq x" aria-label="Remove chord '+n+'">×</button></div>'+
-'<div class="cdo"><label><span>'+(w?'Wheel up':'Tap')+'</span><select class="ca">'+opts(ACT,0,r[2])+'</select></label><label><span>'+(w?'Wheel down':'Hold')+'</span><select class="ch">'+opts(ACT,0,r[3])+'</select></label>'+
+'<div class="cdo"><label><span>'+(w?'Wheel up':'Tap')+'</span><select class="ca">'+opts(ACT,0,r[2]&127)+'</select>'+(w?'':'<span class="dbl"><input type="checkbox" class="c2" aria-label="Chord '+n+': double tap only"'+((r[2]&128)?' checked':'')+'> Double tap only</span>')+'</label><label><span>'+(w?'Wheel down':'Hold')+'</span><select class="ch">'+opts(ACT,0,r[3])+'</select></label>'+
 '<label><span>'+(w?'Held first (ms)':'Hold time (ms)')+'</span><input type="number" class="cms" min="0" max="2550" step="10" value="'+r[4]+'"'+((!w&&!r[3])?' disabled':'')+'></label></div><p class="cerr"></p></div>')});
 el.querySelectorAll('.crow').forEach(row=>{const i=+row.dataset.i;const set=(k,v,rebuild)=>{chEdit[i][k]=v;chDirty=true;rebuild?chBuild():chCheck()};
 row.querySelector('.cm').onchange=e=>set(0,+e.target.value);
-row.querySelector('.ct').onchange=e=>set(1,+e.target.value,true);
-row.querySelector('.ca').onchange=e=>set(2,+e.target.value);
+row.querySelector('.ct').onchange=e=>{const v=+e.target.value;if(v===6)chEdit[i][2]&=127;set(1,v,true)};
+row.querySelector('.ca').onchange=e=>set(2,(+e.target.value)|(chEdit[i][2]&128));
+const c2=row.querySelector('.c2');if(c2)c2.onchange=e=>set(2,(chEdit[i][2]&127)|(e.target.checked?128:0));
 row.querySelector('.ch').onchange=e=>{const v=+e.target.value;if(v&&!chEdit[i][3]&&chEdit[i][1]!==6&&chEdit[i][4]<100)chEdit[i][4]=500;set(3,v,true)};
 row.querySelector('.cms').oninput=e=>set(4,Math.max(0,Math.min(2550,Math.round(+e.target.value||0))));
 row.querySelector('.x').onclick=()=>{chEdit.splice(i,1);chDirty=true;chBuild()}});chCheck()}
@@ -265,6 +269,14 @@ post('/api/chords?r='+encodeURIComponent(r)).then(x=>{say(x,'Sending the chords 
 function chDefaults(){if(!S||!S.chords||!confirm('Replace your chords with the built-in ones (as they came)?'))return;chWait=S.chords.seq;chWaitAt=Date.now();chLost=false;chCheck();$('chstate').textContent='Saving to the Feather…';
 post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(x.ok)chDirty=false;else chWait=-1;chCheck()})}
 function us(v){return v>=1020?'1020+':String(v)}
+// recent actions (Feather v21): [age s, source, buttons, action, value], newest first
+const EVSRC=['','tap','hold','double tap','wheel up','wheel down'];
+function evText(e){const[age,src,b,a,v]=e,t=new Date(Date.now()-age*1000).toLocaleTimeString();let s,ang,stg=false;
+if(src>=1&&src<=5){s=BTN[b>>4]+' + '+(src>=4?'wheel '+(src===4?'up':'down'):BTN[b&15]+' '+EVSRC[src])+': '+ACT[a];ang=a>=8&&a<=10}
+else if(src===6){s=b===1?'Page: DPI stage':b===2?'Page: angle':b===3?'Page: position':'Page: command '+b;ang=b===2;stg=b===1}
+else{const n=b===1?'Angle':'Position';ang=b===1;s=src===7?n+' assumed (the mouse didn\'t answer)':src===8?n+': the mouse kept its own value (writes didn\'t take)':n+' sent again (the mouse woke)'}
+if(v!==127)s+=' → '+(stg?'stage '+(v+1):ang?v+'°':v);return t+'  '+s}
+function drawEvents(){const ev=S.events,box=$('evbox');box.hidden=!ev||!ev.length;if(!ev||!ev.length)return;$('evlast').textContent='Last change: '+evText(ev[0]);$('evlist').innerHTML=ev.map(e=>'<li>'+evText(e).replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</li>').join('')}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
 $('perf').hidden=!pf;if(pf)$('perf').textContent='Feather work per 1 ms frame, last second: '+pf.avg_us.toFixed(1)+' µs on average, '+pf.max_us+' µs at most; of that, the chord check '+pf.chords_avg_us.toFixed(1)+' µs on average ('+pf.chords_max_us+' µs at most).'+(pf.missed_1s===undefined?'':' Whole 1 ms frame: USB to the mouse '+us(pf.usb_avg_us)+' µs on average ('+us(pf.usb_max_us)+' at most); each frame finished '+us(pf.tick_avg_us)+' µs after its tick on average ('+us(pf.tick_max_us)+' at most). Frames skipped: '+pf.missed_1s+' in the last second, '+pf.missed_total+' since the Feather started (plugging in or switching to a device stops it for about half a second).');
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
@@ -277,7 +289,7 @@ let s=(c.flags&1)?'Saved on the Feather':'The Feather\'s built-in chords';if(c.s
 if((c.flags&2)||chWait>=0)s='Saving to the Feather…';if(c.flags&4)s+=' The last table sent was refused.';if(c.flags&8)s+=' The Feather couldn\'t write its flash.';if(chLost&&chWait<0)s+=' The Feather didn\'t take the last table: press Save again.';
 $('chstate').textContent=s}
 // how Wi-Fi gets switched, for the Wi-Fi card
-function wifiChord(){const c=S.chords&&S.chords.rules;if(!S.chords)return 'Hold Middle + Right';if(!c)return '';const r=c.find(x=>x[2]===14||x[3]===14);return r?(r[3]===14?'Hold ':'Press ')+BTN[r[0]]+' + '+BTN[r[1]]:''}
+function wifiChord(){const c=S.chords&&S.chords.rules;if(!S.chords)return 'Hold Middle + Right';if(!c)return '';const r=c.find(x=>(x[2]&127)===14||x[3]===14);return r?(r[3]===14?'Hold ':'Press ')+BTN[r[0]]+' + '+BTN[r[1]]:''}
 function drawRadio(){const r=S.radio;let s=r.mode==='sta'?'On '+r.ssid+' at '+r.ip:r.mode==='ap'?'Setup network GW-Settings at '+r.ip:'Joining…';
 s+=r.off_in_s<0?' · stays on':' · turns off in '+Math.ceil(r.off_in_s/60)+' min without use';
 const w=S.wifi;if(w&&r.mode==='sta'&&w.rssi)s+=' · signal '+w.rssi+' dBm'+(w.drops?' · '+w.drops+' dropout'+(w.drops>1?'s':'')+' since it started':'');$('radio').textContent=s;
@@ -291,7 +303,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
-drawChordEditor();drawTune();drawRadio();drawOpt();
+drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain

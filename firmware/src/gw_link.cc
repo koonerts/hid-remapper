@@ -39,7 +39,7 @@ static volatile uint8_t frame_n = 0;  // 0 = mailbox empty
 static uint8_t status_buf[2][GW_LINK_STATUS_LEN];
 static volatile uint8_t status_cur = 0;
 static volatile uint8_t status_reading = 0;
-static volatile uint8_t tx_i = 0;
+static volatile uint16_t tx_i = 0;  // the block is 256 bytes since v21
 
 // In RAM: firmware/src code runs from flash (remapper_single.ld), and this runs from the I2C
 // interrupt, which stays on while HID Remapper's config or the chord table is written to flash

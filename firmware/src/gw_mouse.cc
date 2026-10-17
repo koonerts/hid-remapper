@@ -822,6 +822,61 @@ static RsSetting rs_settings[RS_SETTINGS] = {
     { 0x1b48, 0x1b4a, GW_POS_HOME, RS_POS_MIN, RS_POS_MAX, pos_decode, pos_encode, pos_step, 0x718, GW_POS_HOME, false, false, RS_NONE, 0, 0, 0 },
 };
 
+// ---- recent actions (v21): what changed what, newest first in the status block's last 64 bytes
+#define GW_EVENTS 8
+#define EV_VALUE_UNKNOWN 0x7F
+#define GW_SRC_PAGE 6     // buttons byte = the link command, value = what it set
+#define GW_SRC_ASSUMED 7  // a setting assumed after an unanswered read (buttons byte = 1 angle, 2 position)
+#define GW_SRC_ADOPTED 8  // writes that didn't take: the mouse's own value is used from now on (1/2)
+#define GW_SRC_WOKE 9     // written again once the mouse woke (1/2)
+struct GwEvent {
+    uint32_t sec;     // ev_secs when it happened
+    uint8_t src;      // GW_SRC_*
+    uint8_t buttons;  // a chord's modifier << 4 | trigger
+    uint8_t action;   // GA_* (0 for the GW_SRC_* past 5)
+    int8_t value;     // the angle/position (DPI stage for a page stage) after it, EV_VALUE_UNKNOWN if none
+};
+static GwEvent ev[GW_EVENTS];
+static uint8_t ev_n = 0, ev_head = 0, ev_seq = 0;
+static int8_t ev_wait[RS_SETTINGS] = { -1, -1 };  // the event whose value comes once that setting is read
+static uint32_t ev_secs = 0, ev_secs_at = 0;     // seconds since boot (time_us_32 wraps every 71 min)
+
+static void ev_tick(uint32_t now) {
+    while ((now - ev_secs_at) >= 1000000) {
+        ev_secs++;
+        ev_secs_at += 1000000;
+    }
+}
+
+static int8_t ev_add(uint8_t src, uint8_t buttons, uint8_t action, int value) {
+    int8_t slot = (int8_t) ev_head;
+    GwEvent& e = ev[slot];
+    e.sec = ev_secs;
+    e.src = src;
+    e.buttons = buttons;
+    e.action = action;
+    e.value = ((value == RS_NONE) || (value < -126) || (value > 126)) ? EV_VALUE_UNKNOWN : (int8_t) value;
+    ev_head = (ev_head + 1) % GW_EVENTS;
+    if (ev_n < GW_EVENTS) {
+        ev_n++;
+    }
+    for (int8_t& w : ev_wait) {
+        if (w == slot) {
+            w = -1;  // overwritten before its value came
+        }
+    }
+    ev_seq++;
+    return slot;
+}
+
+static void ev_fill(int setting, int value) {
+    int8_t& w = ev_wait[setting];
+    if (w >= 0) {
+        ev[w].value = (int8_t) value;
+        w = -1;
+        ev_seq++;
+    }
+}
 // ---- LED flash
 
 struct RsLed {
@@ -1233,6 +1288,10 @@ static void rs_setting_read_done(RsSetting& s, int32_t raw, uint32_t now) {
         s.value = s.step(s.value, -1);
     }
     s.changed_at = now;
+    if (!ok) {
+        ev_add(GW_SRC_ASSUMED, (uint8_t) (&s - rs_settings + 1), 0, s.home);
+    }
+    ev_fill((int) (&s - rs_settings), s.value);
 }
 
 // v20: the read-back of a write (raw = the byte read, -1 = no reply)
@@ -1252,6 +1311,7 @@ static void rs_verify_done(RsSetting& s, int32_t raw) {
     } else if (v != RS_NONE) {
         s.value = s.sent = v;  // the mouse keeps another value: show that one rather than pretend
         s.confirmed = true;
+        ev_add(GW_SRC_ADOPTED, (uint8_t) (&s - rs_settings + 1), 0, v);
     }
 }
 
@@ -1331,6 +1391,7 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
                 s.value = s.step(s.value, -1);
             }
             s.changed_at = time_us_32();
+            ev_fill(item - 1, s.value);
         } else if ((v != RS_NONE) && (s.value == s.sent)) {
             // known, nothing waiting to be written: take the mouse's value (a change waiting wins)
             s.value = v;
@@ -1541,6 +1602,7 @@ static void rs_tick(uint32_t now) {
             if (s.verify_tries < RS_VERIFY_TRIES) {
                 s.verify_tries++;
                 s.sent = RS_NONE;
+                ev_add(GW_SRC_WOKE, (uint8_t) (&s - rs_settings + 1), 0, s.value);
             }
         }
     }
@@ -1592,8 +1654,14 @@ static void rs_tick(uint32_t now) {
 //   write waiting for the mouse to wake, bit 3 position write waiting
 // Bytes 128-191 (v15+; read only when byte 124 changes): 128 'C'   129 chord table number   130 count
 //   131-190 the rules, 5 bytes each (gw_rule_t), unused ones 0   191 crc8 of 128-190
+// Bytes 192-255 (v21+; read when byte 117's high nibble, a counter of changes, moves): 192 'E'   193 count (at most 8)
+//   194-241 the recent actions, newest first, 6 bytes each: age in s (uint16, at most 65535), source (GW_SRC_*: 1 chord tap,
+//   2 hold, 3 double tap, 4 wheel up, 5 wheel down, 6 page, 7 assumed after an unanswered read, 8 the mouse's value taken
+//   after writes didn't take, 9 written again once the mouse woke), buttons (chord: modifier << 4 | trigger; page: the
+//   command; 7-9: 1 angle, 2 position), action (GA_*), value after it (int8: angle/position, the stage for a page stage;
+//   0x7F none)   242-254 0   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 20
+#define GW_FW_VERSION 21
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1741,6 +1809,21 @@ void gw_link_status(uint8_t* s) {
     s[130] = s[126];
     memcpy(s + 131, gw_chords_rules(), s[126] * GW_CH_RULE_BYTES);
     s[191] = gw_crc8(s + 128, 63);
+    // v21: the recent actions, newest first; the QT Py reads this part when byte 117's high nibble changes
+    s[117] |= (uint8_t) ((ev_seq & 0x0F) << 4);
+    s[192] = 'E';
+    s[193] = ev_n;
+    for (uint8_t k = 0; k < ev_n; k++) {
+        const GwEvent& e = ev[(ev_head + GW_EVENTS - 1 - k) % GW_EVENTS];
+        uint8_t* q = s + 194 + 6 * k;
+        uint32_t age = ev_secs - e.sec;
+        put16(q, (age > 65535) ? 65535 : age);
+        q[2] = e.src;
+        q[3] = e.buttons;
+        q[4] = e.action;
+        q[5] = (uint8_t) e.value;
+    }
+    s[255] = gw_crc8(s + 192, 63);
 }
 
 static bool tuning_ok(const uint8_t* d) {
@@ -1771,12 +1854,15 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                 rs_write_value(RS_ADDR_DPI_STAGE, d[0]);
                 rs_cur_stage = d[0];
                 rs_dpi_last = d[0];
+                ev_add(GW_SRC_PAGE, cmd, 0, d[0]);
             }
             break;
         case LINK_SET_ANGLE:
         case LINK_SET_POS:
             if ((len == 1) && rs) {
-                rs_setting_set(rs_settings[(cmd == LINK_SET_ANGLE) ? RS_ANGLE : RS_POS], (int8_t) d[0], now);
+                RsSetting& s = rs_settings[(cmd == LINK_SET_ANGLE) ? RS_ANGLE : RS_POS];
+                rs_setting_set(s, (int8_t) d[0], now);
+                ev_add(GW_SRC_PAGE, cmd, 0, s.value);
             }
             break;
         case LINK_SET_PALETTE:
@@ -1944,8 +2030,28 @@ bool gw_action_supported(uint8_t a) {
     return false;
 }
 
-// A chord's action (gw_chords.h). Each does what the mouse at hand supports; the rest do nothing.
-void gw_action(uint8_t a, uint32_t now) {
+static void gw_action_do(uint8_t a, uint32_t now);
+
+// A chord's action (gw_chords.h), noted in the recent-actions list with where it came from (v21)
+void gw_action_src(uint8_t action, uint8_t src, uint8_t mod, uint8_t trig, uint32_t now) {
+    uint8_t a = GA_ACTION(action);
+    if (a == GA_NONE) {
+        return;
+    }
+    gw_action_do(a, now);
+    bool rs = family_present(Family::RS);
+    int st = ((a == GA_ANGLE_UP) || (a == GA_ANGLE_DOWN) || (a == GA_ANGLE_RESET)) ? RS_ANGLE
+             : ((a == GA_POS_UP) || (a == GA_POS_DOWN) || (a == GA_POS_RESET))     ? RS_POS
+                                                                                 : -1;
+    int value = ((st >= 0) && rs && rs_settings[st].known) ? rs_settings[st].value : RS_NONE;
+    int8_t slot = ev_add(src, (uint8_t) (mod << 4 | trig), a, value);
+    if ((st >= 0) && rs && !rs_settings[st].known) {
+        ev_wait[st] = slot;  // a step waiting for its read: the value comes with it
+    }
+}
+
+// Each action does what the mouse at hand supports; the rest do nothing.
+static void gw_action_do(uint8_t a, uint32_t now) {
     bool rs = family_present(Family::RS);
     bool vuk = family_present(Family::VUK);
     switch (a) {
@@ -2040,6 +2146,7 @@ void gw_action(uint8_t a, uint32_t now) {
 // regs: the expression registers; unused since v15 (chords come from gw_chords_filter)
 void gw_tick(const int32_t* regs) {
     uint32_t now = time_us_32();
+    ev_tick(now);
     gw_chords_service();
     dpi_tick(now);
     rs_tick(now);

@@ -9,7 +9,7 @@
 //   QT Py reads the status block:  GW_LINK_STATUS_LEN bytes (layout in gw_mouse.cc, gw_link_status)
 // Boards without the port (or other targets) get no-op versions.
 #define GW_LINK_ADDR 0x42
-#define GW_LINK_STATUS_LEN 192  // 64 since v11; 128 since v14 (64-127: extension, own crc); 192 since v15
+#define GW_LINK_STATUS_LEN 256  // 64 since v11; 128 since v14 (64-127: extension, own crc); 192 since v15; 256 since v21
                                  // (128-191: the chord table, own crc; read only when it changes)
 #define GW_LINK_FRAME_MAX 48
 

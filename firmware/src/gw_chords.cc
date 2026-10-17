@@ -11,7 +11,8 @@
 
 // What the chord JSON did up to v14 (and the tuning's hold times then: 500, 600, 300 ms).
 static const gw_rule_t DEFAULTS[] = {
-    { 3, 1, GA_ANGLE_RESET, GA_POS_RESET, 50 },  // Middle + Left: tap angle reset, hold position reset
+    { 3, 1, GA_ANGLE_RESET | GA_DOUBLE, GA_POS_RESET, 50 },  // Middle + Left: double tap angle reset (v21; a single tap
+                                                           // while firing reset it by accident), hold position reset
     { 3, 2, GA_DPI_NEXT, GA_RADIO, 60 },         // Middle + Right: tap next DPI stage, hold Wi-Fi
     { 3, 4, GA_POS_UP, GA_NONE, 0 },             // Middle + Back: position up (toward the back)
     { 3, 5, GA_POS_DOWN, GA_NONE, 0 },           // Middle + Forward: position down (toward the front)
@@ -28,7 +29,7 @@ static uint8_t flags = 0;
 static bool loaded = false;
 
 static bool enabled(const gw_rule_t& r) {
-    return (r.tap != GA_NONE) || (r.hold != GA_NONE);
+    return (GA_ACTION(r.tap) != GA_NONE) || (r.hold != GA_NONE);
 }
 
 bool gw_chords_valid(const gw_rule_t* rules, uint8_t n) {
@@ -38,7 +39,8 @@ bool gw_chords_valid(const gw_rule_t* rules, uint8_t n) {
     for (uint8_t i = 0; i < n; i++) {
         const gw_rule_t& r = rules[i];
         if ((r.mod < 1) || (r.mod > GW_CH_BUTTONS) || (r.trig < 1) || (r.trig > GW_CH_WHEEL) || (r.mod == r.trig) ||
-            (r.tap >= GA_COUNT) || (r.hold >= GA_COUNT) || !enabled(r)) {
+            (GA_ACTION(r.tap) >= GA_COUNT) || (r.hold >= GA_COUNT) || !enabled(r) ||
+            ((r.tap & GA_DOUBLE) && ((r.trig == GW_CH_WHEEL) || (GA_ACTION(r.tap) == GA_NONE)))) {
             return false;
         }
         // a button's hold needs a hold time, or a tap could never happen
@@ -186,6 +188,25 @@ static Button btn[GW_CH_BUTTONS] = { { false, 0, LATCH_NONE, false, false }, { f
     { false, 0, LATCH_NONE, false, false }, { false, 0, LATCH_NONE, false, false }, { false, 0, LATCH_NONE, false, false } };
 static int32_t saved[GW_CH_BUTTONS];  // the slots' contents this frame, put back afterwards
 
+// double taps (v21): a rule's first tap, waiting for the second
+static bool first_tap[GW_CH_MAX];
+static uint32_t first_tap_at[GW_CH_MAX];
+
+static void tap(uint8_t r, uint32_t now) {
+    const gw_rule_t& rule = table[r];
+    if (!(rule.tap & GA_DOUBLE)) {
+        gw_action_src(rule.tap, GW_SRC_TAP, rule.mod, rule.trig, now);
+        return;
+    }
+    if (first_tap[r] && ((now - first_tap_at[r]) <= GW_DOUBLE_TAP_US)) {
+        first_tap[r] = false;
+        gw_action_src(GA_ACTION(rule.tap), GW_SRC_DOUBLE, rule.mod, rule.trig, now);
+    } else {
+        first_tap[r] = true;
+        first_tap_at[r] = now;
+    }
+}
+
 void gw_chords_filter(int32_t* const* in) {
     if (!loaded) {
         load();
@@ -219,8 +240,8 @@ void gw_chords_filter(int32_t* const* in) {
                 // the VUK's sensor switch (Middle + Left, whose hold only means something on the Warg)
                 b.has_hold = (rule.hold != GA_NONE) && gw_action_supported(rule.hold);
                 started |= 1 << i;
-                if (!b.has_hold && (rule.tap != GA_NONE)) {
-                    gw_action(rule.tap, now);
+                if (!b.has_hold && (GA_ACTION(rule.tap) != GA_NONE)) {
+                    tap(r, now);
                 }
                 break;
             }
@@ -242,11 +263,12 @@ void gw_chords_filter(int32_t* const* in) {
         if (raw[i]) {
             if (b.has_hold && !b.hold_fired && ((now - b.down_at) >= rule.hold10 * 10000u)) {
                 b.hold_fired = true;
-                gw_action(rule.hold, now);
+                first_tap[b.latch] = false;  // a hold between them isn't a double tap
+                gw_action_src(rule.hold, GW_SRC_HOLD, rule.mod, rule.trig, now);
             }
         } else {
-            if (b.has_hold && !b.hold_fired && (rule.tap != GA_NONE)) {
-                gw_action(rule.tap, now);
+            if (b.has_hold && !b.hold_fired && (GA_ACTION(rule.tap) != GA_NONE)) {
+                tap(b.latch, now);
             }
             b.latch = LATCH_NONE;
         }
@@ -265,7 +287,7 @@ void gw_chords_filter(int32_t* const* in) {
         if (!acted && (wheel != 0) && ((now - btn[rule.mod - 1].down_at) >= rule.hold10 * 10000u)) {
             uint8_t a = (wheel > 0) ? rule.tap : rule.hold;
             if (a != GA_NONE) {
-                gw_action(a, now);
+                gw_action_src(a, (wheel > 0) ? GW_SRC_WHEEL_UP : GW_SRC_WHEEL_DOWN, rule.mod, rule.trig, now);
             }
             acted = true;
         }
@@ -343,6 +365,7 @@ static void apply(const gw_rule_t* rules, uint8_t n) {
             b.latch = LATCH_ORPHAN;
         }
     }
+    memset(first_tap, 0, sizeof(first_tap));  // a first tap under the old table doesn't count
     flags &= ~GW_CH_REJECTED;
     flags |= GW_CH_SAVING;
     save_at = time_us_32();
