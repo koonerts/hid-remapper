@@ -1661,7 +1661,7 @@ static void rs_tick(uint32_t now) {
 //   command; 7-9: 1 angle, 2 position), action (GA_*), value after it (int8: angle/position, the stage for a page stage;
 //   0x7F none)   242-254 0   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 21
+#define GW_FW_VERSION 22
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1789,7 +1789,8 @@ void gw_link_status(uint8_t* s) {
     s[115] = sof_avg4;
     s[116] = sof_peak4;
     s[117] = (rs_settings[RS_ANGLE].confirmed ? 1 : 0) | (rs_settings[RS_POS].confirmed ? 2 : 0) |
-             (rs_settings[RS_ANGLE].rewrite_on_wake ? 4 : 0) | (rs_settings[RS_POS].rewrite_on_wake ? 8 : 0);
+             (rs_settings[RS_ANGLE].rewrite_on_wake ? 4 : 0) | (rs_settings[RS_POS].rewrite_on_wake ? 8 : 0) |
+             (uint8_t) ((ev_seq & 0x0F) << 4);  // v21: changes to the recent actions (192-255); before the crc at 127
     s[91] = rs_raw_seq;
     s[92] = rs_raw_state;
     s[93] = (rs_raw_len > 17) ? 17 : rs_raw_len;
@@ -1810,7 +1811,6 @@ void gw_link_status(uint8_t* s) {
     memcpy(s + 131, gw_chords_rules(), s[126] * GW_CH_RULE_BYTES);
     s[191] = gw_crc8(s + 128, 63);
     // v21: the recent actions, newest first; the QT Py reads this part when byte 117's high nibble changes
-    s[117] |= (uint8_t) ((ev_seq & 0x0F) << 4);
     s[192] = 'E';
     s[193] = ev_n;
     for (uint8_t k = 0; k < ev_n; k++) {
