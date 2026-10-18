@@ -85,7 +85,18 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .cdo select{width:100%}
 .cdo input:disabled{opacity:.45}
 .cdo .dbl{display:flex;flex-direction:row;align-items:center;gap:6px;font-size:12.5px;margin-top:4px}
-#evbox{margin:0 0 10px;font-size:13px}#evbox summary{cursor:pointer;color:var(--mut)}#evlist{margin:6px 0 0;padding-left:18px;color:var(--mut)}#evlist li{margin:2px 0}
+#evbox{margin:0 0 10px;font-size:13px}
+/* frame timing (Chords card) */
+.bud{position:relative;height:12px;border-radius:6px;background:var(--soft);overflow:hidden;margin:8px 0 4px}
+.bud i{position:absolute;left:0;top:0;bottom:0;border-radius:6px}
+#budw{background:var(--acc);opacity:.3}#buda{background:var(--acc)}
+.pt{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+.pt th,.pt td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.pt th{font-weight:600;color:var(--mut)}
+.pt th:first-child,.pt td:first-child{text-align:left}
+.pt td.sub{padding-left:20px;color:var(--mut)}
+.pt .mut{font-size:12px}
+#pskip.bad{color:var(--bad)}#evbox summary{cursor:pointer;color:var(--mut)}#evlist{margin:6px 0 0;padding-left:18px;color:var(--mut)}#evlist li{margin:2px 0}
 @media (max-width:540px){.cdo{grid-template-columns:1fr}}
 .cerr{color:var(--bad);font-size:12.5px;margin:6px 0 0}
 .cerr:empty{display:none}
@@ -136,7 +147,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 </div>
 <p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p></div>
 
-<details class="card"><summary><div><h2>Chords</h2><div class="mut">Hold one button, press another: what each pair does</div></div></summary>
+<details class="card" id="fchords"><summary><div><h2>Chords</h2><div class="mut">Hold one button, press another: what each pair does</div></div></summary>
 <div id="ched" hidden>
 <p class="note" id="chnote" hidden></p>
 <fieldset id="chfs" style="border:0;padding:0;margin:0;min-width:0"><div id="chlist"></div></fieldset>
@@ -145,7 +156,11 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut">The second button never reaches the game while it's part of a chord; the first one always does. Pressing them the other way round isn't a chord. A tap acts when the second button comes up; with no hold action it acts as soon as it goes down.</p>
 </div>
 <p class="mut" id="chstate"></p>
-<p class="mut" id="perf" hidden></p>
+<div id="perf" hidden><h3 class="sub">Frame timing <span class="mut">(last second)</span></h3>
+<div class="bud" role="img" id="bud"><i id="budw"></i><i id="buda"></i></div>
+<p class="mut" id="budt" style="margin:0"></p>
+<table class="pt"><thead><tr><th></th><th>Average</th><th>Worst</th></tr></thead><tbody id="ptb"></tbody></table>
+<p class="mut" id="pskip"></p></div>
 <ul class="ch" id="chords"></ul>
 <h3 class="sub">Tuning</h3>
 <div class="tune" id="tune"></div>
@@ -155,7 +170,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut" id="radio" style="margin:0 0 12px"></p>
 <div class="opt"><span>Turns itself off</span><div class="seg" id="keep"><button data-m="0">after 10 min</button><button data-m="1">after 1 hour</button><button data-m="2">never</button></div></div>
 <p class="mut" id="keepnote" hidden></p>
-<details style="margin-top:12px"><summary><span>Change Wi-Fi network</span></summary>
+<details style="margin-top:12px" id="fwifi"><summary><span>Change Wi-Fi network</span></summary>
 <p class="mut" style="margin:0 0 8px">The QT Py joins this network when its Wi-Fi comes on. 2.4 GHz only.</p>
 <input type="text" id="ssid" placeholder="Network name" aria-label="Network name"><div style="height:6px"></div><input type="password" id="pass" placeholder="Password" aria-label="Password">
 <div class="row" style="margin-top:8px"><button class="p" onclick="saveWifi()">Save and join</button></div></details></div>
@@ -269,6 +284,16 @@ post('/api/chords?r='+encodeURIComponent(r)).then(x=>{say(x,'Sending the chords 
 function chDefaults(){if(!S||!S.chords||!confirm('Replace your chords with the built-in ones (as they came)?'))return;chWait=S.chords.seq;chWaitAt=Date.now();chLost=false;chCheck();$('chstate').textContent='Saving to the Feather…';
 post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(x.ok)chDirty=false;else chWait=-1;chCheck()})}
 function us(v){return v>=1020?'1020+':String(v)}
+// frame timing (Feather v15+; the whole frame from v19): a bar of each 1 ms frame's use, then the parts
+function drawPerf(pf){const el=$('perf');el.hidden=!pf;if(!pf)return;const v19=pf.missed_1s!==undefined,f=x=>us(x)+' µs';
+const rows=[];if(v19)rows.push(['USB to the mouse','1 ms interrupt',f(pf.usb_avg_us),f(pf.usb_max_us)]);
+rows.push(['Remapping','',pf.avg_us.toFixed(1)+' µs',pf.max_us+' µs']);rows.push(['chord check','',pf.chords_avg_us.toFixed(1)+' µs',pf.chords_max_us+' µs',1]);
+if(v19)rows.push(['Frame finished','after its tick',f(pf.tick_avg_us),f(pf.tick_max_us)]);
+$('ptb').innerHTML=rows.map(r=>'<tr><td'+(r[4]?' class="sub"':'')+'>'+(r[4]?'of which ':'')+r[0]+(r[1]?' <span class="mut">'+r[1]+'</span>':'')+'</td><td>'+r[2]+'</td><td>'+r[3]+'</td></tr>').join('');
+const a=v19?pf.usb_avg_us+pf.tick_avg_us:pf.avg_us,w=v19?pf.usb_max_us+pf.tick_max_us:pf.max_us,pa=Math.min(100,a/10),pw=Math.min(100,w/10);
+$('buda').style.width=pa+'%';$('budw').style.width=pw+'%';
+const s='Each 1 ms frame: '+Math.round(pa)+'% used on average, '+Math.round(pw)+'% at worst'+(v19?'':' (remapping only; Feather v19 measures the whole frame)')+'.';$('budt').textContent=s;$('bud').setAttribute('aria-label',s);
+const ps=$('pskip');ps.hidden=!v19;if(v19){ps.textContent='Frames skipped: '+pf.missed_1s+' in the last second · '+pf.missed_total+' since the Feather started (plugging in or switching to a device pauses it about half a second).';ps.classList.toggle('bad',pf.missed_1s>0)}}
 // recent actions (Feather v21): [age s, source, buttons, action, value], newest first
 const EVSRC=['','tap','hold','double tap','wheel up','wheel down'];
 function evText(e){const[age,src,b,a,v]=e,t=new Date(Date.now()-age*1000).toLocaleTimeString();let s,ang,stg=false;
@@ -278,7 +303,7 @@ else{const n=b===1?'Angle':'Position';ang=b===1;s=src===7?n+' assumed (the mouse
 if(v!==127)s+=' → '+(stg?'stage '+(v+1):ang?v+'°':v);return t+'  '+s}
 function drawEvents(){const ev=S.events,box=$('evbox');box.hidden=!ev||!ev.length;if(!ev||!ev.length)return;$('evlast').textContent='Last change: '+evText(ev[0]);$('evlist').innerHTML=ev.map(e=>'<li>'+evText(e).replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</li>').join('')}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
-$('perf').hidden=!pf;if(pf)$('perf').textContent='Feather work per 1 ms frame, last second: '+pf.avg_us.toFixed(1)+' µs on average, '+pf.max_us+' µs at most; of that, the chord check '+pf.chords_avg_us.toFixed(1)+' µs on average ('+pf.chords_max_us+' µs at most).'+(pf.missed_1s===undefined?'':' Whole 1 ms frame: USB to the mouse '+us(pf.usb_avg_us)+' µs on average ('+us(pf.usb_max_us)+' at most); each frame finished '+us(pf.tick_avg_us)+' µs after its tick on average ('+us(pf.tick_max_us)+' at most). Frames skipped: '+pf.missed_1s+' in the last second, '+pf.missed_total+' since the Feather started (plugging in or switching to a device stops it for about half a second).');
+drawPerf(pf);
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
 ed.hidden=false;leg.hidden=true;
 if(chWait>=0&&c.fresh&&c.seq!==chWait){chWait=-1;chDirty=false}
@@ -303,7 +328,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
-drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();
+drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();foldsApply();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
@@ -328,5 +353,10 @@ else set[k]=(k==='snap'||k==='sync')?val==='1':Number(val);
 const prev={};for(const x in set){prev[x]=S.opt[x];optSet[x]={v:set[x],t:now};S.opt[x]=set[x]}drawOpt();
 post('/api/opt?k='+key+'&v='+val).then(r=>{say(r,'Sent to the mouse');if(!r.ok){for(const x in set){delete optSet[x];if(S.opt)S.opt[x]=prev[x]}drawOpt()}})}}));
 document.querySelectorAll('#keep button').forEach(b=>{b.onclick=()=>post('/api/wifimode?m='+b.dataset.m).then(r=>say(r,'Saved'))});
+// fold-outs open as they were left (kept on the QT Py: the page's address changes, and it's shared by your devices)
+const FOLDS=['fchords','fwifi','evbox'];let foldMask=null;
+function foldNow(){let m=0;FOLDS.forEach((id,i)=>{if($(id).open)m|=1<<i});return m}
+function foldsApply(){if(foldMask!==null||!S||S.ui==null)return;if(S.ui>=0)FOLDS.forEach((id,i)=>{$(id).open=!!(S.ui>>i&1)});foldMask=foldNow()}
+FOLDS.forEach(id=>$(id).addEventListener('toggle',()=>{if(foldMask===null)return;const m=foldNow();if(m!==foldMask){foldMask=m;post('/api/ui?f='+m)}}));
 poll();
 </script></body></html>)HTML";

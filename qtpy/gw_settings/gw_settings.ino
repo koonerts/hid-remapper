@@ -33,7 +33,7 @@
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
 #define STATUS_FULL 256 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192)
-#define QT_FW 16        // this firmware's number, shown in /api/status
+#define QT_FW 18        // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -94,6 +94,7 @@ static bool radio_manual = true;   // this radio session was started by hand (bu
 // Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
 // on some routers (broadcast ARP and mDNS queries get lost while it dozes). /api/wifisleep sets it.
 static bool wsleep = false;
+static int16_t ui_folds = -1;  // the page's open fold-outs (bit 0 Chords, 1 Change Wi-Fi network, 2 Recent changes); -1 = never set
 // diagnostics (/api/status "wifi", "boot")
 static uint32_t w_disc = 0, w_disc_at = 0;
 static uint8_t w_disc_reason = 0;
@@ -908,6 +909,7 @@ static void h_status() {
     j += ",\"keep\":" + String(wmode);
     j += ",\"off_in_s\":" + String(left) + "}";
     bool up = (WiFi.status() == WL_CONNECTED);
+    j += ",\"ui\":" + String(ui_folds);
     j += ",\"wifi\":{\"rssi\":" + String(up ? WiFi.RSSI() : 0) + ",\"ch\":" + String(up ? WiFi.channel() : 0) +
          ",\"bssid\":\"" + (up ? WiFi.BSSIDstr() : String("")) + "\",\"sleep\":" + String(wsleep ? "true" : "false") +
          ",\"drops\":" + String(w_disc) + ",\"drop_reason\":" + String(w_disc_reason) +
@@ -1045,6 +1047,21 @@ static void h_wifisleep() {
     ok_json(true);
 }
 
+// POST /api/ui?f=0-255   which fold-outs are open on the page, kept here so a reload (on any device, at any
+// address the QT Py gets) opens the same ones
+static void h_ui() {
+    touch();
+    long v;
+    if (!arg_int("f", 0, 255, &v)) {
+        return ok_json(false, "bad value");
+    }
+    if (v != ui_folds) {
+        ui_folds = (int16_t) v;
+        prefs.putUChar("ui", (uint8_t) v);
+    }
+    ok_json(true);
+}
+
 // POST /api/wifimode?m=0|1|2   Wi-Fi switches itself off after 10 min idle / 1 hour idle / never
 static void h_wifimode() {
     touch();
@@ -1143,6 +1160,7 @@ void setup() {
     prefs.begin("gw", false);
     wmode = prefs.getUChar("wmode", 0);
     wsleep = prefs.getBool("wsleep", false);
+    ui_folds = prefs.isKey("ui") ? prefs.getUChar("ui", 0) : -1;
     b_reason = (uint8_t) esp_reset_reason();
     b_boots = prefs.getULong("boots", 0) + 1;
     prefs.putULong("boots", b_boots);
@@ -1173,6 +1191,7 @@ void setup() {
     server.on("/api/wifi", HTTP_POST, h_wifi);
     server.on("/api/wifimode", HTTP_POST, h_wifimode);
     server.on("/api/wifisleep", HTTP_POST, h_wifisleep);
+    server.on("/api/ui", HTTP_POST, h_ui);
     server.on("/api/opt", HTTP_POST, h_opt);
     server.on("/api/probe", HTTP_POST, h_probe);
     server.on("/api/chords", HTTP_POST, h_chords);
