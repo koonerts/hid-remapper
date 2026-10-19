@@ -96,7 +96,11 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .pt th:first-child,.pt td:first-child{text-align:left}
 .pt td.sub{padding-left:20px;color:var(--mut)}
 .pt .mut{font-size:12px}
-#pskip.bad{color:var(--bad)}#evbox summary{cursor:pointer;color:var(--mut)}#evlist{margin:6px 0 0;padding-left:18px;color:var(--mut)}#evlist li{margin:2px 0}
+#pskip.bad{color:var(--bad)}
+#lvc{display:block;width:100%;height:220px;background:#000;border:1px solid var(--line);border-radius:10px;cursor:crosshair;touch-action:none}
+#lvwrap{position:relative}#lvhint{display:none;position:absolute;top:14px;left:0;right:0;text-align:center;color:#bbb;font-size:14px;pointer-events:none}
+#lvwrap.full{position:fixed;inset:0;z-index:1000;background:#000}#lvwrap.full #lvc{height:100vh;border:0;border-radius:0;cursor:none}#lvwrap.full #lvhint{display:block}
+#lvr b{color:var(--fg)}#evbox summary{cursor:pointer;color:var(--mut)}#evlist{margin:6px 0 0;padding-left:18px;color:var(--mut)}#evlist li{margin:2px 0}
 @media (max-width:540px){.cdo{grid-template-columns:1fr}}
 .cerr{color:var(--bad);font-size:12.5px;margin:6px 0 0}
 .cerr:empty{display:none}
@@ -134,6 +138,13 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div></div>
 <p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where the reset chords put it. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
 
+<div class="card" id="lvl"><div class="hd"><h2>Level your swipes</h2></div>
+<p class="mut" style="margin:0 0 8px">Suggests a sensor angle that makes left-right swipes come out level, starting from the angle the mouse has now. Use the mouse on this computer: click the box, swipe left and right a few times the way you do in game, then right-click or press Esc.</p>
+<p class="note" id="lvsnap" hidden>Angle Snap is on: it straightens swipes, so it hides the tilt. Turn it off under More mouse settings to measure.</p>
+<div id="lvwrap"><canvas id="lvc" aria-label="Swipe area"></canvas><div id="lvhint">Swipe left and right a few times · right-click or Esc to finish</div></div>
+<p id="lvr" class="mut" style="margin:8px 0 0">Click the box to start.</p>
+<div class="row" id="lvb" hidden style="margin-top:8px"><button class="p" id="lvset"></button><button id="lvagain">Measure again</button></div>
+</div>
 <div class="card"><div class="hd"><h2>More mouse settings</h2></div>
 <p class="note" id="optnote" hidden></p>
 <div class="opt" id="pv">
@@ -328,7 +339,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
-drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();foldsApply();
+drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawLevel();foldsApply();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
@@ -353,6 +364,50 @@ else set[k]=(k==='snap'||k==='sync')?val==='1':Number(val);
 const prev={};for(const x in set){prev[x]=S.opt[x];optSet[x]={v:set[x],t:now};S.opt[x]=set[x]}drawOpt();
 post('/api/opt?k='+key+'&v='+val).then(r=>{say(r,'Sent to the mouse');if(!r.ok){for(const x in set){delete optSet[x];if(S.opt)S.opt[x]=prev[x]}drawOpt()}})}}));
 document.querySelectorAll('#keep button').forEach(b=>{b.onclick=()=>post('/api/wifimode?m='+b.dataset.m).then(r=>say(r,'Saved'))});
+// Level your swipes, like Razer's mouse rotation tool: the main direction of the raw movement (pointer lock) while
+// swiping left and right. The Warg turns its output by its angle setting, so what's measured is the tilt left at
+// the current angle; the suggestion corrects that. Which way a higher angle turns the swipes (S.rotsign) is learnt
+// from two measurements at different angles and kept on the QT Py.
+const LV=$('lvc');let lv=null,lvOn=false,lvFs=false,lvLast=null;
+function lvBegin(){if(!S||S.angle==null){$('lvr').textContent='The page doesn\'t know the mouse\'s angle yet: press Read from mouse at the top, then try again.';return}
+lv={x:0,y:0,pts:[[0,0]],sxx:0,syy:0,sxy:0,dist:0,a0:S.angle};lvOn=true;lvFs=false;$('lvb').hidden=true;
+$('lvr').textContent='Measuring at '+S.angle+'°: swipe left and right a few times, then right-click or press Esc.';
+// the whole screen to swipe in (the window if full screen is refused), the pointer captured so it never hits an edge
+const w=$('lvwrap'),lock=()=>{if(lvOn&&LV.requestPointerLock)LV.requestPointerLock()};w.classList.add('full');
+if(w.requestFullscreen)w.requestFullscreen().then(()=>{lvFs=true;lock()}).catch(lock);else lock();lvDraw()}
+function lvStop(){if(!lvOn)return;lvOn=false;if(document.pointerLockElement===LV)document.exitPointerLock();if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('lvwrap').classList.remove('full');lvDraw();lvResult();$('lvl').scrollIntoView({block:'nearest'})}
+document.addEventListener('fullscreenchange',()=>{if(lvOn&&lvFs&&!document.fullscreenElement)lvStop()});
+LV.addEventListener('mousedown',e=>{if(e.button===2){e.preventDefault();lvStop()}else if(e.button===0&&!lvOn)lvBegin()});
+LV.addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('mousemove',e=>{if(!lvOn)return;const dx=e.movementX||0,dy=e.movementY||0;if(!dx&&!dy)return;
+lv.x+=dx;lv.y+=dy;lv.pts.push([lv.x,lv.y]);lv.sxx+=dx*dx;lv.syy+=dy*dy;lv.sxy+=dx*dy;lv.dist+=Math.hypot(dx,dy);if(lv.pts.length%3===0)lvDraw()});
+document.addEventListener('pointerlockchange',()=>{if(lvOn&&document.pointerLockElement!==LV)lvStop()});
+document.addEventListener('keydown',e=>{if(lvOn&&e.key==='Escape')lvStop()});
+// screen angle of the swipes (y down, so negative = rising to the right)
+function lvTheta(m){return .5*Math.atan2(2*m.sxy,m.sxx-m.syy)}
+function lvDraw(){const W=LV.clientWidth,H=LV.clientHeight,d=devicePixelRatio||1;if(LV.width!==Math.round(W*d)){LV.width=Math.round(W*d);LV.height=Math.round(H*d)}
+const c=LV.getContext('2d');c.setTransform(d,0,0,d,0,0);c.clearRect(0,0,W,H);if(!lv||lv.pts.length<2)return;
+let x0=1/0,x1=-1/0,y0=1/0,y1=-1/0,cx=0,cy=0;for(const[x,y]of lv.pts){x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);cx+=x;cy+=y}cx/=lv.pts.length;cy/=lv.pts.length;
+// the same scale on both axes, so a tilt looks as big as it is
+const k=Math.min((W-30)/Math.max(1,x1-x0),(H-30)/Math.max(1,y1-y0),1),px=x=>W/2+(x-(x0+x1)/2)*k,py=y=>H/2+(y-(y0+y1)/2)*k;
+c.strokeStyle='rgba(255,255,255,.12)';c.beginPath();c.moveTo(0,py(cy));c.lineTo(W,py(cy));c.stroke();
+c.strokeStyle='#9a9a9a';c.lineWidth=1;c.beginPath();lv.pts.forEach(([x,y],i)=>i?c.lineTo(px(x),py(y)):c.moveTo(px(x),py(y)));c.stroke();
+if(!lvOn&&lv.sxx+lv.syy>0){const t=lvTheta(lv),L=W*2;c.strokeStyle='#3ddc4a';c.lineWidth=2;c.beginPath();c.moveTo(px(cx)-Math.cos(t)*L,py(cy)-Math.sin(t)*L);c.lineTo(px(cx)+Math.cos(t)*L,py(cy)+Math.sin(t)*L);c.stroke()}}
+function lvResult(){const m=lv;if(!m||m.dist<800||m.sxx<4*m.syy){$('lvr').textContent=!m||m.dist<800?'Too little movement: swipe further, a few times each way.':'Those swipes were not mostly sideways: swipe left and right.';return}
+const tilt=-lvTheta(m)*180/Math.PI,a0=m.a0;
+// learn the direction from the previous measurement at another angle
+if(lvLast&&lvLast.a0!==a0&&Math.abs(a0-lvLast.a0)>=1){const s=(tilt-lvLast.tilt)/(a0-lvLast.a0);if(Math.abs(s)>.4){const sg=s>0?1:-1;if(S.rotsign!==sg){S.rotsign=sg;post('/api/rotsign?s='+sg)}}}
+lvLast={a0,tilt};const known=S.rotsign===1||S.rotsign===-1,s=known?S.rotsign:1;
+let want=Math.max(-30,Math.min(30,Math.round(a0-s*tilt)));
+const dir=Math.abs(tilt)<.05?'level':(tilt>0?'rise to the right':'fall to the right');
+let h='Your swipes '+(Math.abs(tilt)<.05?'are level':dir+' by <b>'+Math.abs(tilt).toFixed(1)+'°</b>')+' at the current angle of '+a0+'°.';
+if(want===a0){h+=' That rounds to no change: keep '+a0+'°.';$('lvb').hidden=false;$('lvset').hidden=true}
+else{h+=' Suggested angle: <b>'+want+'°</b>.';if(!known)h+=' (First time: after setting it, press Measure again, so the page learns which way this mouse turns. If the tilt got bigger, it corrects itself.)';
+$('lvset').hidden=false;$('lvset').textContent='Set '+want+'°';$('lvset').onclick=()=>post('/api/set?angle='+want).then(r=>say(r,'Angle set to '+want+'°'));$('lvb').hidden=false}
+$('lvr').innerHTML=h}
+$('lvagain').onclick=()=>lvBegin();
+function drawLevel(){const sn=!!(S.opt&&(S.opt.snap===true||S.opt.snap===1));$('lvsnap').hidden=!sn}
+new ResizeObserver(()=>lvDraw()).observe(LV);
 // fold-outs open as they were left (kept on the QT Py: the page's address changes, and it's shared by your devices)
 const FOLDS=['fchords','fwifi','evbox'];let foldMask=null;
 function foldNow(){let m=0;FOLDS.forEach((id,i)=>{if($(id).open)m|=1<<i});return m}
