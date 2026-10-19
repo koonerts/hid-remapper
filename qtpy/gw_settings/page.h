@@ -366,9 +366,9 @@ post('/api/opt?k='+key+'&v='+val).then(r=>{say(r,'Sent to the mouse');if(!r.ok){
 document.querySelectorAll('#keep button').forEach(b=>{b.onclick=()=>post('/api/wifimode?m='+b.dataset.m).then(r=>say(r,'Saved'))});
 // Level your swipes, like Razer's mouse rotation tool: the main direction of the raw movement (pointer lock) while
 // swiping left and right. The Warg turns its output by its angle setting, so what's measured is the tilt left at
-// the current angle; the suggestion corrects that. Which way a higher angle turns the swipes (S.rotsign) is learnt
-// from two measurements at different angles and kept on the QT Py.
-const LV=$('lvc');let lv=null,lvOn=false,lvFs=false,lvLast=null;
+// the current angle; the suggestion corrects that: on the Warg a higher angle tilts swipes down to the right, so a
+// rise to the right needs a higher angle and a fall a lower one (the user's rule, 2026-10-18).
+const LV=$('lvc');let lv=null,lvOn=false,lvFs=false;
 function lvBegin(){if(!S||S.angle==null){$('lvr').textContent='The page doesn\'t know the mouse\'s angle yet: press Read from mouse at the top, then try again.';return}
 lv={x:0,y:0,pts:[[0,0]],sxx:0,syy:0,sxy:0,dist:0,a0:S.angle};lvOn=true;lvFs=false;$('lvb').hidden=true;
 $('lvr').textContent='Measuring at '+S.angle+'°: swipe left and right a few times, then right-click or press Esc.';
@@ -395,14 +395,11 @@ c.strokeStyle='#9a9a9a';c.lineWidth=1;c.beginPath();lv.pts.forEach(([x,y],i)=>i?
 if(!lvOn&&lv.sxx+lv.syy>0){const t=lvTheta(lv),L=W*2;c.strokeStyle='#3ddc4a';c.lineWidth=2;c.beginPath();c.moveTo(px(cx)-Math.cos(t)*L,py(cy)-Math.sin(t)*L);c.lineTo(px(cx)+Math.cos(t)*L,py(cy)+Math.sin(t)*L);c.stroke()}}
 function lvResult(){const m=lv;if(!m||m.dist<800||m.sxx<4*m.syy){$('lvr').textContent=!m||m.dist<800?'Too little movement: swipe further, a few times each way.':'Those swipes were not mostly sideways: swipe left and right.';return}
 const tilt=-lvTheta(m)*180/Math.PI,a0=m.a0;
-// learn the direction from the previous measurement at another angle
-if(lvLast&&lvLast.a0!==a0&&Math.abs(a0-lvLast.a0)>=1){const s=(tilt-lvLast.tilt)/(a0-lvLast.a0);if(Math.abs(s)>.4){const sg=s>0?1:-1;if(S.rotsign!==sg){S.rotsign=sg;post('/api/rotsign?s='+sg)}}}
-lvLast={a0,tilt};const known=S.rotsign===1||S.rotsign===-1,s=known?S.rotsign:1;
-let want=Math.max(-30,Math.min(30,Math.round(a0-s*tilt)));
+const want=Math.max(-30,Math.min(30,Math.round(a0+tilt)));
 const dir=Math.abs(tilt)<.05?'level':(tilt>0?'rise to the right':'fall to the right');
 let h='Your swipes '+(Math.abs(tilt)<.05?'are level':dir+' by <b>'+Math.abs(tilt).toFixed(1)+'°</b>')+' at the current angle of '+a0+'°.';
 if(want===a0){h+=' That rounds to no change: keep '+a0+'°.';$('lvb').hidden=false;$('lvset').hidden=true}
-else{h+=' Suggested angle: <b>'+want+'°</b>.';if(!known)h+=' (First time: after setting it, press Measure again, so the page learns which way this mouse turns. If the tilt got bigger, it corrects itself.)';
+else{h+=' Suggested angle: <b>'+want+'°</b>.';
 $('lvset').hidden=false;$('lvset').textContent='Set '+want+'°';$('lvset').onclick=()=>post('/api/set?angle='+want).then(r=>say(r,'Angle set to '+want+'°'));$('lvb').hidden=false}
 $('lvr').innerHTML=h}
 $('lvagain').onclick=()=>lvBegin();
