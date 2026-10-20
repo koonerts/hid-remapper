@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 23      // this firmware's number, shown in /api/status
+#define QT_FW 24      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -103,13 +103,16 @@ static uint32_t last_http = 0;
 #define EK_OPT 7
 #define EK_CHORDS 8
 #define EK_CHORDS_DEFAULT 9
+#define EK_AUTO_STAGE 10  // fw24: the stage set for the host on this power-on ("name=stage 0-4"; dev 7 = automatic)
+#define EK_HOST_STAGE 11  // fw24: a host's stage chosen on the page ("name=stage 0-5")
 struct __attribute__((packed)) EditLog {  // 32 bytes
     uint32_t t;     // Unix time (s): the browser's clock sent with the request, else NTP, else 0 = unknown
     uint32_t ms;    // millis() then: ages within the same boot when the time is unknown
     uint32_t ip;    // sender IPv4, as IPAddress's uint32_t
     uint16_t boot;  // the QT Py boot it was made in (low 16 bits of "boots")
     uint8_t kind;   // EK_*
-    uint8_t dev;    // 0 other, 1 Windows, 2 Android, 3 iPhone/iPad, 4 Mac, 5 Linux, 6 a script (PowerShell, curl, ...)
+    uint8_t dev;    // 0 other, 1 Windows, 2 Android, 3 iPhone/iPad, 4 Mac, 5 Linux, 6 a script (PowerShell, curl, ...),
+                    // 7 the QT Py itself (fw24's automatic stage)
     char text[16];  // the value: "-14", "poll=1000", "6 rules"; empty when the kind says it all
 };
 static EditLog edit_log[EDIT_LOG];  // edit_log[0] is the newest
@@ -129,6 +132,25 @@ static uint8_t hcap_n = 0;
 static bool hcap_dirty = false;
 static uint32_t hcap_changed_at = 0;
 static uint8_t hcap_seq = 0;  // in /api/status: the page fetches /api/hosts again when it moves
+// ---- fw24: automatic DPI stage per host
+// A host's signature: FNV-1a over its first HSIG_REQS requests as sent, skipping bus resets and with SET_ADDRESS's
+// address zeroed: those vary between connections of the same host (seen 10-20: XIM1/XIM2 and FLOW twice each gave the
+// same first 12 otherwise). 0 = not enough requests yet. The user picks a stage per signature on the page; on each
+// power-on the QT Py sets it once the Warg is there, checks the mouse took it, and retries a few times.
+#define HSIG_REQS 12
+#define HPROF_MAX 8
+struct __attribute__((packed)) HostProf {  // 16 bytes, NVS "hprof"
+    uint32_t sig;
+    uint8_t stage;  // 0 = leave the stage alone, 1-5 = that stage
+    char name[11];
+};
+static HostProf hprof[HPROF_MAX];
+static uint8_t hprof_n = 0;
+static uint32_t auto_sig = 0;     // this power-on's host, once known
+static uint8_t auto_want = 0xFF;  // the stage (0-4) to set, 0xFF = nothing to do
+static uint8_t auto_tries = 0;
+static uint32_t auto_at = 0;
+static uint8_t auto_state = 0;  // 0 waiting, 1 sent, 2 confirmed, 3 gave up, 4 no stage for this host
 static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
 // Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
@@ -381,6 +403,23 @@ static void hcap_take(const uint8_t* u) {
     if (same && (hcap[0].blk[2] == u[2])) {
         return;  // nothing new
     }
+    // fw24: only the QT Py restarted (an update): the Feather still holds the capture already saved, perhaps with more
+    // requests since. Same capture number, resets and ms to configuration, and it starts with the saved requests: take
+    // it over (a real new power-on differs in its timing at least).
+    if (!same && hcap_n && (hcap[0].blk[1] == u[1]) && (hcap[0].blk[4] == u[4]) && (hcap[0].blk[5] == u[5]) && (hcap[0].blk[6] == u[6])) {
+        uint8_t k = (hcap[0].blk[3] < u[3]) ? hcap[0].blk[3] : u[3];
+        if (k > HCAP_ENTRIES) {
+            k = HCAP_ENTRIES;
+        }
+        if (!memcmp(hcap[0].blk + 16, u + 16, 8 * k)) {
+            hcap[0].boot = (uint16_t) b_boots;
+            memcpy(hcap[0].blk, u, 256);
+            hcap_dirty = true;
+            hcap_changed_at = millis();
+            hcap_seq++;
+            return;
+        }
+    }
     if (!same) {
         memmove(hcap + 1, hcap, sizeof(HostCap) * (HCAP_KEEP - 1));
         if (hcap_n < HCAP_KEEP) {
@@ -413,29 +452,7 @@ static void hcap_tick() {
     }
 }
 
-// GET /api/hosts (fw23): the saved captures, newest first; the page decodes the requests
-static void h_hosts() {
-    clock_sync();
-    String j;
-    j.reserve(600 * (hcap_n + 1));
-    j += "{\"boot\":" + String((uint16_t) b_boots) + ",\"now\":" + String(now_unix()) + ",\"caps\":[";
-    for (uint8_t k = 0; k < hcap_n; k++) {
-        const HostCap& c = hcap[k];
-        uint8_t n = c.blk[3] <= HCAP_ENTRIES ? c.blk[3] : HCAP_ENTRIES;
-        j += k ? ",{" : "{";
-        j += "\"t\":" + String(c.t) + ",\"boot\":" + String(c.boot) + ",\"id\":" + String(c.blk[1]) + ",\"resets\":" + String(c.blk[4]) +
-             ",\"cfg_ms\":" + String(c.blk[5] | c.blk[6] << 8) + ",\"seen\":" + String(c.blk[7] | c.blk[8] << 8) + ",\"flags\":" + String(c.blk[9]) +
-             ",\"req\":\"";
-        char h[3];
-        for (uint16_t i = 16; i < 16 + 8 * n; i++) {
-            snprintf(h, sizeof(h), "%02x", c.blk[i]);
-            j += h;
-        }
-        j += "\"}";
-    }
-    j += "]}";
-    server.send(200, "application/json", j);
-}
+
 
 static bool chords_supported() {
     return st_ok && st_ext && (st[56] >= 15);
@@ -1023,6 +1040,11 @@ static void h_status() {
     }
     // fw22: the saved page edits, newest first: [Unix time or 0, age s (this boot only, else -1), kind, device, "ip", "text"]
     j += ",\"hcap\":" + String(hcap_seq) + ",\"hcap_n\":" + String(hcap_n);  // fw23: /api/hosts changed / how many
+    {
+        char h[12];  // fw24: this power-on's host signature, the automatic stage's state (auto_state) and stage (1-5, 0 none)
+        snprintf(h, sizeof(h), "%08lx", (unsigned long) auto_sig);
+        j += ",\"auto\":[\"" + String(h) + "\"," + String(auto_state) + "," + String(auto_want == 0xFF ? 0 : auto_want + 1) + "]";
+    }
     j += ",\"now\":" + String(now_unix()) + ",\"edits\":[";
     for (uint8_t k = 0; k < edit_n; k++) {
         const EditLog& e = edit_log[k];
@@ -1109,16 +1131,16 @@ static uint8_t ua_device() {
 }
 
 // fw22: record an edit the Feather accepted into its queue, newest first, and save the log
-static void log_edit(uint8_t kind, const String& text) {
+static void log_edit_as(uint8_t kind, const String& text, uint8_t dev, uint32_t ip) {
     memmove(edit_log + 1, edit_log, sizeof(EditLog) * (EDIT_LOG - 1));
     EditLog& e = edit_log[0];
     memset(&e, 0, sizeof(e));
     e.t = now_unix();
     e.ms = millis();
-    e.ip = (uint32_t) server.client().remoteIP();
+    e.ip = ip;
     e.boot = (uint16_t) b_boots;
     e.kind = kind;
-    e.dev = ua_device();
+    e.dev = dev;
     strncpy(e.text, text.c_str(), sizeof(e.text) - 1);
     for (char* c = e.text; *c; c++) {
         if ((*c < 32) || (*c > 126) || (*c == '"') || (*c == '\\')) {
@@ -1131,6 +1153,10 @@ static void log_edit(uint8_t kind, const String& text) {
     prefs.putBytes("edits", edit_log, sizeof(EditLog) * edit_n);
 }
 
+static void log_edit(uint8_t kind, const String& text) {
+    log_edit_as(kind, text, ua_device(), (uint32_t) server.client().remoteIP());
+}
+
 static void set_cmd(uint8_t cmd, long v) {
     uint8_t b = (uint8_t) (int8_t) v;
     bool ok = queue_cmd(cmd, &b, 1);
@@ -1138,6 +1164,161 @@ static void set_cmd(uint8_t cmd, long v) {
         log_edit(cmd, String(v));  // EK_STAGE/ANGLE/POS are the command numbers
     }
     ok_json(ok);
+}
+
+static uint8_t hcap_reqs(const HostCap& c, uint8_t* first_len) {  // requests other than bus resets
+    uint8_t n = c.blk[3] <= HCAP_ENTRIES ? c.blk[3] : HCAP_ENTRIES, k = 0;
+    for (uint8_t i = 0; i < n; i++) {
+        const uint8_t* e = c.blk + 16 + 8 * i;
+        if ((e[0] == 0xFF) && (e[1] == 0xFF)) {
+            continue;
+        }
+        if (!k && first_len) {
+            *first_len = e[6];
+        }
+        k++;
+    }
+    return k;
+}
+
+static uint32_t hcap_sig(const HostCap& c) {
+    uint8_t n = c.blk[3] <= HCAP_ENTRIES ? c.blk[3] : HCAP_ENTRIES, k = 0;
+    uint32_t h = 2166136261u;
+    for (uint8_t i = 0; (i < n) && (k < HSIG_REQS); i++) {
+        const uint8_t* e = c.blk + 16 + 8 * i;
+        if ((e[0] == 0xFF) && (e[1] == 0xFF)) {
+            continue;
+        }
+        bool addr = (e[0] == 0x00) && (e[1] == 0x05);
+        for (uint8_t b = 0; b < 8; b++) {
+            h = (h ^ ((addr && (b == 2 || b == 3)) ? 0 : e[b])) * 16777619u;
+        }
+        k++;
+    }
+    return (k < HSIG_REQS) ? 0 : (h ? h : 1);
+}
+
+static int hprof_find(uint32_t sig) {  // index, -1 = none (an int: Arduino's prototypes can't name HostProf)
+    for (uint8_t k = 0; k < hprof_n; k++) {
+        if (hprof[k].sig == sig) {
+            return k;
+        }
+    }
+    return -1;
+}
+
+static HostProf* hprof_at(int k) {
+    return (k >= 0) ? &hprof[k] : nullptr;
+}
+
+static void auto_tick() {
+    if (!auto_sig && hcap_n && (hcap[0].boot == (uint16_t) b_boots)) {
+        auto_sig = hcap_sig(hcap[0]);
+        if (auto_sig) {
+            HostProf* p = hprof_at(hprof_find(auto_sig));
+            auto_want = (p && p->stage >= 1 && p->stage <= 5) ? p->stage - 1 : 0xFF;
+            auto_state = (auto_want == 0xFF) ? 4 : 0;
+        }
+    }
+    if ((auto_want == 0xFF) || (auto_state >= 2) || !link_up || !st_ok || !(st[3] & 1)) {
+        return;  // nothing to set, done, or the Warg isn't there yet
+    }
+    if ((auto_state == 1) && (st[4] == auto_want)) {
+        auto_state = 2;
+        HostProf* p = hprof_at(hprof_find(auto_sig));
+        log_edit_as(EK_AUTO_STAGE, String(p ? p->name : "") + "=" + String(auto_want), 7, 0);
+        return;
+    }
+    if ((cq_n == 0) && (millis() - auto_at >= 1500)) {
+        if (auto_tries >= 6) {
+            auto_state = 3;
+            return;
+        }
+        uint8_t b = auto_want;
+        if (queue_cmd(C_SET_STAGE, &b, 1)) {
+            auto_tries++;
+            auto_at = millis();
+            auto_state = 1;
+        }
+    }
+}
+
+// GET /api/hosts (fw23): the saved captures, newest first, with each one's signature (fw24); the page decodes the
+// requests. fw24 also: the stage profiles and what happened on this power-on.
+static void h_hosts() {
+    clock_sync();
+    String j;
+    j.reserve(600 * (hcap_n + 1) + 40 * hprof_n);
+    char h[12];
+    j += "{\"boot\":" + String((uint16_t) b_boots) + ",\"now\":" + String(now_unix());
+    snprintf(h, sizeof(h), "%08lx", (unsigned long) auto_sig);
+    j += ",\"auto\":{\"sig\":\"" + String(h) + "\",\"stage\":" + String(auto_want == 0xFF ? 0 : auto_want + 1) + ",\"state\":" +
+         String(auto_state) + ",\"tries\":" + String(auto_tries) + "},\"profiles\":[";
+    for (uint8_t k = 0; k < hprof_n; k++) {
+        snprintf(h, sizeof(h), "%08lx", (unsigned long) hprof[k].sig);
+        j += (k ? ",{\"sig\":\"" : "{\"sig\":\"") + String(h) + "\",\"stage\":" + String(hprof[k].stage) + ",\"name\":\"" + String(hprof[k].name) + "\"}";
+    }
+    j += "],\"caps\":[";
+    for (uint8_t k = 0; k < hcap_n; k++) {
+        const HostCap& c = hcap[k];
+        uint8_t n = c.blk[3] <= HCAP_ENTRIES ? c.blk[3] : HCAP_ENTRIES, first = 0;
+        hcap_reqs(c, &first);
+        snprintf(h, sizeof(h), "%08lx", (unsigned long) hcap_sig(c));
+        j += k ? ",{" : "{";
+        j += "\"t\":" + String(c.t) + ",\"boot\":" + String(c.boot) + ",\"id\":" + String(c.blk[1]) + ",\"resets\":" + String(c.blk[4]) +
+             ",\"cfg_ms\":" + String(c.blk[5] | c.blk[6] << 8) + ",\"seen\":" + String(c.blk[7] | c.blk[8] << 8) + ",\"flags\":" + String(c.blk[9]) +
+             ",\"sig\":\"" + String(h) + "\",\"req\":\"";
+        char x[3];
+        for (uint16_t i = 16; i < 16 + 8 * n; i++) {
+            snprintf(x, sizeof(x), "%02x", c.blk[i]);
+            j += x;
+        }
+        j += "\"}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
+// POST /api/hostprof?sig=8 hex&stage=0-5&name=... (fw24): set a host's stage and name; stage 0 with no name removes it
+static void h_hostprof() {
+    touch();
+    uint32_t sig = strtoul(server.arg("sig").c_str(), nullptr, 16);
+    long stage;
+    if (!sig || !arg_int("stage", 0, 5, &stage)) {
+        return ok_json(false, "need sig and stage 0-5");
+    }
+    String name = server.arg("name");
+    name.trim();
+    HostProf* p = hprof_at(hprof_find(sig));
+    if (!stage && !name.length()) {
+        if (p) {
+            *p = hprof[hprof_n - 1];
+            hprof_n--;
+        }
+    } else {
+        if (!p) {
+            if (hprof_n == HPROF_MAX) {
+                return ok_json(false, "8 hosts at most: clear one first");
+            }
+            p = &hprof[hprof_n++];
+            p->sig = sig;
+        }
+        p->stage = (uint8_t) stage;
+        memset(p->name, 0, sizeof(p->name));
+        for (uint8_t i = 0; (i < name.length()) && (i < sizeof(p->name) - 1); i++) {
+            char c = name[i];
+            p->name[i] = ((c < 32) || (c > 126) || (c == '"') || (c == '\\') || (c == '=')) ? '?' : c;
+        }
+    }
+    prefs.putBytes("hprof", hprof, sizeof(HostProf) * hprof_n);
+    log_edit(EK_HOST_STAGE, String(p && (stage || name.length()) ? p->name : "") + "=" + String(stage));
+    if (sig == auto_sig) {  // the host on now: apply the new choice this power-on too
+        auto_want = (stage >= 1) ? stage - 1 : 0xFF;
+        auto_state = (auto_want == 0xFF) ? 4 : 0;
+        auto_tries = 0;
+        auto_at = 0;
+    }
+    ok_json(true);
 }
 
 // /api/set?stage=0..4 | angle=-30..30 | pos=-100..101
@@ -1392,6 +1573,7 @@ void setup() {
     prefs.putULong("boots", b_boots);
     edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
+    hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
     b_brownouts = prefs.getULong("brownouts", 0);
     b_crashes = prefs.getULong("crashes", 0);
     if (b_reason == ESP_RST_BROWNOUT) {
@@ -1410,6 +1592,7 @@ void setup() {
     server.on("/", HTTP_GET, h_page);
     server.on("/api/status", HTTP_GET, h_status);
     server.on("/api/hosts", HTTP_GET, h_hosts);
+    server.on("/api/hostprof", HTTP_POST, h_hostprof);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);
@@ -1441,6 +1624,7 @@ void loop() {
     link_tick();
     radio_tick();
     hcap_tick();
+    auto_tick();
     if (ntp_want) {
         ntp_want = false;
         configTime(0, 0, "pool.ntp.org", "time.google.com");  // fw22: UTC; the page shows local time

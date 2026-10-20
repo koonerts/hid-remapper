@@ -189,8 +189,11 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <details class="card" id="fedits" hidden><summary><div><h2>Recent page edits</h2><div class="mut" id="edlast"></div></div></summary>
 <ol id="edlist"></ol><p class="mut">The last 20 edits made through this page, from any device. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
 
-<details class="card" id="fhosts" hidden><summary><div><h2>USB hosts seen</h2><div class="mut" id="hlast"></div></div></summary>
-<p class="mut">What the computer, XIM or Feather on the other side of the ATEN asked the Feather for while connecting, newest first. Each power-on is one host. Kept on the QT Py (the last 8), for telling hosts apart.</p>
+<details class="card" id="fhosts" hidden><summary><div><h2>DPI per host</h2><div class="mut" id="hauto"></div></div></summary>
+<p class="mut">The Feather recognises what the ATEN connects it to (each kind of host asks for its USB details in its own way) and switches to the stage chosen here when it powers on. Both XIMs look the same, so they share one setting.</p>
+<div id="hprof"></div>
+<h3 class="sub">USB hosts seen</h3><p class="mut" id="hlast"></p>
+<p class="mut">What the host on the other side of the ATEN asked for while connecting, newest first; each power-on is one host. The QT Py keeps the last 8.</p>
 <div id="hlist"></div></details>
 
 <p class="mut" id="ver" style="text-align:center"></p>
@@ -329,7 +332,7 @@ $('buda').style.width=pa+'%';$('budw').style.width=pw+'%';
 const s='Each 1 ms frame: '+Math.round(pa)+'% used on average, '+Math.round(pw)+'% at worst'+(v19?'':' (remapping only; Feather v19 measures the whole frame)')+'.';$('budt').textContent=s;$('bud').setAttribute('aria-label',s);
 const ps=$('pskip');ps.hidden=!v19;if(v19){ps.textContent='Frames skipped: '+pf.missed_1s+' in the last second · '+pf.missed_total+' since the Feather started (plugging in or switching to a device pauses it about half a second).';ps.classList.toggle('bad',pf.missed_1s>0)}}
 // recent actions (Feather v21): [age s, source, buttons, action, value], newest first
-const EVSRC=['','tap','hold','double tap','wheel up','wheel down'],DEV=['device','Windows','Android','iPhone','Mac','Linux','script'];
+const EVSRC=['','tap','hold','double tap','wheel up','wheel down'],DEV=['device','Windows','Android','iPhone','Mac','Linux','script','automatic'];
 function evText(e){const[age,src,b,a,v]=e;let s,ang,stg=false;
 if(src>=1&&src<=5){s=BTN[b>>4]+' + '+(src>=4?'wheel '+(src===4?'up':'down'):BTN[b&15]+' '+EVSRC[src])+': '+ACT[a];ang=a>=8&&a<=10}
 else if(src===6){s=b===1?'Page: DPI stage':b===2?'Page: angle':b===3?'Page: position':'Page: command '+b;ang=b===2;stg=b===1}
@@ -343,7 +346,9 @@ function edText(x){const[,,k,d,ip,v]=x;let s;
 if(k===1)s='DPI stage → stage '+(Number(v)+1);else if(k===2)s='angle → '+v+'°';else if(k===3)s='position → '+v;
 else if(k===4)s='DPI values';else if(k===5)s='stage colours';else if(k===6)s='chord settings (steps, reset values, hold times)';
 else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap'||o==='sync'?(w==='1'?'on':'off'):o==='spdt'?['none','left button','right button','both buttons'][w]||w:w+(n[1]||''))}
-else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';else s='edit '+k;
+else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';
+else if(k===10){const[n,w]=v.split('=');return 'Auto ('+(n||'host')+'): DPI stage → stage '+(Number(w)+1)}
+else if(k===11){const[n,w]=v.split('=');s=(n||'a host')+' → '+(w==='0'?'leave the stage':'stage '+w)}else s='edit '+k;
 return 'Page ('+DEV[d]+' '+ip+'): '+s}
 // QT Py fw23 + Feather v23: the USB host captures (/api/hosts), fetched while the fold-out is open and when they change
 const HDESC={1:'device',2:'config',3:'string',6:'qualifier',7:'other-speed',15:'BOS',0x21:'HID',0x22:'report'};
@@ -360,14 +365,28 @@ if(t===0x21&&r===9)return 'set report (interface '+i+', '+['','input','output','
 if(t===0xA1&&r===1)return 'get report (interface '+i+', '+['','input','output','feature'][vh]+' id '+vl+', '+l+' bytes)';
 if(t===0xA1&&r===2)return 'get idle (interface '+i+')';if(t===0xA1&&r===3)return 'get protocol (interface '+i+')';
 return 'request '+e.map(b=>b.toString(16).padStart(2,'0')).join(' ')}
-let hSeq=null,hBusy=false;
+// QT Py fw24: a DPI stage per host. Hosts are told apart by a signature of their first 12 requests (the QT Py works it
+// out); the guess below only fills in a name: Windows asks for 64 bytes of the device descriptor first, the XIM for 8.
+let hSeq=null,hBusy=false,hJ=null;
+function hDecode(c){const reqs=[],raw=[];for(let k=0;k<c.req.length;k+=16){const e=[];for(let m=0;m<16;m+=2)e.push(parseInt(c.req.substr(k+m,2),16));raw.push(e);reqs.push(hReq(e))}return{reqs,raw}}
+function hGuess(raw){const f=raw.find(e=>!(e[0]===0xFF&&e[1]===0xFF));return !f?'Host':f[6]===64?'PC':f[6]===8?'XIM':'Host'}
+function hName(sig){const p=hJ&&hJ.profiles.find(p=>p.sig===sig);return p&&p.name?p.name:null}
+function hAutoLine(){const a=S.auto;if(!a||a[0]==='00000000')return 'This power-on: the host isn\'t known yet.';
+const n=hName(a[0])||'this host';return 'This power-on: '+n+' · '+(a[1]===4?'no stage chosen':a[1]===2?'stage '+a[2]+' set':a[1]===3?'stage '+a[2]+' didn\'t take (mouse asleep?)':'setting stage '+a[2]+'…')}
+function hSave(sig){const st=$('hs_'+sig).value,nm=$('hn_'+sig);const name=(nm.value||nm.placeholder).trim();
+post('/api/hostprof?sig='+sig+'&stage='+st+'&name='+encodeURIComponent(st==='0'&&!nm.value?'':name)).then(r=>{say(r,'Saved');hSeq=null})}
 function drawHosts(){const box=$('fhosts');box.hidden=!S||S.hcap==null||!S.hcap_n;if(box.hidden)return;
+$('hauto').textContent=hAutoLine();
 if(!box.open){if(!$('hlast').textContent)$('hlast').textContent=S.hcap_n+' saved';return}
-if(hSeq===S.hcap||hBusy)return;hBusy=true;fetch(tq('/api/hosts')).then(r=>r.json()).then(j=>{hSeq=S.hcap;
-const h=j.caps.map(c=>{const reqs=[];for(let k=0;k<c.req.length;k+=16){const e=[];for(let m=0;m<16;m+=2)e.push(parseInt(c.req.substr(k+m,2),16));reqs.push(hReq(e))}
-const when=c.t?whenText(c.t*1000):c.boot===j.boot?'this power-on':'power-on #'+c.boot+' (time unknown)';
-const sum=reqs.length+' kept of '+c.seen+' requests · '+c.resets+' bus reset'+(c.resets===1?'':'s')+' · '+(c.cfg_ms===65535?'not configured':'configured after '+c.cfg_ms+' ms');
-return {when,sum,reqs}});
+if(hSeq===S.hcap||hBusy)return;hBusy=true;fetch(tq('/api/hosts')).then(r=>r.json()).then(j=>{hSeq=S.hcap;hJ=j;
+const sigs=new Map();j.caps.forEach(c=>{if(c.sig==='00000000')return;const d=hDecode(c);const g=sigs.get(c.sig)||{n:0,last:0,guess:hGuess(d.raw)};g.n++;g.last=Math.max(g.last,c.t*1000);sigs.set(c.sig,g)});
+j.profiles.forEach(p=>{if(!sigs.has(p.sig))sigs.set(p.sig,{n:0,last:0,guess:'Host'})});
+$('hprof').innerHTML=[...sigs].map(([sig,g])=>{const p=j.profiles.find(p=>p.sig===sig)||{stage:0,name:''};
+return '<div class="opt"><span><input type="text" id="hn_'+sig+'" maxlength="10" value="'+esc(p.name)+'" placeholder="'+g.guess+'" style="width:8em" onchange="hSave(\''+sig+'\')"> <span class="mut">'+(g.n?'seen '+g.n+'× · last '+(g.last?whenText(g.last):'time unknown'):'not in the saved list')+(sig===j.auto.sig?' · connected now':'')+'</span></span>'+
+'<select id="hs_'+sig+'" onchange="hSave(\''+sig+'\')"><option value="0">leave stage</option>'+[1,2,3,4,5].map(s=>'<option value="'+s+'"'+(p.stage===s?' selected':'')+'>stage '+s+'</option>').join('')+'</select></div>'}).join('')||'<p class="mut">No host recognised yet.</p>';
+const h=j.caps.map(c=>{const d=hDecode(c);const when=c.t?whenText(c.t*1000):c.boot===j.boot?'this power-on':'power-on #'+c.boot+' (time unknown)';
+const sum=(hName(c.sig)||hGuess(d.raw))+' · '+d.reqs.length+' kept of '+c.seen+' requests · '+c.resets+' bus reset'+(c.resets===1?'':'s')+' · '+(c.cfg_ms===65535?'not configured':'configured after '+c.cfg_ms+' ms');
+return {when,sum,reqs:d.reqs}});
 $('hlast').textContent=h.length?'Last: '+h[0].when+' · '+h[0].sum:'';
 $('hlist').innerHTML=h.map(c=>'<h3 class="sub">'+esc(c.when)+'</h3><p class="mut">'+esc(c.sum)+'</p><ol class="hreq">'+c.reqs.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ol>').join('')}).catch(()=>{}).finally(()=>{hBusy=false})}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
@@ -378,7 +397,7 @@ function liHtml(a){return a.map(i=>'<li>'+(whenText(i.at)+'  '+i.s).replace(/&/g
 // position. With saved edits the Feather's own "Page" events are left out: the saved ones are the same edits, with the sender.
 function drawEvents(){const ed=S.edits,items=[];
 (S.events||[]).forEach(e=>{if(!(ed&&e[1]===6))items.push({at:Date.now()-e[0]*1000,s:evText(e)})});
-(ed||[]).forEach(x=>{if(x[2]>=1&&x[2]<=3)items.push({at:edAt(x),s:edText(x)})});
+(ed||[]).forEach(x=>{if((x[2]>=1&&x[2]<=3)||x[2]===10)items.push({at:edAt(x),s:edText(x)})});
 items.sort((p,q)=>q.at-p.at);const sh=items.slice(0,8),box=$('evbox');box.hidden=!sh.length;
 if(sh.length){$('evlast').textContent='Last change: '+whenText(sh[0].at)+'  '+sh[0].s;$('evlist').innerHTML=liHtml(sh)}
 const fe=$('fedits');fe.hidden=!ed||!ed.length;if(ed&&ed.length){const all=ed.map(x=>({at:edAt(x),s:edText(x)}));
