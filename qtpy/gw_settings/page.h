@@ -186,13 +186,18 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <input type="text" id="ssid" placeholder="Network name" aria-label="Network name"><div style="height:6px"></div><input type="password" id="pass" placeholder="Password" aria-label="Password">
 <div class="row" style="margin-top:8px"><button class="p" onclick="saveWifi()">Save and join</button></div></details></div>
 
+<details class="card" id="fedits" hidden><summary><div><h2>Recent page edits</h2><div class="mut" id="edlast"></div></div></summary>
+<ol id="edlist"></ol><p class="mut">The last 20 edits made through this page, from any device. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
+
 <p class="mut" id="ver" style="text-align:center"></p>
 </main><div class="toast" id="toast" role="status"></div>
 <script>
 let S=null,edit={},dCol=false,dDpi=false,dTune=false,hold=0,holdT=0,sepInit=false,deb={},tt;
 const $=id=>document.getElementById(id);
 const TUNE=[["angle_step","as","Angle step (°)",1,10],["pos_step","ps","Position step",1,25],["angle_home","ah","Angle reset target (°)",-30,30],["pos_home","ph","Position reset target",-100,101],["flash_ms","fl","Light flash length (ms)",100,5000],["pos_hold_ms","poh","Middle + Left hold for position reset (ms)",150,3000],["wheel_hold_ms","wh","Middle hold before the wheel steps angle (ms)",0,3000],["radio_hold_ms","rh","Middle + Right hold for Wi-Fi (ms)",200,3000]];
-function post(u,b){return fetch(u,{method:'POST',body:b}).then(r=>r.json()).catch(()=>({ok:false,err:'no answer'}))}
+// QT Py fw22: every request carries this browser's clock, so the edits it saves get real times
+function tq(u){return u+(u.includes('?')?'&':'?')+'t='+Math.floor(Date.now()/1000)}
+function post(u,b){return fetch(tq(u),{method:'POST',body:b}).then(r=>r.json()).catch(()=>({ok:false,err:'no answer'}))}
 function toast(m,bad){const t=$('toast');t.textContent=m;t.className='toast show'+(bad?' bad':'');clearTimeout(tt);tt=setTimeout(()=>{t.className='toast'},2400)}
 function say(r,m){toast(r.ok?m:'Failed: '+(r.err||'error'),!r.ok);return r}
 function ink(c){const n=parseInt(c,16);return ((n>>16)*.299+(n>>8&255)*.587+(n&255)*.114)>140?'#111':'#fff'}
@@ -200,6 +205,10 @@ function ink(c){const n=parseInt(c,16);return ((n>>16)*.299+(n>>8&255)*.587+(n&2
 let favC='';
 function fav(c){if(c===favC)return;favC=c;$('fav').href='data:image/svg+xml,'+encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M16 1.5C23.5 1.5 26 7.5 26 14v8c0 6-4.5 8.5-10 8.5S6 28 6 22v-8C6 7.5 8.5 1.5 16 1.5Z' fill='#"+c+"' stroke='#222' stroke-width='1.8'/><path d='M16 2v10M6.6 12.6Q16 15.6 25.4 12.6' fill='none' stroke='#222' stroke-width='1.8'/></svg>")}
 fav('1f6fe0');function readMouse(){post('/api/refresh').then(r=>say(r,'Reading from the mouse'))}
+// QT Py fw22: while this page is in view and the Warg is connected but its angle or position is unknown (asleep, just
+// plugged in), read from the mouse by itself every 5 s, so moving the mouse is enough
+let autoRd=0;function autoRead(){if(!S||!S.link||!S.warg||S.refreshing||S.pending||document.visibilityState!=='visible')return;
+if(S.angle!=null&&S.pos!=null)return;if(Date.now()-autoRd<5000)return;autoRd=Date.now();post('/api/refresh?auto=1')}
 
 function rows(){return [...$('rows').children]}
 function paintBtn(i,c){const b=rows()[i].querySelector('.st');b.style.background='#'+c;b.style.color=ink(c)}
@@ -317,15 +326,33 @@ const s='Each 1 ms frame: '+Math.round(pa)+'% used on average, '+Math.round(pw)+
 const ps=$('pskip');ps.hidden=!v19;if(v19){ps.textContent='Frames skipped: '+pf.missed_1s+' in the last second · '+pf.missed_total+' since the Feather started (plugging in or switching to a device pauses it about half a second).';ps.classList.toggle('bad',pf.missed_1s>0)}}
 // recent actions (Feather v21): [age s, source, buttons, action, value], newest first
 const EVSRC=['','tap','hold','double tap','wheel up','wheel down'],DEV=['device','Windows','Android','iPhone','Mac','Linux','script'];
-function evText(e){const[age,src,b,a,v]=e,t=new Date(Date.now()-age*1000).toLocaleTimeString();let s,ang,stg=false;
+function evText(e){const[age,src,b,a,v]=e;let s,ang,stg=false;
 if(src>=1&&src<=5){s=BTN[b>>4]+' + '+(src>=4?'wheel '+(src===4?'up':'down'):BTN[b&15]+' '+EVSRC[src])+': '+ACT[a];ang=a>=8&&a<=10}
-else if(src===6){s=b===1?'Page: DPI stage':b===2?'Page: angle':b===3?'Page: position':'Page: command '+b;ang=b===2;stg=b===1;
-// QT Py fw21: the request that matches it (same command and value, nearest in time) names the sender
-let m=null,dm=11;(S.sets||[]).forEach(x=>{const d=Math.abs(x[0]-age);if(x[1]===b&&x[2]===v&&d<dm){m=x;dm=d}});
-if(m)s=s.replace('Page:','Page ('+DEV[m[3]]+' '+m[4]+'):')}
+else if(src===6){s=b===1?'Page: DPI stage':b===2?'Page: angle':b===3?'Page: position':'Page: command '+b;ang=b===2;stg=b===1}
 else{const n=b===1?'Angle':'Position';ang=b===1;s=src===7?n+' assumed (the mouse didn\'t answer)':src===8?n+': the mouse kept its own value (writes didn\'t take)':n+' sent again (the mouse woke)'}
-if(v!==127)s+=' → '+(stg?'stage '+(v+1):ang?v+'°':v);return t+'  '+s}
-function drawEvents(){const ev=S.events,box=$('evbox');box.hidden=!ev||!ev.length;if(!ev||!ev.length)return;$('evlast').textContent='Last change: '+evText(ev[0]);$('evlist').innerHTML=ev.map(e=>'<li>'+evText(e).replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</li>').join('')}
+if(v!==127)s+=' → '+(stg?'stage '+(v+1):ang?v+'°':v);return s}
+// QT Py fw22: the page edits it keeps in flash (through refreshes, power cycles and updates), newest first:
+// [Unix time or 0, age s this boot or -1, kind, device, ip, text]
+const EDOPT={poll:['polling rate',' Hz'],lod:['lift-off',' mm'],snap:['Angle Snap'],sync:['Motion Sync'],spdt:['SPDT on']};
+function edAt(x){return x[0]?x[0]*1000:x[1]>=0?Date.now()-x[1]*1000:0}
+function edText(x){const[,,k,d,ip,v]=x;let s;
+if(k===1)s='DPI stage → stage '+(Number(v)+1);else if(k===2)s='angle → '+v+'°';else if(k===3)s='position → '+v;
+else if(k===4)s='DPI values';else if(k===5)s='stage colours';else if(k===6)s='chord settings (steps, reset values, hold times)';
+else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap'||o==='sync'?(w==='1'?'on':'off'):o==='spdt'?['none','left button','right button','both buttons'][w]||w:w+(n[1]||''))}
+else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';else s='edit '+k;
+return 'Page ('+DEV[d]+' '+ip+'): '+s}
+function whenText(ms){if(!ms)return 'earlier (time unknown)';const d=new Date(ms),t=d.toLocaleTimeString();
+return d.toDateString()===new Date().toDateString()?t:d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+t}
+function liHtml(a){return a.map(i=>'<li>'+(whenText(i.at)+'  '+i.s).replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</li>').join('')}
+// Sensor list: the Feather's events since it powered on (chords, wakes) plus the saved page edits of stage, angle and
+// position. With saved edits the Feather's own "Page" events are left out: the saved ones are the same edits, with the sender.
+function drawEvents(){const ed=S.edits,items=[];
+(S.events||[]).forEach(e=>{if(!(ed&&e[1]===6))items.push({at:Date.now()-e[0]*1000,s:evText(e)})});
+(ed||[]).forEach(x=>{if(x[2]>=1&&x[2]<=3)items.push({at:edAt(x),s:edText(x)})});
+items.sort((p,q)=>q.at-p.at);const sh=items.slice(0,8),box=$('evbox');box.hidden=!sh.length;
+if(sh.length){$('evlast').textContent='Last change: '+whenText(sh[0].at)+'  '+sh[0].s;$('evlist').innerHTML=liHtml(sh)}
+const fe=$('fedits');fe.hidden=!ed||!ed.length;if(ed&&ed.length){const all=ed.map(x=>({at:edAt(x),s:edText(x)}));
+$('edlast').textContent='Last: '+whenText(all[0].at)+'  '+all[0].s;$('edlist').innerHTML=liHtml(all)}}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
 drawPerf(pf);
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
@@ -348,7 +375,7 @@ function saveWifi(){const b=new URLSearchParams({ssid:$('ssid').value,pass:$('pa
 
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
-else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it, then press Read from mouse.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
+else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
@@ -363,7 +390,7 @@ async function toIp(j){if(ipTried||touched)return false;ipTried=true;const ip=j&
 if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;
 const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch('http://'+ip+'/api/status',{mode:'no-cors',cache:'no-store',signal:c.signal})}catch(e){return false}finally{clearTimeout(tm)}
 if(touched)return false;location.replace('http://'+ip+'/');return true}
-function poll(){fetch('/api/status').then(r=>r.json()).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();render()}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,1000))}
+function poll(){fetch(tq('/api/status')).then(r=>r.json()).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();render();autoRead()}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,1000))}
 buildStages();bindSlider('angle');bindSlider('pos');
 $('ms').addEventListener('pointerdown',e=>{if(!S||e.target===$('ms'))return;msDrag=e.target.id==='msh'?'angle':'pos';msOff=0;if(msDrag==='pos'&&$('mss').contains(e.target))msOff=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse()).y-msY(Number($('pos').value));$('ms').setPointerCapture(e.pointerId);e.preventDefault();msMove(e)});
 $('ms').addEventListener('pointermove',msMove);['pointerup','pointercancel'].forEach(t=>$('ms').addEventListener(t,()=>{msDrag=null}));
@@ -419,7 +446,7 @@ $('lvagain').onclick=()=>lvBegin();
 function drawLevel(){const sn=!!(S.opt&&(S.opt.snap===true||S.opt.snap===1));$('lvsnap').hidden=!sn}
 new ResizeObserver(()=>lvDraw()).observe(LV);
 // fold-outs open as they were left (kept on the QT Py: the page's address changes, and it's shared by your devices)
-const FOLDS=['fchords','fwifi','evbox'];let foldMask=null;
+const FOLDS=['fchords','fwifi','evbox','fedits'];let foldMask=null;
 function foldNow(){let m=0;FOLDS.forEach((id,i)=>{if($(id).open)m|=1<<i});return m}
 function foldsApply(){if(foldMask!==null||!S||S.ui==null)return;if(S.ui>=0)FOLDS.forEach((id,i)=>{$(id).open=!!(S.ui>>i&1)});foldMask=foldNow()}
 FOLDS.forEach(id=>$(id).addEventListener('toggle',()=>{if(foldMask===null)return;const m=foldNow();if(m!==foldMask){foldMask=m;post('/api/ui?f='+m)}}));

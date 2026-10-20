@@ -33,7 +33,7 @@
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
 #define STATUS_FULL 256 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192)
-#define QT_FW 21       // this firmware's number, shown in /api/status
+#define QT_FW 22      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -89,18 +89,32 @@ enum class Radio : uint8_t { OFF, JOINING, STA, AP };
 static Radio radio = Radio::OFF;
 static uint32_t radio_since = 0;
 static uint32_t last_http = 0;
-// fw21: who sent each /api/set. The Feather's recent-changes list only says "Page", so the QT Py keeps the sender
-// (address and kind of device) for the page to show next to it. RAM only, newest at set_head - 1.
-#define SET_LOG 8
-struct SetLog {
-    uint32_t at;  // millis()
-    uint8_t cmd;  // C_SET_STAGE / C_SET_ANGLE / C_SET_POS: the Feather's event names the same command
-    int8_t value;
-    uint8_t dev;  // 0 other, 1 Windows, 2 Android, 3 iPhone/iPad, 4 Mac, 5 Linux, 6 a script (PowerShell, curl, ...)
-    IPAddress ip;
+// fw22: the last EDIT_LOG edits made through the page (any /api/set, dpi, palette, tune, opt, chords), with who sent
+// them and when. Kept in NVS ("edits"), so they outlive power cycles (the ATEN switching ports) and QT Py updates; the
+// Feather's own recent-changes list is RAM only. fw21 kept the sender in RAM only.
+#define EDIT_LOG 20
+#define EK_STAGE 1  // the kinds; 1-3 are the Feather's link commands, so they match its "Page" events
+#define EK_ANGLE 2
+#define EK_POS 3
+#define EK_DPI 4
+#define EK_COLOURS 5
+#define EK_TUNE 6
+#define EK_OPT 7
+#define EK_CHORDS 8
+#define EK_CHORDS_DEFAULT 9
+struct __attribute__((packed)) EditLog {  // 32 bytes
+    uint32_t t;     // Unix time (s): the browser's clock sent with the request, else NTP, else 0 = unknown
+    uint32_t ms;    // millis() then: ages within the same boot when the time is unknown
+    uint32_t ip;    // sender IPv4, as IPAddress's uint32_t
+    uint16_t boot;  // the QT Py boot it was made in (low 16 bits of "boots")
+    uint8_t kind;   // EK_*
+    uint8_t dev;    // 0 other, 1 Windows, 2 Android, 3 iPhone/iPad, 4 Mac, 5 Linux, 6 a script (PowerShell, curl, ...)
+    char text[16];  // the value: "-14", "poll=1000", "6 rules"; empty when the kind says it all
 };
-static SetLog set_log[SET_LOG];
-static uint8_t set_n = 0, set_head = 0;
+static EditLog edit_log[EDIT_LOG];  // edit_log[0] is the newest
+static uint8_t edit_n = 0;
+static uint32_t clk_base = 0;  // Unix time at millis() 0, from a page request's "t"; 0 = not known yet this boot
+static bool ntp_want = false;
 static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
 // Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
@@ -119,6 +133,7 @@ static bool w_had_ip = false;
 
 static void on_wifi_got_ip(WiFiEvent_t, WiFiEventInfo_t) {
     w_had_ip = true;
+    ntp_want = true;  // fw22: a clock for edits sent without the page's "t"; started from loop()
 }
 
 static void on_wifi_disconnect(WiFiEvent_t, WiFiEventInfo_t info) {
@@ -578,8 +593,25 @@ static String hex6(uint32_t c) {
     return String(b);
 }
 
+// fw22: the page sends its clock as "t" (Unix seconds) with every request
+static void clock_sync() {
+    long t = server.hasArg("t") ? server.arg("t").toInt() : 0;
+    if (t > 1700000000L) {
+        clk_base = (uint32_t) t - millis() / 1000;
+    }
+}
+
+static uint32_t now_unix() {
+    if (clk_base) {
+        return clk_base + millis() / 1000;
+    }
+    time_t t = time(nullptr);  // NTP, once Wi-Fi has had internet
+    return (t > 1700000000L) ? (uint32_t) t : 0;
+}
+
 static void touch() {
     last_http = millis();
+    clock_sync();
 }
 
 static void ok_json(bool ok, const char* err = nullptr) {
@@ -725,7 +757,11 @@ static void h_opt() {
     } else {
         return ok_json(false, "unknown setting");
     }
-    ok_json(queue_cmd(C_SET_OPTION, d, 2));
+    bool ok = queue_cmd(C_SET_OPTION, d, 2);
+    if (ok) {
+        log_edit(EK_OPT, k + "=" + v);
+    }
+    ok_json(ok);
 }
 
 // ---- chords (Feather v15+): the table it uses, as [modifier, trigger, tap, hold, hold ms] rows
@@ -787,6 +823,7 @@ static void h_chords() {
             return ok_json(false, "busy, try again");
         }
         prefs.remove("chords");
+        log_edit(EK_CHORDS_DEFAULT, String());
         return ok_json(true);
     }
     if (!server.hasArg("r")) {
@@ -833,11 +870,13 @@ static void h_chords() {
     c[0] = n;
     memcpy(c + 1, rules, n * 5);
     prefs.putBytes("chords", c, 1 + n * 5);
+    log_edit(EK_CHORDS, String(n) + (n == 1 ? " rule" : " rules"));
     ok_json(true);
 }
 
 // not counted as use: an open tab alone shouldn't keep the radio on while playing
 static void h_status() {
+    clock_sync();
     String j;
     j.reserve(2200);
     j += "{\"link\":";
@@ -890,12 +929,13 @@ static void h_status() {
     } else {
         j += ",\"events\":null";
     }
-    // fw21: who sent the recent /api/set requests, newest first: [age s, command, value, device, "ip"]
-    j += ",\"sets\":[";
-    for (uint8_t k = 0; k < set_n; k++) {
-        const SetLog& e = set_log[(set_head + SET_LOG - 1 - k) % SET_LOG];
-        j += (k ? ",[" : "[") + String((millis() - e.at) / 1000) + "," + String(e.cmd) + "," + String(e.value) + "," + String(e.dev) + ",\"" +
-             e.ip.toString() + "\"]";
+    // fw22: the saved page edits, newest first: [Unix time or 0, age s (this boot only, else -1), kind, device, "ip", "text"]
+    j += ",\"now\":" + String(now_unix()) + ",\"edits\":[";
+    for (uint8_t k = 0; k < edit_n; k++) {
+        const EditLog& e = edit_log[k];
+        long age = (e.boot == (uint16_t) b_boots) ? (long) ((millis() - e.ms) / 1000) : -1L;
+        j += (k ? ",[" : "[") + String(e.t) + "," + String(age) + "," + String(e.kind) + "," + String(e.dev) + ",\"" + IPAddress(e.ip).toString() +
+             "\",\"" + String(e.text) + "\"]";
     }
     j += "]";
     // Feather v15+: its processing time per 1 ms frame over the last second (status bytes 84-89); v19+ also the
@@ -975,20 +1015,34 @@ static uint8_t ua_device() {
     return (ua.indexOf("Linux") >= 0) ? 5 : 0;
 }
 
+// fw22: record an edit the Feather accepted into its queue, newest first, and save the log
+static void log_edit(uint8_t kind, const String& text) {
+    memmove(edit_log + 1, edit_log, sizeof(EditLog) * (EDIT_LOG - 1));
+    EditLog& e = edit_log[0];
+    memset(&e, 0, sizeof(e));
+    e.t = now_unix();
+    e.ms = millis();
+    e.ip = (uint32_t) server.client().remoteIP();
+    e.boot = (uint16_t) b_boots;
+    e.kind = kind;
+    e.dev = ua_device();
+    strncpy(e.text, text.c_str(), sizeof(e.text) - 1);
+    for (char* c = e.text; *c; c++) {
+        if ((*c < 32) || (*c > 126) || (*c == '"') || (*c == '\\')) {
+            *c = '?';  // it goes into the status JSON as is
+        }
+    }
+    if (edit_n < EDIT_LOG) {
+        edit_n++;
+    }
+    prefs.putBytes("edits", edit_log, sizeof(EditLog) * edit_n);
+}
+
 static void set_cmd(uint8_t cmd, long v) {
     uint8_t b = (uint8_t) (int8_t) v;
     bool ok = queue_cmd(cmd, &b, 1);
     if (ok) {
-        SetLog& e = set_log[set_head];
-        e.at = millis();
-        e.cmd = cmd;
-        e.value = (int8_t) v;
-        e.dev = ua_device();
-        e.ip = server.client().remoteIP();
-        set_head = (set_head + 1) % SET_LOG;
-        if (set_n < SET_LOG) {
-            set_n++;
-        }
+        log_edit(cmd, String(v));  // EK_STAGE/ANGLE/POS are the command numbers
     }
     ok_json(ok);
 }
@@ -1032,7 +1086,11 @@ static void h_palette() {
         return ok_json(false, "need 5 colours");
     }
     prefs.putBytes("pal", p, 15);
-    ok_json(queue_cmd(C_SET_PALETTE, p, 15));
+    bool ok = queue_cmd(C_SET_PALETTE, p, 15);
+    if (ok) {
+        log_edit(EK_COLOURS, String());
+    }
+    ok_json(ok);
 }
 
 // /api/dpi?v=x1,y1,x2,y2,...  (10 numbers, 50..50000)
@@ -1052,7 +1110,11 @@ static void h_dpi() {
         d[2 * i + 1] = v >> 8;
         at = comma + 1;
     }
-    ok_json(queue_cmd(C_SET_DPI, d, 20));
+    bool ok = queue_cmd(C_SET_DPI, d, 20);
+    if (ok) {
+        log_edit(EK_DPI, String());
+    }
+    ok_json(ok);
 }
 
 // /api/tune?as=&ps=&ah=&ph=&fl=&poh=&wh=&rh=
@@ -1067,11 +1129,24 @@ static void h_tune() {
         (uint8_t) (fl & 0xff), (uint8_t) (fl >> 8), (uint8_t) (poh & 0xff), (uint8_t) (poh >> 8),
         (uint8_t) (wh & 0xff), (uint8_t) (wh >> 8), (uint8_t) (rh & 0xff), (uint8_t) (rh >> 8) };
     prefs.putBytes("tune", t, 12);
-    ok_json(queue_cmd(C_SET_TUNING, t, 12));
+    bool ok = queue_cmd(C_SET_TUNING, t, 12);
+    if (ok) {
+        log_edit(EK_TUNE, String());
+    }
+    ok_json(ok);
 }
 
+// ?auto=1 (fw22): the page reading by itself while it lacks the angle or position. Not counted as use, like a status
+// poll, so an open tab doesn't keep the radio on while the mouse sleeps.
 static void h_refresh() {
-    touch();
+    if (server.hasArg("auto")) {
+        clock_sync();
+    } else {
+        touch();
+    }
+    if (server.hasArg("auto") && (cq_n > 0)) {
+        return ok_json(true);  // something is already queued: the page asks again on its next round
+    }
     ok_json(queue_cmd(C_REFRESH, nullptr, 0));
 }
 
@@ -1222,6 +1297,7 @@ void setup() {
     b_reason = (uint8_t) esp_reset_reason();
     b_boots = prefs.getULong("boots", 0) + 1;
     prefs.putULong("boots", b_boots);
+    edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
     b_brownouts = prefs.getULong("brownouts", 0);
     b_crashes = prefs.getULong("crashes", 0);
     if (b_reason == ESP_RST_BROWNOUT) {
@@ -1269,6 +1345,10 @@ void setup() {
 void loop() {
     link_tick();
     radio_tick();
+    if (ntp_want) {
+        ntp_want = false;
+        configTime(0, 0, "pool.ntp.org", "time.google.com");  // fw22: UTC; the page shows local time
+    }
     if (radio != Radio::OFF) {
         server.handleClient();
     }
