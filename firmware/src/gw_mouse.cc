@@ -10,6 +10,7 @@
 
 #include "globals.h"
 #include "gw_chords.h"
+#include "gw_hostcap.h"
 #include "gw_link.h"
 #include "gw_payloads.h"
 #include "out_report.h"
@@ -1661,7 +1662,7 @@ static void rs_tick(uint32_t now) {
 //   command; 7-9: 1 angle, 2 position), action (GA_*), value after it (int8: angle/position, the stage for a page stage;
 //   0x7F none)   242-254 0   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 22
+#define GW_FW_VERSION 23
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1790,7 +1791,7 @@ void gw_link_status(uint8_t* s) {
     s[116] = sof_peak4;
     s[117] = (rs_settings[RS_ANGLE].confirmed ? 1 : 0) | (rs_settings[RS_POS].confirmed ? 2 : 0) |
              (rs_settings[RS_ANGLE].rewrite_on_wake ? 4 : 0) | (rs_settings[RS_POS].rewrite_on_wake ? 8 : 0) |
-             (uint8_t) ((ev_seq & 0x0F) << 4);  // v21: changes to the recent actions (192-255); before the crc at 127
+             (uint8_t) (((ev_seq + gw_hostcap_seq()) & 0x0F) << 4);  // v21: changes to the recent actions (192-255), v23 also to the host capture (256-511); before the crc at 127
     s[91] = rs_raw_seq;
     s[92] = rs_raw_state;
     s[93] = (rs_raw_len > 17) ? 17 : rs_raw_len;
@@ -1824,6 +1825,7 @@ void gw_link_status(uint8_t* s) {
         q[5] = (uint8_t) e.value;
     }
     s[255] = gw_crc8(s + 192, 63);
+    gw_hostcap_fill(s + 256);  // v23
 }
 
 static bool tuning_ok(const uint8_t* d) {
