@@ -189,6 +189,10 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <details class="card" id="fedits" hidden><summary><div><h2>Recent page edits</h2><div class="mut" id="edlast"></div></div></summary>
 <ol id="edlist"></ol><p class="mut">The last 20 edits made through this page, from any device. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
 
+<details class="card" id="fhosts" hidden><summary><div><h2>USB hosts seen</h2><div class="mut" id="hlast"></div></div></summary>
+<p class="mut">What the computer, XIM or Feather on the other side of the ATEN asked the Feather for while connecting, newest first. Each power-on is one host. Kept on the QT Py (the last 8), for telling hosts apart.</p>
+<div id="hlist"></div></details>
+
 <p class="mut" id="ver" style="text-align:center"></p>
 </main><div class="toast" id="toast" role="status"></div>
 <script>
@@ -341,6 +345,32 @@ else if(k===4)s='DPI values';else if(k===5)s='stage colours';else if(k===6)s='ch
 else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap'||o==='sync'?(w==='1'?'on':'off'):o==='spdt'?['none','left button','right button','both buttons'][w]||w:w+(n[1]||''))}
 else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';else s='edit '+k;
 return 'Page ('+DEV[d]+' '+ip+'): '+s}
+// QT Py fw23 + Feather v23: the USB host captures (/api/hosts), fetched while the fold-out is open and when they change
+const HDESC={1:'device',2:'config',3:'string',6:'qualifier',7:'other-speed',15:'BOS',0x21:'HID',0x22:'report'};
+function hReq(e){const[t,r,vl,vh,il,ih,ll,lh]=e,v=vl|vh<<8,i=il|ih<<8,l=ll|lh<<8,x=n=>n.toString(16).padStart(4,'0');
+if(t===0xFF&&r===0xFF)return 'bus reset';
+if(r===6&&(t&0x9F)===0x80){const n=HDESC[vh]||'descriptor '+vh;return 'get '+n+(vh===3?' '+vl+(i?' lang '+x(i):''):vh===2&&vl?' '+vl:'')+(t===0x81?' (interface '+i+')':'')+', '+l+' bytes'}
+if(t===0&&r===5)return 'set address '+v;if(t===0&&r===9)return 'set configuration '+v;if(t===0x80&&r===8)return 'get configuration';
+if(r===0&&(t&0x80))return 'get status ('+['device','interface','endpoint'][t&3]+' '+i+')';
+if(r===1&&!(t&0x80))return 'clear feature '+v+' ('+['device','interface','endpoint '+x(i)][t&3]+')';
+if(r===3&&!(t&0x80))return 'set feature '+v+' ('+['device','interface','endpoint '+x(i)][t&3]+')';
+if(t===1&&r===11)return 'set interface '+i+' alt '+v;
+if(t===0x21&&r===10)return 'set idle (interface '+i+', '+(vh*4)+' ms)';if(t===0x21&&r===11)return 'set protocol (interface '+i+', '+(v?'report':'boot')+')';
+if(t===0x21&&r===9)return 'set report (interface '+i+', '+['','input','output','feature'][vh]+' id '+vl+', '+l+' bytes)';
+if(t===0xA1&&r===1)return 'get report (interface '+i+', '+['','input','output','feature'][vh]+' id '+vl+', '+l+' bytes)';
+if(t===0xA1&&r===2)return 'get idle (interface '+i+')';if(t===0xA1&&r===3)return 'get protocol (interface '+i+')';
+return 'request '+e.map(b=>b.toString(16).padStart(2,'0')).join(' ')}
+let hSeq=null,hBusy=false;
+function drawHosts(){const box=$('fhosts');box.hidden=!S||S.hcap==null||!S.hcap_n;if(box.hidden)return;
+if(!box.open){if(!$('hlast').textContent)$('hlast').textContent=S.hcap_n+' saved';return}
+if(hSeq===S.hcap||hBusy)return;hBusy=true;fetch(tq('/api/hosts')).then(r=>r.json()).then(j=>{hSeq=S.hcap;
+const h=j.caps.map(c=>{const reqs=[];for(let k=0;k<c.req.length;k+=16){const e=[];for(let m=0;m<16;m+=2)e.push(parseInt(c.req.substr(k+m,2),16));reqs.push(hReq(e))}
+const when=c.t?whenText(c.t*1000):c.boot===j.boot?'this power-on':'power-on #'+c.boot+' (time unknown)';
+const sum=reqs.length+' kept of '+c.seen+' requests · '+c.resets+' bus reset'+(c.resets===1?'':'s')+' · '+(c.cfg_ms===65535?'not configured':'configured after '+c.cfg_ms+' ms');
+return {when,sum,reqs}});
+$('hlast').textContent=h.length?'Last: '+h[0].when+' · '+h[0].sum:'';
+$('hlist').innerHTML=h.map(c=>'<h3 class="sub">'+esc(c.when)+'</h3><p class="mut">'+esc(c.sum)+'</p><ol class="hreq">'+c.reqs.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ol>').join('')}).catch(()=>{}).finally(()=>{hBusy=false})}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function whenText(ms){if(!ms)return 'earlier (time unknown)';const d=new Date(ms),t=d.toLocaleTimeString();
 return d.toDateString()===new Date().toDateString()?t:d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+t}
 function liHtml(a){return a.map(i=>'<li>'+(whenText(i.at)+'  '+i.s).replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</li>').join('')}
@@ -379,7 +409,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
-drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawLevel();foldsApply();
+drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawLevel();foldsApply();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
@@ -446,7 +476,7 @@ $('lvagain').onclick=()=>lvBegin();
 function drawLevel(){const sn=!!(S.opt&&(S.opt.snap===true||S.opt.snap===1));$('lvsnap').hidden=!sn}
 new ResizeObserver(()=>lvDraw()).observe(LV);
 // fold-outs open as they were left (kept on the QT Py: the page's address changes, and it's shared by your devices)
-const FOLDS=['fchords','fwifi','evbox','fedits'];let foldMask=null;
+const FOLDS=['fchords','fwifi','evbox','fedits','fhosts'];let foldMask=null;
 function foldNow(){let m=0;FOLDS.forEach((id,i)=>{if($(id).open)m|=1<<i});return m}
 function foldsApply(){if(foldMask!==null||!S||S.ui==null)return;if(S.ui>=0)FOLDS.forEach((id,i)=>{$(id).open=!!(S.ui>>i&1)});foldMask=foldNow()}
 FOLDS.forEach(id=>$(id).addEventListener('toggle',()=>{if(foldMask===null)return;const m=foldNow();if(m!==foldMask){foldMask=m;post('/api/ui?f='+m)}}));

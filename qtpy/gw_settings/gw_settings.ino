@@ -31,9 +31,10 @@
 #define LINK_SCL 40
 #define LINK_HZ 50000  // only the pins' built-in pull-ups hold the lines up, so keep it slow
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
-#define STATUS_FULL 256 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
-                        // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192)
-#define QT_FW 22      // this firmware's number, shown in /api/status
+#define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
+                        // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
+                        // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
+#define QT_FW 23      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -115,6 +116,19 @@ static EditLog edit_log[EDIT_LOG];  // edit_log[0] is the newest
 static uint8_t edit_n = 0;
 static uint32_t clk_base = 0;  // Unix time at millis() 0, from a page request's "t"; 0 = not known yet this boot
 static bool ntp_want = false;
+#define HCAP_KEEP 8
+#define HCAP_ENTRIES 29  // Feather GW_HOSTCAP_MAX
+struct __attribute__((packed)) HostCap {
+    uint32_t t;        // Unix time it was first read (0 = unknown; filled in once the clock is known that boot)
+    uint32_t ms;       // millis() then
+    uint16_t boot;     // the QT Py boot (= the power-on: the Feather and QT Py lose power together)
+    uint8_t blk[256];  // the Feather's status bytes 256-511 as read
+};
+static HostCap hcap[HCAP_KEEP];  // [0] newest
+static uint8_t hcap_n = 0;
+static bool hcap_dirty = false;
+static uint32_t hcap_changed_at = 0;
+static uint8_t hcap_seq = 0;  // in /api/status: the page fetches /api/hosts again when it moves
 static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
 // Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
@@ -319,10 +333,18 @@ static bool events_supported() {
 
 // the full block, for its chord table (when the table number, byte 124, moved) and, from Feather v21, its recent
 // actions (when byte 117's high nibble moved)
+static void hcap_take(const uint8_t* u);
+
 static void read_chords() {
     static uint8_t b[STATUS_FULL];
-    size_t len = events_supported() ? 256 : 192;
+    size_t len = hostcap_supported() ? 512 : events_supported() ? 256 : 192;
+    if (len == 512) {
+        Wire1.setTimeOut(150);  // 512 bytes take about 92 ms at 50 kHz; polls keep the short timeout
+    }
     size_t n = Wire1.requestFrom((uint16_t) LINK_ADDR, len);
+    if (len == 512) {
+        Wire1.setTimeOut(50);
+    }
     if (n != len) {
         while (Wire1.available()) {
             Wire1.read();
@@ -337,12 +359,82 @@ static void read_chords() {
     }
     memcpy(ch, b + 128, 64);
     ch_ok = true;
-    if ((len == 256) && (b[192] == 'E') && (crc8(b + 192, 63) == b[255]) && (b[193] <= 8)) {
+    if ((len >= 256) && (b[192] == 'E') && (crc8(b + 192, 63) == b[255]) && (b[193] <= 8)) {
         memcpy(evb, b + 192, 64);
         ev_ok = true;
         ev_read_at = millis();
         ev_nib = b[117] >> 4;
     }
+    if ((len == 512) && (b[256] == 'U') && (crc8(b + 256, 255) == b[511]) && (b[257] != 0) && (b[259] <= HCAP_ENTRIES)) {
+        hcap_take(b + 256);
+    }
+}
+
+static bool hostcap_supported() {
+    return st_ok && st_ext && (st[56] >= 23);
+}
+
+// fw23: the Feather's capture of the USB host's requests (Feather v23, status 256-511). The ATEN cuts the power when
+// it switches, so each power-on is one host: keep the last HCAP_KEEP captures in NVS ("hcaps"), newest first.
+static void hcap_take(const uint8_t* u) {
+    bool same = hcap_n && (hcap[0].boot == (uint16_t) b_boots) && (hcap[0].blk[1] == u[1]);
+    if (same && (hcap[0].blk[2] == u[2])) {
+        return;  // nothing new
+    }
+    if (!same) {
+        memmove(hcap + 1, hcap, sizeof(HostCap) * (HCAP_KEEP - 1));
+        if (hcap_n < HCAP_KEEP) {
+            hcap_n++;
+        }
+        hcap[0].t = now_unix();
+        hcap[0].ms = millis();
+        hcap[0].boot = (uint16_t) b_boots;
+    }
+    memcpy(hcap[0].blk, u, 256);
+    hcap_dirty = true;
+    hcap_changed_at = millis();
+    hcap_seq++;
+}
+
+// saved once a capture has been quiet for 2 s; a capture read before the clock was known gets its time once it is
+static void hcap_tick() {
+    uint32_t now = now_unix();
+    if (now) {
+        for (uint8_t k = 0; k < hcap_n; k++) {
+            if (!hcap[k].t && (hcap[k].boot == (uint16_t) b_boots)) {
+                hcap[k].t = now - (millis() - hcap[k].ms) / 1000;
+                hcap_dirty = true;
+            }
+        }
+    }
+    if (hcap_dirty && (millis() - hcap_changed_at >= 2000)) {
+        hcap_dirty = false;
+        prefs.putBytes("hcaps", hcap, sizeof(HostCap) * hcap_n);
+    }
+}
+
+// GET /api/hosts (fw23): the saved captures, newest first; the page decodes the requests
+static void h_hosts() {
+    clock_sync();
+    String j;
+    j.reserve(600 * (hcap_n + 1));
+    j += "{\"boot\":" + String((uint16_t) b_boots) + ",\"now\":" + String(now_unix()) + ",\"caps\":[";
+    for (uint8_t k = 0; k < hcap_n; k++) {
+        const HostCap& c = hcap[k];
+        uint8_t n = c.blk[3] <= HCAP_ENTRIES ? c.blk[3] : HCAP_ENTRIES;
+        j += k ? ",{" : "{";
+        j += "\"t\":" + String(c.t) + ",\"boot\":" + String(c.boot) + ",\"id\":" + String(c.blk[1]) + ",\"resets\":" + String(c.blk[4]) +
+             ",\"cfg_ms\":" + String(c.blk[5] | c.blk[6] << 8) + ",\"seen\":" + String(c.blk[7] | c.blk[8] << 8) + ",\"flags\":" + String(c.blk[9]) +
+             ",\"req\":\"";
+        char h[3];
+        for (uint16_t i = 16; i < 16 + 8 * n; i++) {
+            snprintf(h, sizeof(h), "%02x", c.blk[i]);
+            j += h;
+        }
+        j += "\"}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
 }
 
 static bool chords_supported() {
@@ -930,6 +1022,7 @@ static void h_status() {
         j += ",\"events\":null";
     }
     // fw22: the saved page edits, newest first: [Unix time or 0, age s (this boot only, else -1), kind, device, "ip", "text"]
+    j += ",\"hcap\":" + String(hcap_seq) + ",\"hcap_n\":" + String(hcap_n);  // fw23: /api/hosts changed / how many
     j += ",\"now\":" + String(now_unix()) + ",\"edits\":[";
     for (uint8_t k = 0; k < edit_n; k++) {
         const EditLog& e = edit_log[k];
@@ -1298,6 +1391,7 @@ void setup() {
     b_boots = prefs.getULong("boots", 0) + 1;
     prefs.putULong("boots", b_boots);
     edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
+    hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     b_brownouts = prefs.getULong("brownouts", 0);
     b_crashes = prefs.getULong("crashes", 0);
     if (b_reason == ESP_RST_BROWNOUT) {
@@ -1310,11 +1404,12 @@ void setup() {
     if (wmode > 2) {
         wmode = 0;
     }
-    Wire1.setBufferSize(256);  // the 192-byte block with the chord table (default 128)
+    Wire1.setBufferSize(512);  // the 192-byte block with the chord table (default 128)
     Wire1.begin(LINK_SDA, LINK_SCL, LINK_HZ);
     Wire1.setTimeOut(50);
     server.on("/", HTTP_GET, h_page);
     server.on("/api/status", HTTP_GET, h_status);
+    server.on("/api/hosts", HTTP_GET, h_hosts);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);
@@ -1345,6 +1440,7 @@ void setup() {
 void loop() {
     link_tick();
     radio_tick();
+    hcap_tick();
     if (ntp_want) {
         ntp_want = false;
         configTime(0, 0, "pool.ntp.org", "time.google.com");  // fw22: UTC; the page shows local time
