@@ -133,9 +133,9 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <g class="sn" id="mss"><rect x="-13" y="-16" width="26" height="32" rx="5"/><line x1="0" y1="-16" x2="0" y2="-42"/><path d="M0,-54 L-6.5,-41 L6.5,-41 Z"/><circle class="dot" r="3"/><circle class="hit" id="msh" cx="0" cy="-48" r="14"/></g>
 </svg><div class="flds">
 <div class="fld"><div class="lbl"><span>Angle</span><b id="anglev">–</b></div>
-<div class="row"><button class="sq" onclick="step('angle',-1)" aria-label="Angle down">−</button><input type="range" id="angle" min="-30" max="30" step="1" aria-label="Sensor angle"><button class="sq" onclick="step('angle',1)" aria-label="Angle up">+</button><button onclick="home('angle')">Reset to <span id="ahome">–</span>°</button></div></div>
+<div class="row"><button class="sq" onclick="step('angle',-1)" aria-label="Angle down">−</button><input type="range" id="angle" min="-30" max="30" step="1" autocomplete="off" aria-label="Sensor angle"><button class="sq" onclick="step('angle',1)" aria-label="Angle up">+</button><button onclick="home('angle')">Reset to <span id="ahome">–</span>°</button></div></div>
 <div class="fld"><div class="lbl"><span>Position</span><b id="posv">–</b></div>
-<div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div></div>
+<div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" autocomplete="off" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div></div>
 <p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where the reset chords put it. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
 
 <div class="card" id="lvl"><div class="hd"><h2>Level your swipes</h2></div>
@@ -225,9 +225,19 @@ if(dCol){const r=await post('/api/palette?c='+rs.map(r=>r.querySelector('input[t
 dCol=dDpi=false;hold=Date.now()+1800;dirty();toast('Sent to the mouse')}
 
 function setVal(k,v){if(v!=null)$(k).value=v;$(k+'v').textContent=v==null?'–':(k==='angle'?v+'°':v);drawSensor()}
-function send(k,v){post('/api/set?'+k+'='+v).then(r=>{if(!r.ok)say(r)})}
-function bindSlider(k){$(k).addEventListener('input',e=>{edit[k]=Date.now();$(k+'v').textContent=e.target.value+(k==='angle'?'°':'');drawSensor();clearTimeout(deb[k]);deb[k]=setTimeout(()=>send(k,e.target.value),150)})}
-function live(k,v){edit[k]=Date.now();setVal(k,v);clearTimeout(deb[k]);deb[k]=setTimeout(()=>send(k,v),150)}
+// fw21: a value goes to the mouse only once the page holds the mouse's real one, and a slider sends only right after a
+// person's touch, click or key on it. Before that the sliders sit at their empty defaults (angle 0, position 1), and a
+// browser bringing the page back (tab restore, a phone waking a background tab) fires input events that once sent those.
+let gest={},downK=null;
+function known(k){return !!S&&S[k]!=null}
+function mine(k,e){return e.isTrusted&&known(k)&&(downK===k||Date.now()-(gest[k]||0)<3000)}
+document.addEventListener('pointerdown',e=>{const k=e.target&&e.target.id;downK=k==='angle'||k==='pos'?k:null;if(downK)gest[downK]=Date.now()},true);
+document.addEventListener('pointermove',e=>{if(downK&&e.buttons)gest[downK]=Date.now()},true);
+['pointerup','pointercancel'].forEach(t=>document.addEventListener(t,()=>{if(downK)gest[downK]=Date.now();downK=null},true));
+document.addEventListener('keydown',e=>{const k=e.target&&e.target.id;if(k==='angle'||k==='pos')gest[k]=Date.now()},true);
+function send(k,v){if(!known(k))return;post('/api/set?'+k+'='+v).then(r=>{if(!r.ok)say(r)})}
+function bindSlider(k){$(k).addEventListener('input',e=>{if(!mine(k,e)){if(known(k))setVal(k,S[k]);return}edit[k]=Date.now();$(k+'v').textContent=e.target.value+(k==='angle'?'°':'');drawSensor();clearTimeout(deb[k]);deb[k]=setTimeout(()=>send(k,e.target.value),150)})}
+function live(k,v){if(!known(k))return;edit[k]=Date.now();setVal(k,v);clearTimeout(deb[k]);deb[k]=setTimeout(()=>send(k,v),150)}
 // sensor drawing: y0 = the sensor's spot at position 0, k = drawing units per position step (lower
 // positions are toward the front), dir = 1 draws a positive angle turned clockwise
 const MS={y0:162,k:.5,dir:1};
@@ -242,7 +252,7 @@ let msDrag=null,msOff=0;
 function msMove(e){if(!msDrag)return;const q=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse());
 if(msDrag==='pos'){const p=Math.max(-100,Math.min(101,Math.round((q.y-msOff-MS.y0)/MS.k)));if(p!==Number($('pos').value))live('pos',p)}
 else{const y=msY(Number($('pos').value)),a=Math.max(-30,Math.min(30,Math.round(Math.atan2(q.x-100,y-q.y)*180/Math.PI*MS.dir)));if(a!==Number($('angle').value))live('angle',a)}}
-function step(k,d){if(!S)return;const t=S.tune||{};let v=Number($(k).value);if(k==='angle')v+=d*(t.angle_step||1);else{const st=t.pos_step||5;v=d>0?Math.floor(v/st)*st+st:Math.ceil(v/st)*st-st}v=Math.max(Number($(k).min),Math.min(Number($(k).max),v));edit[k]=Date.now();setVal(k,v);send(k,v)}
+function step(k,d){if(!known(k))return;const t=S.tune||{};let v=Number($(k).value);if(k==='angle')v+=d*(t.angle_step||1);else{const st=t.pos_step||5;v=d>0?Math.floor(v/st)*st+st:Math.ceil(v/st)*st-st}v=Math.max(Number($(k).min),Math.min(Number($(k).max),v));edit[k]=Date.now();setVal(k,v);send(k,v)}
 function home(k){if(!S||!S.tune)return;const v=k==='angle'?S.tune.angle_home:S.tune.pos_home;edit[k]=Date.now();setVal(k,v);send(k,v)}
 
 function drawChords(){const t=S.tune;if(!t)return;$('chords').innerHTML='<li><b>Middle + Right</b>, tap: next DPI stage. Hold '+t.radio_hold_ms+' ms: Wi-Fi on or off.</li><li><b>Middle + Left</b>, tap: angle back to '+t.angle_home+'°. Hold '+t.pos_hold_ms+' ms: position back to '+t.pos_home+'.</li><li><b>Middle + Back</b> / <b>Forward</b>: position up / down by '+t.pos_step+'.</li><li><b>Middle held '+t.wheel_hold_ms+' ms, then wheel</b>: angle up / down by '+t.angle_step+'°.</li>'}
@@ -306,10 +316,13 @@ $('buda').style.width=pa+'%';$('budw').style.width=pw+'%';
 const s='Each 1 ms frame: '+Math.round(pa)+'% used on average, '+Math.round(pw)+'% at worst'+(v19?'':' (remapping only; Feather v19 measures the whole frame)')+'.';$('budt').textContent=s;$('bud').setAttribute('aria-label',s);
 const ps=$('pskip');ps.hidden=!v19;if(v19){ps.textContent='Frames skipped: '+pf.missed_1s+' in the last second · '+pf.missed_total+' since the Feather started (plugging in or switching to a device pauses it about half a second).';ps.classList.toggle('bad',pf.missed_1s>0)}}
 // recent actions (Feather v21): [age s, source, buttons, action, value], newest first
-const EVSRC=['','tap','hold','double tap','wheel up','wheel down'];
+const EVSRC=['','tap','hold','double tap','wheel up','wheel down'],DEV=['device','Windows','Android','iPhone','Mac','Linux','script'];
 function evText(e){const[age,src,b,a,v]=e,t=new Date(Date.now()-age*1000).toLocaleTimeString();let s,ang,stg=false;
 if(src>=1&&src<=5){s=BTN[b>>4]+' + '+(src>=4?'wheel '+(src===4?'up':'down'):BTN[b&15]+' '+EVSRC[src])+': '+ACT[a];ang=a>=8&&a<=10}
-else if(src===6){s=b===1?'Page: DPI stage':b===2?'Page: angle':b===3?'Page: position':'Page: command '+b;ang=b===2;stg=b===1}
+else if(src===6){s=b===1?'Page: DPI stage':b===2?'Page: angle':b===3?'Page: position':'Page: command '+b;ang=b===2;stg=b===1;
+// QT Py fw21: the request that matches it (same command and value, nearest in time) names the sender
+let m=null,dm=11;(S.sets||[]).forEach(x=>{const d=Math.abs(x[0]-age);if(x[1]===b&&x[2]===v&&d<dm){m=x;dm=d}});
+if(m)s=s.replace('Page:','Page ('+DEV[m[3]]+' '+m[4]+'):')}
 else{const n=b===1?'Angle':'Position';ang=b===1;s=src===7?n+' assumed (the mouse didn\'t answer)':src===8?n+': the mouse kept its own value (writes didn\'t take)':n+' sent again (the mouse woke)'}
 if(v!==127)s+=' → '+(stg?'stage '+(v+1):ang?v+'°':v);return t+'  '+s}
 function drawEvents(){const ev=S.events,box=$('evbox');box.hidden=!ev||!ev.length;if(!ev||!ev.length)return;$('evlast').textContent='Last change: '+evText(ev[0]);$('evlist').innerHTML=ev.map(e=>'<li>'+evText(e).replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</li>').join('')}

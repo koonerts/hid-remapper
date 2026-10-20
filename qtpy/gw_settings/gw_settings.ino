@@ -33,7 +33,7 @@
 #define STATUS_LEN 128  // Feather v14+ fills 64-127 (own crc); older ones send 0xFF there
 #define STATUS_FULL 256 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192)
-#define QT_FW 20        // this firmware's number, shown in /api/status
+#define QT_FW 21       // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -89,7 +89,19 @@ enum class Radio : uint8_t { OFF, JOINING, STA, AP };
 static Radio radio = Radio::OFF;
 static uint32_t radio_since = 0;
 static uint32_t last_http = 0;
-static uint8_t wmode = 0;          // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
+// fw21: who sent each /api/set. The Feather's recent-changes list only says "Page", so the QT Py keeps the sender
+// (address and kind of device) for the page to show next to it. RAM only, newest at set_head - 1.
+#define SET_LOG 8
+struct SetLog {
+    uint32_t at;  // millis()
+    uint8_t cmd;  // C_SET_STAGE / C_SET_ANGLE / C_SET_POS: the Feather's event names the same command
+    int8_t value;
+    uint8_t dev;  // 0 other, 1 Windows, 2 Android, 3 iPhone/iPad, 4 Mac, 5 Linux, 6 a script (PowerShell, curl, ...)
+    IPAddress ip;
+};
+static SetLog set_log[SET_LOG];
+static uint8_t set_n = 0, set_head = 0;
+static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
 // Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
 // on some routers (broadcast ARP and mDNS queries get lost while it dozes). /api/wifisleep sets it.
@@ -878,6 +890,14 @@ static void h_status() {
     } else {
         j += ",\"events\":null";
     }
+    // fw21: who sent the recent /api/set requests, newest first: [age s, command, value, device, "ip"]
+    j += ",\"sets\":[";
+    for (uint8_t k = 0; k < set_n; k++) {
+        const SetLog& e = set_log[(set_head + SET_LOG - 1 - k) % SET_LOG];
+        j += (k ? ",[" : "[") + String((millis() - e.at) / 1000) + "," + String(e.cmd) + "," + String(e.value) + "," + String(e.dev) + ",\"" +
+             e.ip.toString() + "\"]";
+    }
+    j += "]";
     // Feather v15+: its processing time per 1 ms frame over the last second (status bytes 84-89); v19+ also the
     // whole frame: ticks merged (frames never processed, 90 and 111-112) and, in 4 us steps, how long after its tick each
     // frame was done (113-114) and the SOF interrupt (115-116)
@@ -934,22 +954,57 @@ static bool arg_int(const char* name, long lo, long hi, long* out) {
     return true;
 }
 
+// fw21: the kind of device that sent this request (SetLog.dev), from its User-Agent
+static uint8_t ua_device() {
+    String ua = server.header("User-Agent");
+    if (!ua.length() || (ua.indexOf("PowerShell") >= 0) || (ua.indexOf("curl") >= 0) || (ua.indexOf("python") >= 0) || (ua.indexOf("Wget") >= 0)) {
+        return 6;
+    }
+    if (ua.indexOf("Android") >= 0) {
+        return 2;
+    }
+    if ((ua.indexOf("iPhone") >= 0) || (ua.indexOf("iPad") >= 0)) {
+        return 3;
+    }
+    if (ua.indexOf("Windows") >= 0) {
+        return 1;
+    }
+    if (ua.indexOf("Mac OS") >= 0) {
+        return 4;
+    }
+    return (ua.indexOf("Linux") >= 0) ? 5 : 0;
+}
+
+static void set_cmd(uint8_t cmd, long v) {
+    uint8_t b = (uint8_t) (int8_t) v;
+    bool ok = queue_cmd(cmd, &b, 1);
+    if (ok) {
+        SetLog& e = set_log[set_head];
+        e.at = millis();
+        e.cmd = cmd;
+        e.value = (int8_t) v;
+        e.dev = ua_device();
+        e.ip = server.client().remoteIP();
+        set_head = (set_head + 1) % SET_LOG;
+        if (set_n < SET_LOG) {
+            set_n++;
+        }
+    }
+    ok_json(ok);
+}
+
 // /api/set?stage=0..4 | angle=-30..30 | pos=-100..101
 static void h_set() {
     touch();
     long v;
-    uint8_t b;
     if (arg_int("stage", 0, 4, &v)) {
-        b = v;
-        return ok_json(queue_cmd(C_SET_STAGE, &b, 1));
+        return set_cmd(C_SET_STAGE, v);
     }
     if (arg_int("angle", -30, 30, &v)) {
-        b = (uint8_t) (int8_t) v;
-        return ok_json(queue_cmd(C_SET_ANGLE, &b, 1));
+        return set_cmd(C_SET_ANGLE, v);
     }
     if (arg_int("pos", -100, 101, &v)) {
-        b = (uint8_t) (int8_t) v;
-        return ok_json(queue_cmd(C_SET_POS, &b, 1));
+        return set_cmd(C_SET_POS, v);
     }
     ok_json(false, "bad value");
 }
@@ -1200,6 +1255,8 @@ void setup() {
     server.on("/api/chords", HTTP_POST, h_chords);
     server.on("/api/update", HTTP_POST, h_update_done, h_update_upload);
     server.onNotFound(h_not_found);
+    static const char* hdrs[] = { "User-Agent" };  // fw21: SetLog.dev
+    server.collectHeaders(hdrs, 1);
     bool resume = prefs.getBool("resume", false);  // restarted by an update: back onto Wi-Fi
     if (resume) {
         prefs.putBool("resume", false);
