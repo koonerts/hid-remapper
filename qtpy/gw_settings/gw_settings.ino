@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 32      // this firmware's number, shown in /api/status
+#define QT_FW 33      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -81,6 +81,7 @@ static uint8_t last_toggles = 0;
 static bool feather_init_done = false;  // tuning/palette pushed since the Feather (re)started
 // link diagnostics (/api/status "diag")
 static uint32_t d_polls = 0, d_ok = 0, d_short = 0, d_bad = 0, d_i2c_resets = 0;
+static uint32_t d_rc_fail = 0, d_rc_ms = 0;  // fw33: full-block reads that failed, and the longest one (ms)
 static uint8_t d_last_n = 0, d_b0 = 0, d_b1 = 0;
 static bool last_answered = false;  // the last read returned a full block, valid or not
 // the Feather's chord table (status bytes 128-191), as last read
@@ -121,6 +122,10 @@ struct __attribute__((packed)) EditLog {  // 32 bytes
 };
 static EditLog edit_log[EDIT_LOG];  // edit_log[0] is the newest
 static uint8_t edit_n = 0;
+// fw33: the queued command each edit went with (RAM, this boot): one the Feather never acknowledged marks its entry "not
+// applied" (dev bit 7) instead of leaving it in the history as made
+static uint16_t edit_seq[EDIT_LOG];
+static uint16_t q_fresh = 0;  // 0x100 | seq of the command queued by the current request, taken by the next log_edit
 static uint32_t clk_base = 0;  // Unix time at millis() 0, from a page request's "t"; 0 = not known yet this boot
 static bool ntp_want = false;
 #define HCAP_KEEP 8
@@ -154,7 +159,13 @@ static uint32_t auto_sig = 0;     // this power-on's host, once known
 static uint8_t auto_want = 0xFF;  // the stage (0-4) to set, 0xFF = nothing to do
 static uint8_t auto_tries = 0;
 static uint32_t auto_at = 0;
-static uint8_t auto_state = 0;  // 0 waiting, 1 sent, 2 confirmed, 3 gave up, 4 no stage for this host
+static uint8_t auto_state = 0;  // 0 waiting, 1 sent, 2 confirmed, 3 gave up, 4 no stage for this host; fw33: 5 checking
+                                // with the mouse, 6 kept (only the QT Py restarted)
+static uint8_t auto_cap = 0;      // fw33: the capture (its number) auto_sig came from; a newer one this power-on is checked too
+static uint8_t auto_from = 0xFF;  // fw33: the mouse's stage before the first send (0xFF = unknown): logged only on a change
+static uint8_t auto_probe_n = 0;  // fw33: the probe count when the stage register read went out
+static uint16_t auto_lost = 0;    // fw33: rounds the mouse didn't answer (asleep): written again, not counted as tries
+static bool feather_ran = false;  // fw33: the Feather was already set up at this boot's first status (only the QT Py restarted)
 // fw26: sensitivity per direction (Feather v24, like Corsair's PureVector): 8 gains in per mille, one per 45 degrees
 // clockwise from "right" on screen, and the hosts they apply on (by signature). NVS "dgain". The QT Py keeps the
 // Feather's copy right: it sends the table, on for an enabled host and off otherwise, whenever the Feather's status
@@ -195,6 +206,7 @@ static uint32_t tdpi_read_at = 0;
 static uint8_t tdpi_stage = 0xFF;   // the stage the test lowered (0xFF = not recorded: use the current one)
 static uint8_t tdpi_phase = 0;      // 0 send the table, 1 read it back, 2 wait for the answer
 static uint8_t tdpi_probe_n = 0;
+static uint8_t tdpi_bad = 0;        // fw33: rounds the mouse answered with another value; 10 = give up (it can't store it)
 static uint32_t tdpi_phase_at = 0;
 static String calib_diag;           // fw29: the page's last calibration diagnostics (RAM only), GET /api/calibdiag
 static uint8_t calib_n = 0;
@@ -294,6 +306,7 @@ static bool queue_cmd(uint8_t cmd, const uint8_t* payload, uint8_t len) {
     }
     Cmd& c = cmdq[(cq_head + cq_n) % CMDQ];
     c.seq = next_seq;
+    q_fresh = 0x100 | c.seq;
     next_seq = (next_seq == 255) ? 1 : next_seq + 1;
     c.f[0] = cmd;
     c.f[1] = c.seq;
@@ -320,6 +333,18 @@ static void send_head() {
     cmd_tries++;
 }
 
+
+static void edit_dropped(uint8_t seq) {
+    for (uint8_t k = 0; k < edit_n; k++) {
+        if ((edit_seq[k] == (0x100 | seq)) && (edit_log[k].boot == (uint16_t) b_boots) && (millis() - edit_log[k].ms < 30000)) {
+            edit_log[k].dev |= 0x80;
+            edit_seq[k] = 0;
+            prefs.putBytes("edits", edit_log, sizeof(EditLog) * edit_n);
+            return;
+        }
+    }
+}
+
 static void pump_cmds() {
     if (cq_n == 0) {
         return;
@@ -337,6 +362,7 @@ static void pump_cmds() {
     }
     if ((cmd_sent_at == 0) || (millis() - cmd_sent_at >= CMD_RETRY_MS)) {
         if (cmd_tries >= CMD_TRIES) {  // give up on this one
+            edit_dropped(c.seq);
             cq_head = (cq_head + 1) % CMDQ;
             cq_n--;
             cmd_tries = 0;
@@ -410,20 +436,26 @@ static void read_chords() {
     if (len == 512) {
         Wire1.setTimeOut(150);  // 512 bytes take about 92 ms at 50 kHz; polls keep the short timeout
     }
+    uint32_t t0 = millis();
     size_t n = Wire1.requestFrom((uint16_t) LINK_ADDR, len);
     if (len == 512) {
         Wire1.setTimeOut(50);
+    }
+    if (millis() - t0 > d_rc_ms) {
+        d_rc_ms = millis() - t0;
     }
     if (n != len) {
         while (Wire1.available()) {
             Wire1.read();
         }
+        d_rc_fail++;
         return;
     }
     for (size_t i = 0; i < len; i++) {
         b[i] = Wire1.read();
     }
     if ((b[0] != 'G') || (crc8(b, 63) != b[63]) || (b[128] != 'C') || (crc8(b + 128, 63) != b[191]) || (b[130] > CH_MAX)) {
+        d_rc_fail++;
         return;
     }
     memcpy(ch, b + 128, 64);
@@ -450,6 +482,18 @@ static void hcap_take(const uint8_t* u) {
     if (same && (hcap[0].blk[2] == u[2])) {
         return;  // nothing new
     }
+    if (same) {  // fw33: a later request (an LED report, a tool): save only when the part kept here changed, not its counters
+        uint8_t k = (u[3] <= HCAP_ENTRIES) ? u[3] : HCAP_ENTRIES;
+        bool kept = (hcap[0].blk[3] != u[3]) || memcmp(hcap[0].blk + 4, u + 4, 3) || ((hcap[0].blk[9] ^ u[9]) & 1) ||
+                    memcmp(hcap[0].blk + 16, u + 16, 8 * k);
+        memcpy(hcap[0].blk, u, 256);
+        if (kept) {
+            hcap_dirty = true;
+            hcap_changed_at = millis();
+            hcap_seq++;
+        }
+        return;
+    }
     // fw24: only the QT Py restarted (an update): the Feather still holds the capture already saved, perhaps with more
     // requests since. Same capture number, resets and ms to configuration, and it starts with the saved requests: take
     // it over (a real new power-on differs in its timing at least).
@@ -459,6 +503,9 @@ static void hcap_take(const uint8_t* u) {
             k = HCAP_ENTRIES;
         }
         if (!memcmp(hcap[0].blk + 16, u + 16, 8 * k)) {
+            if (!hcap[0].t) {
+                hcap[0].ms = millis();  // fw33: the old boot's millis() would date it wrongly once the clock is known
+            }
             hcap[0].boot = (uint16_t) b_boots;
             memcpy(hcap[0].blk, u, 256);
             hcap_dirty = true;
@@ -688,6 +735,9 @@ static void push_saved() {
 static void link_tick() {
     static uint32_t last_poll = 0;
     uint32_t period = (radio == Radio::OFF) ? 2 * POLL_MS : POLL_MS;
+    if (cq_n > 0) {
+        period = 10;  // fw33: a command waits for its ack (the Feather applies it within a few ms): don't sit a full period
+    }
     if (millis() - last_poll < period) {
         return;
     }
@@ -714,6 +764,11 @@ static void link_tick() {
     }
     if (!ok) {
         return;
+    }
+    static bool first_status = true;
+    if (first_status) {  // fw33: tuning already set = the Feather kept running and only the QT Py restarted (OTA, crash)
+        first_status = false;
+        feather_ran = st[2] & 1;
     }
     if (chords_supported() && (!ch_ok || (ch[1] != st[124]) || (events_supported() && ((st[117] >> 4) != ev_nib)))) {
         read_chords();
@@ -766,6 +821,7 @@ static uint32_t now_unix() {
 }
 
 static void touch() {
+    q_fresh = 0;
     last_http = millis();
     clock_sync();
 }
@@ -1040,7 +1096,7 @@ static void h_chords() {
 static void h_status() {
     clock_sync();
     String j;
-    j.reserve(2200);
+    j.reserve(4096);  // fw33: the body is ~3-3.6 KB (was 2200: dozens of reallocs per poll)
     j += "{\"link\":";
     j += link_up ? "true" : "false";
     if (st_ok) {
@@ -1109,7 +1165,7 @@ static void h_status() {
              ",\"got\":" + String(sup && (evb[50] & 2) ? "true" : "false") + ",\"want\":" + String(dg_wanted() ? "true" : "false") +
              ",\"sends\":" + String(dg_sends) + "}";
     }
-    j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + "}";  // fw28: the calibration's temporary DPI
+    j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
     {
         char h[12];  // fw24: this power-on's host signature, the automatic stage's state (auto_state) and stage (1-5, 0 none)
         snprintf(h, sizeof(h), "%08lx", (unsigned long) auto_sig);
@@ -1169,7 +1225,7 @@ static void h_status() {
     j += ",\"qt_fw\":" + String(QT_FW);
     j += ",\"diag\":{\"polls\":" + String(d_polls) + ",\"ok\":" + String(d_ok) + ",\"short\":" + String(d_short) +
          ",\"bad\":" + String(d_bad) + ",\"i2c_resets\":" + String(d_i2c_resets) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
-         ",\"up_s\":" + String(millis() / 1000) + "}";
+         ",\"rc_fail\":" + String(d_rc_fail) + ",\"rc_ms\":" + String(d_rc_ms) + ",\"up_s\":" + String(millis() / 1000) + "}";
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
     j += (radio == Radio::STA) ? "sta" : (radio == Radio::AP) ? "ap" : (radio == Radio::JOINING) ? "joining" : "off";
@@ -1229,6 +1285,9 @@ static uint8_t ua_device() {
 // fw22: record an edit the Feather accepted into its queue, newest first, and save the log
 static void log_edit_as(uint8_t kind, const String& text, uint8_t dev, uint32_t ip) {
     memmove(edit_log + 1, edit_log, sizeof(EditLog) * (EDIT_LOG - 1));
+    memmove(edit_seq + 1, edit_seq, sizeof(edit_seq[0]) * (EDIT_LOG - 1));
+    edit_seq[0] = (dev == 7) ? 0 : q_fresh;
+    q_fresh = 0;
     EditLog& e = edit_log[0];
     memset(&e, 0, sizeof(e));
     e.t = now_unix();
@@ -1307,28 +1366,91 @@ static HostProf* hprof_at(int k) {
     return (k >= 0) ? &hprof[k] : nullptr;
 }
 
+// fw33 (audit 10-21): the host comes from the first capture with a signature, or from a later one this power-on whose
+// signature differs (a UEFI enumeration, then the OS's). The stage counts as set only once the MOUSE reports it (a raw read
+// of its stage register 0x0004): the Feather echoes a stage at once, even when a sleeping mouse lost the write. No answer =
+// asleep: write it again every few seconds, not counted as a try. After a QT Py-only restart (the Feather already set up)
+// the stage the user has now is kept.
 static void auto_tick() {
-    if (!auto_sig && hcap_n && (hcap[0].boot == (uint16_t) b_boots)) {
-        auto_sig = hcap_sig(hcap[0]);
-        if (auto_sig) {
-            HostProf* p = hprof_at(hprof_find(auto_sig));
-            auto_want = (p && p->stage >= 1 && p->stage <= 5) ? p->stage - 1 : 0xFF;
-            auto_state = (auto_want == 0xFF) ? 4 : 0;
+    if (hcap_n && (hcap[0].boot == (uint16_t) b_boots) && (hcap[0].blk[1] != auto_cap)) {
+        uint32_t sig = hcap_sig(hcap[0]);
+        if (sig) {
+            auto_cap = hcap[0].blk[1];
+            if (sig != auto_sig) {
+                bool first = !auto_sig;
+                auto_sig = sig;
+                HostProf* p = hprof_at(hprof_find(sig));
+                auto_want = (p && p->stage >= 1 && p->stage <= 5) ? p->stage - 1 : 0xFF;
+                auto_state = (auto_want == 0xFF) ? 4 : (first && feather_ran) ? 6 : 0;
+                auto_tries = 0;
+                auto_lost = 0;
+                auto_at = 0;
+                auto_from = 0xFF;
+            }
         }
     }
-    if ((auto_want == 0xFF) || (auto_state >= 2) || !link_up || !st_ok || !(st[3] & 1)) {
+    if ((auto_want == 0xFF) || ((auto_state != 0) && (auto_state != 1) && (auto_state != 5)) || !link_up || !st_ok || !(st[3] & 1)) {
         return;  // nothing to set, done, or the Warg isn't there yet
     }
+    if (auto_state == 5) {
+        if (st[4] != auto_want) {
+            // the Feather's stage moved off it: a lost write the Feather noticed when it read the mouse again (wake), or a
+            // change by hand within these few seconds of the switch. Write it again (a try; 6 at most)
+            auto_state = 0;
+            auto_at = millis();
+            return;
+        }
+        bool mine = (st[91] != auto_probe_n) && ((st[92] & 3) == 2) && (st[93] >= 8) && (st[97] == 0x00) && (st[98] == 0x04);
+        if (!mine) {
+            if (millis() - auto_at > 3000) {  // no answer (asleep?): write it again
+                if (++auto_lost >= 200) {
+                    auto_state = 3;  // about 15 min
+                    return;
+                }
+                if (auto_tries) {
+                    auto_tries--;
+                }
+                auto_state = 0;
+                auto_at = 0;
+            }
+            return;
+        }
+        if (st[100] == auto_want) {
+            auto_state = 2;
+            if (auto_from != auto_want) {  // fw33: only a real change goes into the log (it holds 20)
+                HostProf* p = hprof_at(hprof_find(auto_sig));
+                log_edit_as(EK_AUTO_STAGE, String(p ? p->name : "") + "=" + String(auto_want), 7, 0);
+            }
+            return;
+        }
+        auto_state = 0;  // the mouse has another stage: write it again (a try)
+        auto_at = millis();
+        return;
+    }
     if ((auto_state == 1) && (st[4] == auto_want)) {
-        auto_state = 2;
-        HostProf* p = hprof_at(hprof_find(auto_sig));
-        log_edit_as(EK_AUTO_STAGE, String(p ? p->name : "") + "=" + String(auto_want), 7, 0);
+        if (tdpi_restore || (cq_n > 0)) {
+            return;  // the Feather has one probe slot: after the DPI restore's
+        }
+        uint8_t r[16] = { 0x08, 0, 0x00, 0x04, 2 };  // read 2 bytes at 0x0004: [stage, 0x55 - stage]
+        uint8_t sum = 8;
+        for (int i = 0; i < 15; i++) {
+            sum += r[i];
+        }
+        r[15] = 0x55 - sum;
+        auto_probe_n = st[91];
+        if (queue_cmd(C_RAW, r, 16)) {
+            auto_state = 5;
+            auto_at = millis();
+        }
         return;
     }
     if ((cq_n == 0) && (millis() - auto_at >= 1500)) {
         if (auto_tries >= 6) {
             auto_state = 3;
             return;
+        }
+        if ((auto_from == 0xFF) && (st[3] & 8)) {
+            auto_from = st[4];  // the stage read from the mouse at power-on
         }
         uint8_t b = auto_want;
         if (queue_cmd(C_SET_STAGE, &b, 1)) {
@@ -1415,7 +1537,9 @@ static void h_hostprof() {
         auto_want = (stage >= 1) ? stage - 1 : 0xFF;
         auto_state = (auto_want == 0xFF) ? 4 : 0;
         auto_tries = 0;
+        auto_lost = 0;
         auto_at = 0;
+        auto_from = 0xFF;
     }
     ok_json(true);
 }
@@ -1457,6 +1581,9 @@ static uint8_t dg_crc() {  // as the Feather computes it: crc8 of the 16 gain by
 static void dg_tick() {
     if (!link_up || !dg_supported() || (cq_n > 0)) {
         return;
+    }
+    if (!auto_sig && (millis() < 6000)) {
+        return;  // fw33: the host isn't known yet at power-on: wait for it rather than send "off", then "on"
     }
     if (dg_reread) {
         if (millis() - dg_sent_at >= 300) {
@@ -1616,10 +1743,18 @@ static bool tdpi_send(const uint16_t* v) {
 static void h_tempdpi() {
     touch();
     if (server.hasArg("restore")) {
-        if (tdpi_active) {
+        if (tdpi_active && server.hasArg("force")) {  // fw33: stop owing it (the table stays as the mouse has it)
+            tdpi_restore = false;
+            tdpi_active = false;
+            tdpi_phase = 0;
+            prefs.remove("tdpi");
+            prefs.remove("tdpis");
+            log_edit(EK_TEMP_DPI, "dropped");
+        } else if (tdpi_active) {
             tdpi_restore = true;
             tdpi_sent_at = 0;
             tdpi_phase = 0;
+            tdpi_bad = 0;
         }
         return ok_json(true);
     }
@@ -1644,6 +1779,7 @@ static void h_tempdpi() {
         return ok_json(false, "busy, try again");  // a queued DPI or stage change would make the copy below stale
     }
     if (!tdpi_active) {
+        tdpi_bad = 0;
         tdpi_stage = st[4];
         prefs.putUChar("tdpis", tdpi_stage);
         for (int i = 0; i < 5; i++) {
@@ -1700,8 +1836,8 @@ static void tdpi_tick() {
         tdpi_sent_at = 0;
         tdpi_phase = 0;
     }
-    if (!tdpi_restore || !link_up || !st_ok || !st_ext || !(st[3] & 1) || (cq_n > 0)) {
-        return;
+    if (!tdpi_restore || !link_up || !st_ok || !st_ext || !(st[3] & 1) || (cq_n > 0) || (auto_state == 5)) {
+        return;  // (fw33: not while the automatic stage's read uses the Feather's one probe slot)
     }
     if (!(st[3] & 8)) {  // stage not known yet (just powered on): read the mouse first
         if (millis() - tdpi_read_at >= 5000) {
@@ -1744,6 +1880,15 @@ static void tdpi_tick() {
             log_edit_as(EK_TEMP_DPI, "restored", 7, 0);
             return;
         }
+        if (mine && (++tdpi_bad >= 10)) {  // fw33: answered with another value 10 times: the mouse can't store it (clamped?)
+            tdpi_restore = false;
+            tdpi_active = false;
+            tdpi_phase = 0;
+            prefs.remove("tdpi");
+            prefs.remove("tdpis");
+            log_edit_as(EK_TEMP_DPI, "unverified " + String(x), 7, 0);
+            return;
+        }
         tdpi_phase = 0;  // not there yet: send it again
     }
 }
@@ -1751,8 +1896,10 @@ static void tdpi_tick() {
 // POST /api/calibdiag (body: text, 4000 chars at most) | GET: the page's last calibration diagnostics, RAM only (fw29)
 static void h_calibdiag_post() {
     touch();
-    String d = server.arg("plain");
-    calib_diag = d.substring(0, 4000);
+    if (server.arg("plain").length() > 4000) {
+        return ok_json(false, "diagnostics over 4000 chars");  // fw33: not cut into broken JSON
+    }
+    calib_diag = server.arg("plain");
     ok_json(true);
 }
 

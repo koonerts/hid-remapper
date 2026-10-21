@@ -230,7 +230,9 @@ const $=id=>document.getElementById(id);
 const TUNE=[["angle_step","as","Angle step (°)",1,10],["pos_step","ps","Position step",1,25],["angle_home","ah","Angle reset target (°)",-30,30],["pos_home","ph","Position reset target",-100,101],["flash_ms","fl","Light flash length (ms)",100,5000],["pos_hold_ms","poh","Middle + Left hold for position reset (ms)",150,3000],["wheel_hold_ms","wh","Middle hold before the wheel steps angle (ms)",0,3000],["radio_hold_ms","rh","Middle + Right hold for Wi-Fi (ms)",200,3000]];
 // QT Py fw22: every request carries this browser's clock, so the edits it saves get real times
 function tq(u){return u+(u.includes('?')?'&':'?')+'t='+Math.floor(Date.now()/1000)}
-function post(u,b){return fetch(tq(u),{method:'POST',body:b}).then(r=>r.json()).catch(()=>({ok:false,err:'no answer'}))}
+// QT Py fw33: every request gives up after a few seconds (a request in flight when the ATEN cuts the power hung for minutes)
+function fetchJ(u,o,ms){const c=new AbortController(),tm=setTimeout(()=>c.abort(),ms||4000);return fetch(u,Object.assign({signal:c.signal},o||{})).then(r=>r.json()).finally(()=>clearTimeout(tm))}
+function post(u,b){return fetchJ(tq(u),{method:'POST',body:b}).catch(()=>({ok:false,err:'no answer'}))}
 function toast(m,bad){const t=$('toast');t.textContent=m;t.className='toast show'+(bad?' bad':'');clearTimeout(tt);tt=setTimeout(()=>{t.className='toast'},2400)}
 function say(r,m){toast(r.ok?m:'Failed: '+(r.err||'error'),!r.ok);return r}
 function ink(c){const n=parseInt(c,16);return ((n>>16)*.299+(n>>8&255)*.587+(n&255)*.114)>140?'#111':'#fff'}
@@ -356,7 +358,7 @@ $('ptb').innerHTML=rows.map(r=>'<tr><td'+(r[4]?' class="sub"':'')+'>'+(r[4]?'of 
 const a=v19?pf.usb_avg_us+pf.tick_avg_us:pf.avg_us,w=v19?pf.usb_max_us+pf.tick_max_us:pf.max_us,pa=Math.min(100,a/10),pw=Math.min(100,w/10);
 $('buda').style.width=pa+'%';$('budw').style.width=pw+'%';
 const s='Each 1 ms frame: '+Math.round(pa)+'% used on average, '+Math.round(pw)+'% at worst'+(v19?'':' (remapping only; Feather v19 measures the whole frame)')+'.';$('budt').textContent=s;$('bud').setAttribute('aria-label',s);
-const ps=$('pskip');ps.hidden=!v19;if(v19){ps.textContent='Frames skipped: '+pf.missed_1s+' in the last second · '+pf.missed_total+' since the Feather started (plugging in or switching to a device pauses it about half a second).';ps.classList.toggle('bad',pf.missed_1s>0)}}
+const ps=$('pskip');ps.hidden=!v19;if(v19){ps.textContent='Frames skipped: '+(pf.missed_1s>=255?'255+':pf.missed_1s)+' in the last second · '+pf.missed_total+' since the Feather started (plugging in or switching to a device pauses it about half a second).';ps.classList.toggle('bad',pf.missed_1s>0)}}
 // recent actions (Feather v21): [age s, source, buttons, action, value], newest first
 const EVSRC=['','tap','hold','double tap','wheel up','wheel down'],DEV=['device','Windows','Android','iPhone','Mac','Linux','script','automatic'];
 function evText(e){const[age,src,b,a,v]=e;let s,ang,stg=false;
@@ -368,15 +370,15 @@ if(v!==127)s+=' → '+(stg?'stage '+(v+1):ang?v+'°':v);return s}
 // [Unix time or 0, age s this boot or -1, kind, device, ip, text]
 const EDOPT={poll:['polling rate',' Hz'],lod:['lift-off',' mm'],snap:['Angle Snap'],sync:['Motion Sync'],spdt:['SPDT on']};
 function edAt(x){return x[0]?x[0]*1000:x[1]>=0?Date.now()-x[1]*1000:0}
-function edText(x){const[,,k,d,ip,v]=x;let s;
+function edText(x){const[,,k,d0,ip,v]=x,d=d0&127,na=d0&128?' (not applied: the Feather never took it)':'';let s;
 if(k===1)s='DPI stage → stage '+(Number(v)+1);else if(k===2)s='angle → '+v+'°';else if(k===3)s='position → '+v;
 else if(k===4)s='DPI values';else if(k===5)s='stage colours';else if(k===6)s='chord settings (steps, reset values, hold times)';
 else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap'||o==='sync'?(w==='1'?'on':'off'):o==='spdt'?['none','left button','right button','both buttons'][w]||w:w+(n[1]||''))}
 else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';
-else if(k===10){const[n,w]=v.split('=');return 'Auto ('+(n||'host')+'): DPI stage → stage '+(Number(w)+1)}
+else if(k===10){const[n,w]=v.split('=');return 'Auto ('+(n||'host')+'): DPI stage → stage '+(Number(w)+1)+na}
 else if(k===11){const[n,w]=v.split('=');s=(n||'a host')+' → '+(w==='0'?'leave the stage':'stage '+w)}
-else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':'calibration DPI → '+v+' for the test';else if(k===14)s='refused '+v+' from an out-of-date page (reload that tab)';else s='edit '+k;
-return (d===7?'QT Py: ':'Page ('+DEV[d]+' '+ip+'): ')+s}
+else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':v==='dropped'?'calibration DPI: stopped putting the table back':/^unverified/.test(v)?'calibration DPI: gave up putting the table back (the mouse kept reporting '+v.slice(11)+')':'calibration DPI → '+v+' for the test';else if(k===14)s='refused '+v+' from an out-of-date page (reload that tab)';else s='edit '+k;
+return (d===7?'QT Py: ':'Page ('+DEV[d]+' '+ip+'): ')+s+na}
 // QT Py fw26 + Feather v24: sensitivity per direction (like Corsair's PureVector). Direction k = 0..7 every 45 degrees
 // clockwise on screen from "right" (screen y grows downwards, as in the Feather's atan2).
 const DGA=['→','↘','↓','↙','←','↖','↑','↗'],DGN=['right','down-right','down','down-left','left','up-left','up','up-right'];
@@ -405,7 +407,7 @@ gs.forEach((g,k)=>{const a=k*Math.PI/4,r=dgR(g);s+='<circle class="hd" data-k="'
 $('dgsvg').innerHTML=s;
 for(let k=0;k<8;k++){const i=$('dgv'+k);if(document.activeElement!==i)i.value=gs[k].toFixed(2)}
 const hs=S.hosts||[];$('dghosts').innerHTML=hs.length?hs.map(x=>{const on=d.hosts.includes(x[0]);return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'">'+esc(hostName(x))+'</button>'}).join(''):'<span class="mut">no host recognised yet</span>';
-$('dghosts').querySelectorAll('button').forEach(b=>b.onclick=()=>{const on=d.hosts.includes(b.dataset.sig),h=on?d.hosts.filter(x=>x!==b.dataset.sig):d.hosts.concat([b.dataset.sig]);dgPost(dgSaved(),h)})}
+$('dghosts').querySelectorAll('button').forEach(b=>b.onclick=()=>{const cur=S.dg.hosts,on=cur.includes(b.dataset.sig),h=on?cur.filter(x=>x!==b.dataset.sig):cur.concat([b.dataset.sig]);S.dg.hosts=h;dgKey='';drawDG();dgPost(dgSaved(),h)})}  // fw33: from the hosts at tap time (two quick taps lost the first)
 function dgPost(gs,hosts){return post('/api/dirgain?g='+gs.map(g=>Math.round(g*1000)).join(',')+'&hosts='+hosts.join(',')).then(r=>{say(r,'Saved');dgKey='';return r})}
 function dgSave(){if(!dgEdit||!S||!S.dg)return;dgPost(dgEdit,S.dg.hosts).then(r=>{if(r.ok)dgEdit=null})}
 function dgRevert(){dgEdit=null;dgKey='';drawDG()}
@@ -433,7 +435,7 @@ function dgFlat(){dgEdit=[1,1,1,1,1,1,1,1];dgKey='';drawDG()}
 // gains this host applies now, so a second run refines the first.
 const CBHR=22,CBTR=24;let cb=null;
 function cbMsg(m){const e=$('cbmsg');e.textContent=m||'';e.hidden=!m}
-function cbLens(){const v=String($('cblen').value||'').split(/[\s,;]+/).map(Number).filter(x=>x>=1&&x<=40);return v.length?[...new Set(v)].sort((a,b)=>a-b).slice(0,4):[10]}
+function cbLens(){const v=String($('cblen').value||'').split(/[\s,;]+/).map(Number).filter(x=>x>=1&&x<=40);if(!v.length)return[10];const u=[...new Set(v)].sort((a,b)=>a-b);return u.length>4?u.slice(0,3).concat(u.slice(-1)):u}  // fw33: the longest sets the test DPI: keep it
 function cbRpl(){const v=parseInt($('cbrpl').value,10);return v>=1&&v<=8?v:3}
 function cbPlan(lens){const short=Math.min(screen.width,screen.height),dpr=devicePixelRatio||1,cur=S.dpi[S.stage][0],Lmax=lens[lens.length-1];
 let dpi=Math.round(short/3*dpr/(Lmax/2.54));if(dpi>cur)dpi=cur;if(dpi<50)dpi=50;return{dpi,cur,temp:dpi!==cur,short,Ds:lens.map(L=>L/2.54*dpi/dpr)}}
@@ -442,13 +444,14 @@ if(!S.dpi_known||S.stage==null||!S.dpi||!S.dpi[S.stage]||!S.dpi[S.stage][0]){cbM
 if(S.tdpi&&(S.tdpi.restoring||S.tdpi.on)){cbMsg('The last test\'s DPI is still being put back: try again in a few seconds.');return}
 const lens=cbLens(),plan=cbPlan(lens);try{localStorage.setItem('cblen',$('cblen').value);localStorage.setItem('cbrpl',$('cbrpl').value)}catch(e){}
 if(plan.Ds[plan.Ds.length-1]>.42*plan.short){cbMsg('A '+lens[lens.length-1]+' cm flick doesn\'t fit on this screen even at 50 DPI.');return}
+if(plan.Ds[0]<80){cbMsg('A '+lens[0]+' cm flick would be only '+Math.round(plan.Ds[0])+' pixels next to '+lens[lens.length-1]+' cm ones on this screen, too short to measure: use lengths closer together.');return}  // fw33
 const w=$('cbwrap');cb={lens,Ds:plan.Ds,dpi:plan.dpi,cur:plan.cur,temp:plan.temp,rounds:cbRpl()*lens.length,round:0,li:0,order:[],i:0,phase:'wait',p:{x:innerWidth/2,y:innerHeight/2},fl:null,data:[],skip:0,dts:[],dte:[],why:{},traces:[],
-g:S.dg.on?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1],raw:false,geo:null,fs:false,keep:0};
+g:S.dg.on?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1],gOff:!S.dg.on&&!S.dg.g.every(v=>v===1000),raw:false,geo:null,fs:false,keep:0,tp:null};const me=cb;cbLoadRuns();
 w.classList.add('on');if(w.requestFullscreen)w.requestFullscreen().then(()=>{if(cb)cb.fs=true;cbGeoReset()}).catch(()=>{});cbDraw();  // fullscreen only inside the click
-const start=()=>{if(!cb)return;cbRound();cb.phase='home';cbDraw()};if(!plan.temp){start();return}
-post('/api/tempdpi?dpi='+plan.dpi).then(r=>{if(!cb)return;if(!r.ok){cbStop(false);cbMsg('Couldn\'t lower the DPI for the test: '+(r.err||'no answer'));return}
-cb.keep=setInterval(()=>post('/api/tempdpi?keep=1').then(r=>{if(cb&&r&&!r.ok&&r.err!=='no answer'){const m=cb;cbStop(m.data.length>=8);cbMsg('The QT Py put the DPI back during the test, so the run stopped.')}}),3000);const t0=Date.now(),wait=()=>{if(!cb)return;
-if(S.dpi&&S.stage!=null&&S.dpi[S.stage]&&S.dpi[S.stage][0]===plan.dpi){start();return}
+const start=()=>{if(cb!==me)return;cbRound();cb.phase='home';cbDraw()};if(!plan.temp){start();return}
+me.tp=post('/api/tempdpi?dpi='+plan.dpi).then(r=>{if(cb!==me)return;if(!r.ok){cbStop(false);cbMsg('Couldn\'t lower the DPI for the test: '+(r.err||'no answer'));return}
+me.keep=setInterval(()=>{if(cb!==me){clearInterval(me.keep);return}post('/api/tempdpi?keep=1').then(r=>{if(cb===me&&r&&!r.ok&&r.err!=='no answer'){cbStop(me.data.length>=8);cbMsg('The QT Py put the DPI back during the test, so the run stopped.')}})},3000);const t0=Date.now(),wait=()=>{if(cb!==me)return;
+const set=S.tdpi&&S.tdpi.on&&S.tdpi.dpi||plan.dpi;if(S.dpi&&S.stage!=null&&S.dpi[S.stage]&&S.dpi[S.stage][0]===set){if(set!==me.dpi){me.Ds=me.Ds.map(D=>D*set/me.dpi);me.dpi=set;if(me.Ds[me.Ds.length-1]>.42*plan.short){cbStop(false);cbMsg('The QT Py set '+set+' DPI (it keeps Y at 50 or more), and the longest flick no longer fits: use shorter lengths.');return}}start();return}  // fw33
 if(Date.now()-t0>6000){cbStop(false);cbMsg('The mouse didn\'t take the test DPI (asleep?): move it and try again.');return}setTimeout(wait,250)};wait()})}
 function cbRound(){cb.round++;cb.li=(cb.round-1)%cb.lens.length;cb.i=0;const o=[0,1,2,3,4,5,6,7];for(let i=7;i>0;i--){const j=Math.floor(Math.random()*(i+1));[o[i],o[j]]=[o[j],o[i]]}cb.order=o}
 function cbGeo(){if(cb&&cb.geo)return cb.geo;const W=$('cbc').clientWidth,H=$('cbc').clientHeight,g={W,H,cx:W/2,cy:H/2};if(cb)cb.geo=g;return g}
@@ -461,7 +464,7 @@ function cbMove(e){if(!cb)return;const now=performance.now(),evs=e.getCoalescedE
 if(cb.fl){const s=cb.fl.s;if(s.length){cb.dts.push(tq-s[s.length-1][0]);cb.dte.push(q.timeStamp-cb.fl.ev)}cb.fl.ev=q.timeStamp;s.push([tq,q.clientX,q.clientY])}}}
 function cbFlick(kind,k,T,e){const now=performance.now();cb.fl={kind,k,L:cb.li,start:{x:cb.p.x,y:cb.p.y},T,t0:now,ev:e.timeStamp,s:[[now,cb.p.x,cb.p.y]]}}
 function cbEnd(){if(!cb.fl)return;const r=cbAnalyze(cb.fl);if(r&&!r.why){r.L=cb.fl.L;cb.data.push(r)}else{cb.skip++;const w=r?r.why:'?';cb.why[w]=(cb.why[w]||0)+1;if(cb.traces.length<6)cb.traces.push(cbTrace(cb.fl,w))}cb.fl=null}
-function cbDown(e){if(!cb)return;e.preventDefault();if(e.button===2){cbStop(true);return}if(e.button!==0||cb.phase==='wait')return;cb.p.x=e.clientX;cb.p.y=e.clientY;const g=cbGeo();
+function cbDown(e){if(!cb)return;e.preventDefault();if(e.button===2){cbStop(cb.data.length>=8);return}if(e.button!==0||cb.phase==='wait')return;cb.p.x=e.clientX;cb.p.y=e.clientY;const g=cbGeo();
 if(cb.phase==='home'){if(Math.hypot(cb.p.x-g.cx,cb.p.y-g.cy)>CBHR)return;
 if(S&&S.dpi&&S.stage!=null&&S.dpi[S.stage]&&S.dpi[S.stage][0]!==cb.dpi){const m=cb;cbStop(m.data.length>=8);cbMsg('The DPI changed during the test ('+(S.dpi[S.stage][0])+' instead of '+m.dpi+'), so the run stopped.');return}
 cbEnd();
@@ -471,7 +474,8 @@ else{const T=cb.fl&&cb.fl.T;if(!T||Math.hypot(cb.p.x-T.x,cb.p.y-T.y)>CBTR)return
 cbDraw()}
 function cbAnalyze(fl){const sx=fl.start.x,sy=fl.start.y,vx=fl.T.x-sx,vy=fl.T.y-sy,D=Math.hypot(vx,vy);if(D<60)return{why:'target too close'};const ux=vx/D,uy=vy/D;
 // fw29: samples sharing a timestamp (a browser batching them) count once, at their last position
-const s=[];for(const q of fl.s){if(s.length&&q[0]<=s[s.length-1][0])s[s.length-1]=[s[s.length-1][0],q[1],q[2]];else s.push(q)}
+// fw33: and samples that arrive within 2 ms of a group's first (a burst after a page stall, stamped on arrival) join it
+const s=[];for(const q of fl.s){if(s.length&&q[0]-s[s.length-1][0]<2)s[s.length-1]=[s[s.length-1][0],q[1],q[2]];else s.push(q)}
 if(s.length<6)return{why:'too few movement samples'};
 const a=s.map(q=>(q[1]-sx)*ux+(q[2]-sy)*uy),t=s.map(q=>q[0]),v=[];let j=0;
 for(let i=0;i<s.length;i++){while(j<i-1&&t[i]-t[j+1]>=8)j++;v.push(i>j&&t[i]>t[j]?(a[i]-a[j])/(t[i]-t[j]):0)}
@@ -500,7 +504,7 @@ if(cb.phase!=='wait'){x.fillStyle=cb.phase==='home'?'#2f7de1':'#1a2a40';x.beginP
 if(cb.phase==='out'&&cb.fl){x.fillStyle='#e8553e';x.beginPath();x.arc(cb.fl.T.x,cb.fl.T.y,CBTR,0,7);x.fill()}
 const dp=cb.temp?' · DPI '+cb.dpi+' for the test (back to '+cb.cur+' after)':'';
 $('cbhint').textContent=cb.phase==='wait'?'Setting the DPI to '+cb.dpi+' for the test…':'Round '+cb.round+' of '+cb.rounds+' · '+cb.lens[cb.li]+' cm flicks · target '+cb.i+' of 8 · '+cb.data.length+' measured'+dp+' · right-click or Esc to finish'}
-function cbStop(done){if(!cb)return;const m=cb;cb=null;if(m.keep)clearInterval(m.keep);if(m.temp)post('/api/tempdpi?restore=1');
+function cbStop(done){if(!cb)return;const m=cb;cb=null;if(m.keep)clearInterval(m.keep);if(m.temp)(m.tp||Promise.resolve()).then(()=>post('/api/tempdpi?restore=1'));if(S)render();
 if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('cbwrap').classList.remove('on');if(done)cbFinish(m)}
 function cbMed(a){const b=a.slice().sort((p,q)=>p-q),n=b.length;return n?(n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2):NaN}
 function cbFinish(m){const per=[],perL=[];for(let k=0;k<8;k++){const r=m.data.filter(d=>d.k===k).map(d=>d.reach);per.push({n:r.length,med:cbMed(r)});
@@ -511,30 +515,29 @@ const dts=m.dts.filter(x=>x>0).sort((p,q)=>p-q),dtm=dts.length?dts[Math.floor(dt
 const ok=per.map(p=>p.n>=3&&p.med>0),c=per.map((p,k)=>ok[k]?1/p.med:1),okc=c.filter((v,k)=>ok[k]);
 const gm=okc.length?Math.exp(okc.reduce((s,v)=>s+Math.log(v),0)/okc.length):1;
 const sug=m.g.map((g,k)=>ok[k]?dgClamp(g*Math.max(.8,Math.min(1.25,Math.pow(c[k]/gm,.8)))):g);
-cbLast={id:Date.now(),per,perL,lens:m.lens,sug,g:m.g,n:all.length,skip:m.skip,coarse,raw:m.raw};
+
 // QT Py fw27: keep the run's summary there (the last 6), and compare with the run before it
-if(all.length>=16){const prev=cbPrev;post('/api/calib?n='+per.map(p=>p.n).join(',')+'&med='+per.map(p=>p.n>=3?Math.round(p.med*1000):0).join(',')+'&g='+m.g.map(g=>Math.round(g*1000)).join(',')+'&f='+((m.raw?1:0)|(coarse?2:0))+'&s='+m.skip).then(()=>{cbLoadPrev();cbLoadRuns()});cbLast.prev=prev}
+if(all.length>=16){cbLast={id:Date.now(),per,perL,lens:m.lens,sug,g:m.g,n:all.length,skip:m.skip,coarse,raw:m.raw};const prev=cbRuns[0]||null;post('/api/calib?n='+per.map(p=>p.n).join(',')+'&med='+per.map(p=>p.n>=3?Math.round(p.med*1000):0).join(',')+'&g='+m.g.map(g=>Math.round(g*1000)).join(',')+'&f='+((m.raw?1:0)|(coarse?2:0))+'&s='+m.skip).then(()=>cbLoadRuns());cbLast.prev=prev}
 const pct=v=>Math.round(v*100),rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';let h='<h3 class="sub">Calibration result</h3>';
 // fw29: why flicks were skipped and how this browser delivered the movement (also kept on the QT Py: GET /api/calibdiag)
 const dz=m.dts.filter(x=>x<=0).length,dp=m.dts.filter(x=>x>0).sort((p,q)=>p-q),dmed=dp.length?dp[Math.floor(dp.length/2)]:0,dp95=dp.length?dp[Math.floor(dp.length*.95)]:0,d12=dp.filter(x=>x>12).length;
 const sub=typeof PointerEvent!=='undefined'&&'getCoalescedEvents' in PointerEvent.prototype;const ez=m.dte.filter(x=>x<=0).length,ep=m.dte.filter(x=>x>0).sort((p,q)=>p-q),emed=ep.length?ep[Math.floor(ep.length/2)]:0;
 const diag={t:Math.floor(Date.now()/1000),qt_fw:S&&S.qt_fw,dpi:m.dpi,lens:m.lens,measured:all.length,out:m.data.filter(d=>d.kind==='out').length,back:m.data.filter(d=>d.kind==='back').length,skipped:m.skip,why:m.why,
 dt:{n:m.dts.length,median:+dmed.toFixed(2),p95:+dp95.toFixed(2),same_pct:m.dts.length?Math.round(dz/m.dts.length*100):0,over12_pct:dp.length?Math.round(d12/dp.length*100):0},ev_clock:{median:+emed.toFixed(2),same_pct:m.dte.length?Math.round(ez/m.dte.length*100):0},subframe:sub,secure:!!window.isSecureContext,ua:navigator.userAgent.slice(0,90),traces:m.traces};
-post('/api/calibdiag',JSON.stringify(diag));
+let dj=JSON.stringify(diag);while(dj.length>4000&&diag.traces.length){diag.traces.pop();dj=JSON.stringify(diag)}if(all.length+m.skip>=16)post('/api/calibdiag',dj);  // fw33: fits the QT Py's 4000; a run cut short keeps the last diagnostics
 const whyTxt=Object.entries(m.why).sort((p,q)=>q[1]-p[1]).map(([w,c])=>c+' '+w).join(' · ');
 const diagH='<p class="mut">Skipped: '+(whyTxt||'none')+'.<br>Movement samples: every '+dmed.toFixed(1)+' ms usually ('+dp95.toFixed(1)+' ms at the 95th percentile), '+diag.dt.over12_pct+'% more than 12 ms apart, '+diag.dt.same_pct+'% sharing a timestamp (the browser\'s own event clock: '+emed.toFixed(1)+' ms, '+diag.ev_clock.same_pct+'% shared); '+(sub?'with':'without')+' the browser\'s in-between samples.</p>';
-if(all.length<16){h+='<p class="note">Only '+all.length+' flicks could be measured ('+m.skip+' skipped). Do at least two rounds.</p>'+diagH;$('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG();return}
+if(all.length<16){h+='<p class="note">Only '+all.length+' flicks could be measured ('+m.skip+' skipped). Do at least two rounds.'+(cbLast?' The result below the last full run is unchanged.':'')+'</p>'+diagH;$('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG();return}
 h+='<p class="mut">'+all.length+' flicks of '+m.lens.join(', ')+' cm'+(m.temp?' (at '+m.dpi+' DPI for the test)':'')+', '+m.skip+' skipped (too early, off line or a misclick). On target (within 5%): '+pct(pf/all.length)+'% · short: '+pct(un/all.length)+'% · over: '+pct(ov/all.length)+'%.</p>';
 if(m.lens.length>1)h+='<p class="mut">Overall by length: '+m.lens.map((L,li)=>{const q=m.data.filter(d=>d.L===li).map(d=>d.reach);return L+' cm '+(q.length?rd(cbMed(q)):'–')}).join(' · ')+'. Only how the directions compare goes into the suggestion.</p>';
-h+=diagH;if(coarse)h+='<p class="note">Mouse movement arrived only every '+dtm.toFixed(0)+' ms, too coarse to find exactly where flicks stop. In Firefox, set dom.events.coalesce.mousemove to false in about:config (it hands over every movement instead of one per frame), then measure again. Treat the numbers below with care.</p>';
+h+=diagH;if(m.gOff)h+='<p class="note">The direction gains are off on this host, so this run measured the mouse without them and the suggestion starts from 1.00, not from your saved table. To refine the saved table, light this host under On for, then measure again.</p>';if(coarse)h+='<p class="note">Mouse movement arrived only every '+dtm.toFixed(0)+' ms, too coarse to find exactly where flicks stop. In Firefox, set dom.events.coalesce.mousemove to false in about:config (it hands over every movement instead of one per frame), then measure again. Treat the numbers below with care.</p>';
 const pv=cbLast.prev,ml=m.lens.length>1;
 h+='<table class="cbt"><tr><th>Direction</th><th>Flicks</th>'+(ml?m.lens.map(L=>'<th>'+L+' cm</th>').join(''):'')+'<th>'+(ml?'All':'Reach')+'</th>'+(pv?'<th>Last run</th>':'')+'<th>Now</th><th>Suggested</th></tr>'+per.map((p,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+p.n+'</td>'+(ml?perL[k].map(q=>'<td>'+(q.n>=2?rd(q.med):'–')+'</td>').join(''):'')+'<td>'+(ok[k]?rd(p.med):'–')+'</td>'+(pv?'<td>'+(pv.med[k]?rd(pv.med[k]/1000):'–')+'</td>':'')+'<td>'+m.g[k].toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>';
 if(pv)h+='<p class="mut">Last run: '+(pv.t?whenText(pv.t*1000):'time unknown')+(pv.g.some((g,k)=>g!==Math.round(m.g[k]*1000))?', measured with different gains, so its reach isn\'t directly comparable':'')+'.</p>';
 h+='<p class="mut">Reach is the median of where each flick\'s first movement stopped. The suggestion keeps your overall sensitivity: only how the directions compare changes. The green dashed shape above shows it.</p>';
 h+='<div class="row"><button class="p" onclick="cbUse()">Use suggested</button><button onclick="cbBegin()">Measure again</button><button onclick="cbDiscard()">Discard</button></div>';
 $('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG()}
-let cbPrev=null;function cbLoadPrev(){fetch(tq('/api/calib')).then(r=>r.json()).then(j=>{cbPrev=j.runs&&j.runs[0]||null}).catch(()=>{})}
-setTimeout(cbLoadPrev,1500);try{const a=localStorage.getItem('cblen'),b=localStorage.getItem('cbrpl');if(a)$('cblen').value=a;if(b)$('cbrpl').value=b}catch(e){}
+try{const a=localStorage.getItem('cblen'),b=localStorage.getItem('cbrpl');if(a)$('cblen').value=a;if(b)$('cbrpl').value=b}catch(e){}
 // QT Py fw31: the runs kept on the QT Py (this page's and BallSheet's: POST /api/calib, the last 6), each with its own
 // "Use suggested": the suggestion is worked out again from what is kept (median reach and the gains in use per
 // direction), the same way as for a fresh run
@@ -542,7 +545,7 @@ let cbRuns=[],cbRunsAt=0;
 function cbSug(r){const ok=r.n.map((n,k)=>n>=3&&r.med[k]>0),c=r.med.map((m,k)=>ok[k]?1000/m:1),okc=c.filter((v,k)=>ok[k]);
 const gm=okc.length?Math.exp(okc.reduce((s,v)=>s+Math.log(v),0)/okc.length):1;
 return r.g.map((g,k)=>{const gg=g/1000;return ok[k]?dgClamp(gg*Math.max(.8,Math.min(1.25,Math.pow(c[k]/gm,.8)))):gg})}
-function cbLoadRuns(){cbRunsAt=Date.now();fetch(tq('/api/calib')).then(r=>r.json()).then(j=>{cbRuns=j.runs||[];cbDrawRuns()}).catch(()=>{})}
+function cbLoadRuns(){cbRunsAt=Date.now();fetchJ(tq('/api/calib')).then(j=>{cbRuns=j.runs||[];if(!cb)cbDrawRuns()}).catch(()=>{})}
 function cbDrawRuns(){const box=$('cbsaved');box.hidden=!cbRuns.length;if(!cbRuns.length)return;$('cbsavedn').textContent='('+cbRuns.length+')';
 const pct=v=>Math.round(v*100),rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';
 $('cbsavedlist').innerHTML=cbRuns.map((r,i)=>{const sug=cbSug(r),tot=r.n.reduce((a,b)=>a+b,0);
@@ -550,7 +553,7 @@ return '<h3 class="sub">'+(r.t?whenText(r.t*1000):'time unknown')+' · '+(r.flag
 '<table class="cbt"><tr><th>Direction</th><th>Flicks</th><th>Reach</th><th>Gain then</th><th>Suggested</th></tr>'+r.n.map((n,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+n+'</td><td>'+(n>=3&&r.med[k]?rd(r.med[k]/1000):'–')+'</td><td>'+(r.g[k]/1000).toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>'+
 '<div class="row" style="margin-top:6px"><button onclick="cbUseRun('+i+')">Use suggested</button></div>'}).join('')}
 function cbUseRun(i){const r=cbRuns[i];if(!r)return;dgEdit=cbSug(r);dgKey='';drawDG();toast('Loaded into the editor: press Save to keep it')}
-setTimeout(cbLoadRuns,2000);setInterval(()=>{if(document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
+setTimeout(cbLoadRuns,2000);setInterval(()=>{if(!cb&&document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
 function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgKey='';drawDG();toast('Press Save to keep it')}
 function cbDiscard(){cbLast=null;$('cbres').hidden=true;dgKey='';drawDG()}
 $('cbc').addEventListener('pointermove',cbMove);$('cbc').addEventListener('pointerdown',cbDown);$('cbc').addEventListener('contextmenu',e=>e.preventDefault());
@@ -561,11 +564,11 @@ document.addEventListener('keydown',e=>{if(cb&&e.key==='Escape')cbStop(cb.data.l
 const HDESC={1:'device',2:'config',3:'string',6:'qualifier',7:'other-speed',15:'BOS',0x21:'HID',0x22:'report'};
 function hReq(e){const[t,r,vl,vh,il,ih,ll,lh]=e,v=vl|vh<<8,i=il|ih<<8,l=ll|lh<<8,x=n=>n.toString(16).padStart(4,'0');
 if(t===0xFF&&r===0xFF)return 'bus reset';
-if(r===6&&(t&0x9F)===0x80){const n=HDESC[vh]||'descriptor '+vh;return 'get '+n+(vh===3?' '+vl+(i?' lang '+x(i):''):vh===2&&vl?' '+vl:'')+(t===0x81?' (interface '+i+')':'')+', '+l+' bytes'}
+if(r===6&&(t&0x9E)===0x80){const n=HDESC[vh]||'descriptor '+vh;return 'get '+n+(vh===3?' '+vl+(i?' lang '+x(i):''):vh===2&&vl?' '+vl:'')+(t===0x81?' (interface '+i+')':'')+', '+l+' bytes'}
 if(t===0&&r===5)return 'set address '+v;if(t===0&&r===9)return 'set configuration '+v;if(t===0x80&&r===8)return 'get configuration';
-if(r===0&&(t&0x80))return 'get status ('+['device','interface','endpoint'][t&3]+' '+i+')';
-if(r===1&&!(t&0x80))return 'clear feature '+v+' ('+['device','interface','endpoint '+x(i)][t&3]+')';
-if(r===3&&!(t&0x80))return 'set feature '+v+' ('+['device','interface','endpoint '+x(i)][t&3]+')';
+if(r===0&&(t&0x80))return 'get status ('+['device','interface','endpoint','other'][t&3]+' '+i+')';
+if(r===1&&!(t&0x80))return 'clear feature '+v+' ('+['device','interface','endpoint '+x(i),'other'][t&3]+')';
+if(r===3&&!(t&0x80))return 'set feature '+v+' ('+['device','interface','endpoint '+x(i),'other'][t&3]+')';
 if(t===1&&r===11)return 'set interface '+i+' alt '+v;
 if(t===0x21&&r===10)return 'set idle (interface '+i+', '+(vh*4)+' ms)';if(t===0x21&&r===11)return 'set protocol (interface '+i+', '+(v?'report':'boot')+')';
 if(t===0x21&&r===9)return 'set report (interface '+i+', '+['','input','output','feature'][vh]+' id '+vl+', '+l+' bytes)';
@@ -582,25 +585,26 @@ function hostName(x){return x[2]||x[3]||'Host'}
 function paintHostBtns(){const hs=S.hosts||[];$('hstnote').hidden=!hs.length;const key=JSON.stringify(hs);if(key===hbKey)return;hbKey=key;
 rows().forEach((r,i)=>{const box=r.querySelector('.hch');box.innerHTML=hs.map(x=>{const on=x[1]===i+1;return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'" title="'+(on?'Switches to stage '+(i+1)+' when the ATEN connects it: tap to stop':'Tap: switch to stage '+(i+1)+' when the ATEN connects it')+'">'+esc(hostName(x))+'</button>'}).join('');
 box.querySelectorAll('button').forEach(b=>b.onclick=()=>hostToStage(b.dataset.sig,i))})}
-function hostToStage(sig,i){const x=(S.hosts||[]).find(x=>x[0]===sig);if(!x)return;const st=x[1]===i+1?0:i+1,nm=hostName(x);
-x[1]=st;x[2]=nm;hbKey='';paintHostBtns();
-post('/api/hostprof?sig='+sig+'&stage='+st+'&name='+encodeURIComponent(nm)).then(r=>{say(r,st?nm+' → stage '+st:nm+': stage no longer switched');hSeq=null})}
+function hostToStage(sig,i){const x=(S.hosts||[]).find(x=>x[0]===sig);if(!x)return;const st=x[1]===i+1?0:i+1,nm=st||x[2]?hostName(x):'';  // fw33: untapping a host never named removes its profile
+const lb=hostName(x);x[1]=st;x[2]=nm;hbKey='';paintHostBtns();
+post('/api/hostprof?sig='+sig+'&stage='+st+'&name='+encodeURIComponent(nm)).then(r=>{say(r,st?lb+' → stage '+st:lb+': stage no longer switched');hSeq=null})}
 function hDecode(c){const reqs=[],raw=[];for(let k=0;k<c.req.length;k+=16){const e=[];for(let m=0;m<16;m+=2)e.push(parseInt(c.req.substr(k+m,2),16));raw.push(e);reqs.push(hReq(e))}return{reqs,raw}}
 function hGuess(raw){const f=raw.find(e=>!(e[0]===0xFF&&e[1]===0xFF));return !f?'Host':f[6]===64?'PC':f[6]===8?'XIM':'Host'}
 function hName(sig){const p=hJ&&hJ.profiles.find(p=>p.sig===sig);return p&&p.name?p.name:null}
 function hAutoLine(){const a=S.auto;if(!a||a[0]==='00000000')return 'This power-on: the host isn\'t known yet.';
-const n=hName(a[0])||'this host';return 'This power-on: '+n+' · '+(a[1]===4?'no stage chosen':a[1]===2?'stage '+a[2]+' set':a[1]===3?'stage '+a[2]+' didn\'t take (mouse asleep?)':'setting stage '+a[2]+'…')}
-function hSave(sig){const p=hJ&&hJ.profiles.find(p=>p.sig===sig),st=p?p.stage:0,nm=$('hn_'+sig);const name=(nm.value||nm.placeholder).trim();
+const n=hName(a[0])||'this host';return 'This power-on: '+n+' · '+(a[1]===4?'no stage chosen':a[1]===2?'stage '+a[2]+' set (the mouse confirmed it)':a[1]===3?'stage '+a[2]+' didn\'t take (mouse asleep?)':a[1]===5?'stage '+a[2]+' sent, checking with the mouse…':a[1]===6?'stage left as it was (only the QT Py restarted)':'setting stage '+a[2]+'…')}
+function hForget(sig){post('/api/hostprof?sig='+sig+'&stage=0&name=').then(r=>{say(r,'Forgotten');hSeq=null;hbKey=''})}  // fw33: 8 hosts at most, so they can be removed
+function hSave(sig){const p=hJ&&hJ.profiles.find(p=>p.sig===sig),st=p?p.stage:0,nm=$('hn_'+sig);const name=nm.value.trim();
 post('/api/hostprof?sig='+sig+'&stage='+st+'&name='+encodeURIComponent(name)).then(r=>{say(r,'Saved');hSeq=null;hbKey=''})}
 function drawHosts(){const box=$('fhosts');box.hidden=!S||S.hcap==null||!S.hcap_n;if(box.hidden)return;
 $('hauto').textContent=hAutoLine();
 if(!box.open){if(!$('hlast').textContent)$('hlast').textContent=S.hcap_n+' saved';return}
-if(hSeq===S.hcap||hBusy)return;hBusy=true;fetch(tq('/api/hosts')).then(r=>r.json()).then(j=>{hSeq=S.hcap;hJ=j;
+const hk=S.hcap+JSON.stringify(S.hosts||[]);if(hSeq===hk||hBusy)return;hBusy=true;fetchJ(tq('/api/hosts')).then(j=>{hSeq=hk;hJ=j;
 const sigs=new Map();j.caps.forEach(c=>{if(c.sig==='00000000')return;const d=hDecode(c);const g=sigs.get(c.sig)||{n:0,last:0,guess:hGuess(d.raw)};g.n++;g.last=Math.max(g.last,c.t*1000);sigs.set(c.sig,g)});
 j.profiles.forEach(p=>{if(!sigs.has(p.sig))sigs.set(p.sig,{n:0,last:0,guess:'Host'})});
-$('hprof').innerHTML=[...sigs].map(([sig,g])=>{const p=j.profiles.find(p=>p.sig===sig)||{stage:0,name:''};
+if(!$('hprof').contains(document.activeElement))$('hprof').innerHTML=[...sigs].map(([sig,g])=>{const p=j.profiles.find(p=>p.sig===sig)||{stage:0,name:''};
 return '<div class="opt"><span><input type="text" id="hn_'+sig+'" maxlength="10" value="'+esc(p.name)+'" placeholder="'+g.guess+'" style="width:8em" onchange="hSave(\''+sig+'\')"> <span class="mut">'+(g.n?'seen '+g.n+'× · last '+(g.last?whenText(g.last):'time unknown'):'not in the saved list')+(sig===j.auto.sig?' · connected now':'')+'</span></span>'+
-'<span class="chip'+(p.stage?' ok':'')+'">'+(p.stage?'stage '+p.stage:'stage not switched')+'</span></div>'}).join('')||'<p class="mut">No host recognised yet.</p>';
+'<span><span class="chip'+(p.stage?' ok':'')+'">'+(p.stage?'stage '+p.stage:'stage not switched')+'</span>'+(p.stage||p.name?' <button type="button" class="x" title="Forget this host\'s stage and name" onclick="hForget(\''+sig+'\')">×</button>':'')+'</span></div>'}).join('')||'<p class="mut">No host recognised yet.</p>';
 const h=j.caps.map(c=>{const d=hDecode(c);const when=c.t?whenText(c.t*1000):c.boot===j.boot?'this power-on':'power-on #'+c.boot+' (time unknown)';
 const sum=(hName(c.sig)||hGuess(d.raw))+' · '+d.reqs.length+' kept of '+c.seen+' requests · '+c.resets+' bus reset'+(c.resets===1?'':'s')+' · '+(c.cfg_ms===65535?'not configured':'configured after '+c.cfg_ms+' ms');
 return {when,sum,reqs:d.reqs}});
@@ -656,7 +660,7 @@ async function toIp(j){if(ipTried||touched)return false;ipTried=true;const ip=j&
 if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;
 const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch('http://'+ip+'/api/status',{mode:'no-cors',cache:'no-store',signal:c.signal})}catch(e){return false}finally{clearTimeout(tm)}
 if(touched)return false;location.replace('http://'+ip+'/');return true}
-function poll(){fetch(tq('/api/status')).then(r=>r.json()).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();render();autoRead()}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,1000))}
+function poll(){fetchJ(tq('/api/status')).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,document.hidden?5000:1000))}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
 buildStages();bindSlider('angle');bindSlider('pos');
 $('ms').addEventListener('pointerdown',e=>{if(!S||e.target===$('ms'))return;msDrag=e.target.id==='msh'?'angle':'pos';msOff=0;if(msDrag==='pos'&&$('mss').contains(e.target))msOff=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse()).y-msY(Number($('pos').value));$('ms').setPointerCapture(e.pointerId);e.preventDefault();msMove(e)});
 $('ms').addEventListener('pointermove',msMove);['pointerup','pointercancel'].forEach(t=>$('ms').addEventListener(t,()=>{msDrag=null}));
@@ -681,12 +685,13 @@ $('lvr').textContent='Measuring at '+S.angle+'°: swipe left and right a few tim
 // the whole screen to swipe in (the window if full screen is refused), the pointer captured so it never hits an edge
 const w=$('lvwrap'),lock=()=>{if(lvOn&&LV.requestPointerLock)LV.requestPointerLock()};w.classList.add('full');
 if(w.requestFullscreen)w.requestFullscreen().then(()=>{lvFs=true;lock()}).catch(lock);else lock();lvDraw()}
+let lvRaf=0;
 function lvStop(){if(!lvOn)return;lvOn=false;if(document.pointerLockElement===LV)document.exitPointerLock();if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('lvwrap').classList.remove('full');lvDraw();lvResult();$('lvl').scrollIntoView({block:'nearest'})}
 document.addEventListener('fullscreenchange',()=>{if(lvOn&&lvFs&&!document.fullscreenElement)lvStop()});
 LV.addEventListener('mousedown',e=>{if(e.button===2){e.preventDefault();lvStop()}else if(e.button===0&&!lvOn)lvBegin()});
 LV.addEventListener('contextmenu',e=>e.preventDefault());
 document.addEventListener('mousemove',e=>{if(!lvOn)return;const dx=e.movementX||0,dy=e.movementY||0;if(!dx&&!dy)return;
-lv.x+=dx;lv.y+=dy;lv.pts.push([lv.x,lv.y]);lv.sxx+=dx*dx;lv.syy+=dy*dy;lv.sxy+=dx*dy;lv.dist+=Math.hypot(dx,dy);if(lv.pts.length%3===0)lvDraw()});
+lv.x+=dx;lv.y+=dy;lv.pts.push([lv.x,lv.y]);lv.sxx+=dx*dx;lv.syy+=dy*dy;lv.sxy+=dx*dy;lv.dist+=Math.hypot(dx,dy);if(!lvRaf)lvRaf=requestAnimationFrame(()=>{lvRaf=0;lvDraw()})});  // fw33: once a frame (every 3rd sample redrew everything: quadratic)
 document.addEventListener('pointerlockchange',()=>{if(lvOn&&document.pointerLockElement!==LV)lvStop()});
 document.addEventListener('keydown',e=>{if(lvOn&&e.key==='Escape')lvStop()});
 // screen angle of the swipes (y down, so negative = rising to the right)
