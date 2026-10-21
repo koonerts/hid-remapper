@@ -18,6 +18,7 @@
 #include "remapper.h"
 #include "gw_mouse.h"
 #include "gw_chords.h"
+#include "gw_dirgain.h"
 
 #define MAX_REPORT_SIZE 64
 
@@ -118,6 +119,7 @@ int32_t registers[NREGISTERS] = { 0 };
 
 // input_state slots of buttons 1-5 and the wheel, for the chord table (gw_chords.h); NULL = none
 static int32_t* gw_ch_in[GW_CH_IN] = { NULL };
+static int32_t* gw_xy_in[2] = { NULL, NULL };  // v24: X and Y (all ports) for the direction gains
 std::vector<register_ptrs_t> register_ptrs;
 uint8_t port_register = 0;
 
@@ -714,6 +716,8 @@ void set_mapping_from_config() {
         gw_ch_in[i] = get_state_ptr(0x00090001 + i, 0);
     }
     gw_ch_in[GW_CH_WHEEL - 1] = get_state_ptr(V_SCROLL_USAGE, 0);
+    gw_xy_in[0] = get_state_ptr(0x00010030, 0);
+    gw_xy_in[1] = get_state_ptr(0x00010031, 0);
 }
 
 bool differ_on_absolute(const uint8_t* report1, const uint8_t* report2, uint8_t report_id) {
@@ -1110,6 +1114,7 @@ void process_mapping(bool auto_repeat) {
 
     // chords take their buttons and the wheel out of what the mappings see (put back at the end)
     gw_chords_filter(gw_ch_in);
+    gw_dirgain_filter(gw_xy_in[0], gw_xy_in[1]);  // v24: the frame's X/Y, before any mapping reads them
     uint32_t gw_chords_us = (uint32_t) (get_time() - now);
 
     for (auto& tap_hold : tap_hold_usages) {

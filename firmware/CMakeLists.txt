@@ -36,6 +36,7 @@ add_executable(remapper
     src/gw_chords.cc
     src/gw_link.cc
     src/gw_hostcap.cc
+    src/gw_dirgain.cc
     src/crc.cc
     src/descriptor_parser.cc
     src/tinyusb_stuff.cc
@@ -98,6 +99,7 @@ add_executable(remapper_dual_a
     src/gw_chords.cc
     src/gw_link.cc
     src/gw_hostcap.cc
+    src/gw_dirgain.cc
     src/remapper_dual_a.cc
     src/crc.cc
     src/descriptor_parser.cc
@@ -174,6 +176,7 @@ add_executable(remapper_serial
     src/gw_chords.cc
     src/gw_link.cc
     src/gw_hostcap.cc
+    src/gw_dirgain.cc
     src/remapper_serial.cc
     src/crc.cc
     src/descriptor_parser.cc

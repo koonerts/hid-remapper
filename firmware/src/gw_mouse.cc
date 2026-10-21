@@ -10,6 +10,7 @@
 
 #include "globals.h"
 #include "gw_chords.h"
+#include "gw_dirgain.h"
 #include "gw_hostcap.h"
 #include "gw_link.h"
 #include "gw_payloads.h"
@@ -1660,9 +1661,10 @@ static void rs_tick(uint32_t now) {
 //   2 hold, 3 double tap, 4 wheel up, 5 wheel down, 6 page, 7 assumed after an unanswered read, 8 the mouse's value taken
 //   after writes didn't take, 9 written again once the mouse woke), buttons (chord: modifier << 4 | trigger; page: the
 //   command; 7-9: 1 angle, 2 position), action (GA_*), value after it (int8: angle/position, the stage for a page stage;
-//   0x7F none)   242-254 0   255 crc8 of 192-254
+//   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
+//   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 23
+#define GW_FW_VERSION 24
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1676,6 +1678,7 @@ static void rs_tick(uint32_t now) {
 #define LINK_SET_OPTION 0x0B       // [option 0-4 (rs_opt_addr order), value as the mouse stores it]
 #define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
 #define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
+#define LINK_SET_DIRGAIN 0x0E      // v24: [on, 8 gains uint16 per mille] sensitivity per direction (gw_dirgain.cc), RAM only
 
 // per-frame processing time (gw_frame_time), over a 1 s window; since v19 also how long after its tick each frame was
 // done (td_*), the SOF interrupt's time and the ticks merged (frames never processed), from tick.cc
@@ -1824,6 +1827,7 @@ void gw_link_status(uint8_t* s) {
         q[4] = e.action;
         q[5] = (uint8_t) e.value;
     }
+    gw_dirgain_status(s + 242);  // v24: 242 bit 0 applying, bit 1 got a table; 243 crc8 of the gains as received
     s[255] = gw_crc8(s + 192, 63);
     gw_hostcap_fill(s + 256);  // v23
 }
@@ -1921,6 +1925,15 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                 rs_settings[RS_ANGLE].home = tune.angle_home;
                 rs_settings[RS_POS].home = tune.pos_home;
                 tune_set = true;
+            }
+            break;
+        case LINK_SET_DIRGAIN:
+            if (len == 1 + 2 * GW_DIRGAIN_N) {
+                uint16_t g[GW_DIRGAIN_N];
+                for (int k = 0; k < GW_DIRGAIN_N; k++) {
+                    g[k] = get16(d + 1 + 2 * k);
+                }
+                gw_dirgain_set(d[0] != 0, g);
             }
             break;
         case LINK_RADIO_STATE:
