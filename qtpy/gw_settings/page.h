@@ -168,6 +168,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="note" id="cbmsg" hidden></p>
 <p class="mut" id="dgnote" style="margin:8px 0 0">Calibrate: flicks at the lengths you use in game (e.g. "6, 12, 18" cm), each round the 8 directions. Click the middle target, flick to the one that appears and click it, flick back and click the middle again. For long flicks the test lowers the DPI and puts it back afterwards. Keep Windows' pointer speed at 6 of 11 (the default) with "Enhance pointer precision" off.</p>
 <div id="cbres" hidden></div>
+<details id="cbsaved" hidden><summary><span>Saved runs</span> <span class="mut" id="cbsavedn"></span></summary><div id="cbsavedlist"></div></details>
 <div id="cbwrap"><canvas id="cbc" aria-label="Flick area"></canvas><div id="cbhint"></div></div>
 </div>
 <div class="card"><div class="hd"><h2>More mouse settings</h2></div>
@@ -512,7 +513,7 @@ const gm=okc.length?Math.exp(okc.reduce((s,v)=>s+Math.log(v),0)/okc.length):1;
 const sug=m.g.map((g,k)=>ok[k]?dgClamp(g*Math.max(.8,Math.min(1.25,Math.pow(c[k]/gm,.8)))):g);
 cbLast={id:Date.now(),per,perL,lens:m.lens,sug,g:m.g,n:all.length,skip:m.skip,coarse,raw:m.raw};
 // QT Py fw27: keep the run's summary there (the last 6), and compare with the run before it
-if(all.length>=16){const prev=cbPrev;post('/api/calib?n='+per.map(p=>p.n).join(',')+'&med='+per.map(p=>p.n>=3?Math.round(p.med*1000):0).join(',')+'&g='+m.g.map(g=>Math.round(g*1000)).join(',')+'&f='+((m.raw?1:0)|(coarse?2:0))+'&s='+m.skip).then(()=>cbLoadPrev());cbLast.prev=prev}
+if(all.length>=16){const prev=cbPrev;post('/api/calib?n='+per.map(p=>p.n).join(',')+'&med='+per.map(p=>p.n>=3?Math.round(p.med*1000):0).join(',')+'&g='+m.g.map(g=>Math.round(g*1000)).join(',')+'&f='+((m.raw?1:0)|(coarse?2:0))+'&s='+m.skip).then(()=>{cbLoadPrev();cbLoadRuns()});cbLast.prev=prev}
 const pct=v=>Math.round(v*100),rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';let h='<h3 class="sub">Calibration result</h3>';
 // fw29: why flicks were skipped and how this browser delivered the movement (also kept on the QT Py: GET /api/calibdiag)
 const dz=m.dts.filter(x=>x<=0).length,dp=m.dts.filter(x=>x>0).sort((p,q)=>p-q),dmed=dp.length?dp[Math.floor(dp.length/2)]:0,dp95=dp.length?dp[Math.floor(dp.length*.95)]:0,d12=dp.filter(x=>x>12).length;
@@ -534,6 +535,22 @@ h+='<div class="row"><button class="p" onclick="cbUse()">Use suggested</button><
 $('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG()}
 let cbPrev=null;function cbLoadPrev(){fetch(tq('/api/calib')).then(r=>r.json()).then(j=>{cbPrev=j.runs&&j.runs[0]||null}).catch(()=>{})}
 setTimeout(cbLoadPrev,1500);try{const a=localStorage.getItem('cblen'),b=localStorage.getItem('cbrpl');if(a)$('cblen').value=a;if(b)$('cbrpl').value=b}catch(e){}
+// QT Py fw31: the runs kept on the QT Py (this page's and BallSheet's: POST /api/calib, the last 6), each with its own
+// "Use suggested": the suggestion is worked out again from what is kept (median reach and the gains in use per
+// direction), the same way as for a fresh run
+let cbRuns=[],cbRunsAt=0;
+function cbSug(r){const ok=r.n.map((n,k)=>n>=3&&r.med[k]>0),c=r.med.map((m,k)=>ok[k]?1000/m:1),okc=c.filter((v,k)=>ok[k]);
+const gm=okc.length?Math.exp(okc.reduce((s,v)=>s+Math.log(v),0)/okc.length):1;
+return r.g.map((g,k)=>{const gg=g/1000;return ok[k]?dgClamp(gg*Math.max(.8,Math.min(1.25,Math.pow(c[k]/gm,.8)))):gg})}
+function cbLoadRuns(){cbRunsAt=Date.now();fetch(tq('/api/calib')).then(r=>r.json()).then(j=>{cbRuns=j.runs||[];cbDrawRuns()}).catch(()=>{})}
+function cbDrawRuns(){const box=$('cbsaved');box.hidden=!cbRuns.length;if(!cbRuns.length)return;$('cbsavedn').textContent='('+cbRuns.length+')';
+const pct=v=>Math.round(v*100),rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';
+$('cbsavedlist').innerHTML=cbRuns.map((r,i)=>{const sug=cbSug(r),tot=r.n.reduce((a,b)=>a+b,0);
+return '<h3 class="sub">'+(r.t?whenText(r.t*1000):'time unknown')+' · '+(r.flags&1?'BallSheet (raw input)':'this page')+'</h3><p class="mut">'+tot+' flicks measured, '+r.skipped+' skipped.</p>'+
+'<table class="cbt"><tr><th>Direction</th><th>Flicks</th><th>Reach</th><th>Gain then</th><th>Suggested</th></tr>'+r.n.map((n,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+n+'</td><td>'+(n>=3&&r.med[k]?rd(r.med[k]/1000):'–')+'</td><td>'+(r.g[k]/1000).toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>'+
+'<div class="row" style="margin-top:6px"><button onclick="cbUseRun('+i+')">Use suggested</button></div>'}).join('')}
+function cbUseRun(i){const r=cbRuns[i];if(!r)return;dgEdit=cbSug(r);dgKey='';drawDG();toast('Loaded into the editor: press Save to keep it')}
+setTimeout(cbLoadRuns,2000);setInterval(()=>{if(document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
 function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgKey='';drawDG();toast('Press Save to keep it')}
 function cbDiscard(){cbLast=null;$('cbres').hidden=true;dgKey='';drawDG()}
 $('cbc').addEventListener('pointermove',cbMove);$('cbc').addEventListener('pointerdown',cbDown);$('cbc').addEventListener('contextmenu',e=>e.preventDefault());
