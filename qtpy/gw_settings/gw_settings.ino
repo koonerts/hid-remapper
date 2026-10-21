@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 28      // this firmware's number, shown in /api/status
+#define QT_FW 29      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -189,6 +189,13 @@ static uint16_t tdpi_val = 0;
 static uint32_t tdpi_keep_at = 0;
 static uint32_t tdpi_sent_at = 0;
 static uint32_t tdpi_read_at = 0;
+// fw29: a restore counts only once the MOUSE reports the test stage's original DPI (a raw read of its register): the
+// Feather echoes a written table at once, even when a sleeping mouse lost the write (review finding, 10-21)
+static uint8_t tdpi_stage = 0xFF;   // the stage the test lowered (0xFF = not recorded: use the current one)
+static uint8_t tdpi_phase = 0;      // 0 send the table, 1 read it back, 2 wait for the answer
+static uint8_t tdpi_probe_n = 0;
+static uint32_t tdpi_phase_at = 0;
+static String calib_diag;           // fw29: the page's last calibration diagnostics (RAM only), GET /api/calibdiag
 static uint8_t calib_n = 0;
 static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
@@ -1599,6 +1606,7 @@ static void h_tempdpi() {
         if (tdpi_active) {
             tdpi_restore = true;
             tdpi_sent_at = 0;
+            tdpi_phase = 0;
         }
         return ok_json(true);
     }
@@ -1616,7 +1624,12 @@ static void h_tempdpi() {
     if (tdpi_restore) {
         return ok_json(false, "still putting the last test's DPI back: try again in a moment");
     }
+    if (cq_n > 0) {
+        return ok_json(false, "busy, try again");  // a queued DPI or stage change would make the copy below stale
+    }
     if (!tdpi_active) {
+        tdpi_stage = st[4];
+        prefs.putUChar("tdpis", tdpi_stage);
         for (int i = 0; i < 5; i++) {
             tdpi_orig[2 * i] = u16(23 + 4 * i);
             tdpi_orig[2 * i + 1] = u16(25 + 4 * i);
@@ -1627,6 +1640,9 @@ static void h_tempdpi() {
     memcpy(tb, tdpi_orig, sizeof(tb));
     uint8_t s = st[4];
     long ox = tdpi_orig[2 * s], oy = tdpi_orig[2 * s + 1];
+    if ((ox > 0) && (oy > 0) && (oy < ox) && (v * oy < 50L * ox)) {
+        v = (50L * ox + oy - 1) / oy;  // fw29: keep Y at 50 or more without bending the X/Y ratio
+    }
     long vy = ox ? lround((double) v * oy / ox) : v;
     tb[2 * s] = v;
     tb[2 * s + 1] = (vy < 50) ? 50 : (vy > 50000) ? 50000 : vy;
@@ -1643,33 +1659,90 @@ static void h_tempdpi() {
     ok_json(true);
 }
 
-// owed a restore: send the original table every 2 s until the mouse reports it (reading it back if the table isn't
-// known, e.g. right after a power-on), then forget the saved copy
+// owed a restore: send the original table, then read the test stage's register straight from the mouse (0x1b00 + 6 per
+// stage: X-1, Y-1, 16-bit LE); done only when the mouse itself reports the original. A lost write or a sleeping mouse
+// just means another round (every 2-5 s) with the saved copy kept. After a power-on the stage is read first, so the
+// Feather re-selects it and the mouse runs at the restored DPI, not only stores it.
+static void tdpi_probe_send() {
+    uint16_t addr = 0x1b00 + 6 * tdpi_stage;
+    uint8_t r[16] = { 0x08, 0, (uint8_t) (addr >> 8), (uint8_t) addr, 4 };
+    uint8_t sum = 8;
+    for (int i = 0; i < 15; i++) {
+        sum += r[i];
+    }
+    r[15] = 0x55 - sum;
+    tdpi_probe_n = st[91];
+    if (queue_cmd(C_RAW, r, 16)) {
+        tdpi_phase = 2;
+        tdpi_phase_at = millis();
+    }
+}
+
 static void tdpi_tick() {
     if (tdpi_active && !tdpi_restore && (millis() - tdpi_keep_at > 12000)) {
         tdpi_restore = true;
         tdpi_sent_at = 0;
+        tdpi_phase = 0;
     }
-    if (!tdpi_restore || !link_up || !st_ok || !(st[3] & 1) || (cq_n > 0)) {
+    if (!tdpi_restore || !link_up || !st_ok || !st_ext || !(st[3] & 1) || (cq_n > 0)) {
         return;
     }
-    if ((st[3] & 128) && tdpi_table_is(tdpi_orig)) {
-        tdpi_restore = false;
-        tdpi_active = false;
-        prefs.remove("tdpi");
-        log_edit_as(EK_TEMP_DPI, "restored", 7, 0);
-        return;
-    }
-    if (millis() - tdpi_sent_at >= 2000) {
-        if (tdpi_send(tdpi_orig)) {
-            tdpi_sent_at = millis();
+    if (!(st[3] & 8)) {  // stage not known yet (just powered on): read the mouse first
+        if (millis() - tdpi_read_at >= 5000) {
+            tdpi_read_at = millis();
+            queue_cmd(C_REFRESH, nullptr, 0);
         }
-    } else if (!(st[3] & 128) && (millis() - tdpi_read_at >= 5000)) {
-        tdpi_read_at = millis();
-        queue_cmd(C_REFRESH, nullptr, 0);
+        return;
+    }
+    if (tdpi_stage > 4) {
+        tdpi_stage = st[4];  // a fw28 test saved no stage: check the one in use
+    }
+    if (tdpi_phase == 0) {
+        if ((millis() - tdpi_sent_at >= 2000) && tdpi_send(tdpi_orig)) {
+            tdpi_sent_at = millis();
+            tdpi_phase = 1;
+            tdpi_phase_at = millis();
+        }
+    } else if (tdpi_phase == 1) {
+        if (millis() - tdpi_phase_at >= 300) {
+            tdpi_probe_send();
+        }
+    } else {
+        uint8_t state = st[92] & 3;
+        if ((st[91] == tdpi_probe_n) || (state < 2)) {
+            if (millis() - tdpi_phase_at > 3000) {
+                tdpi_phase = 0;
+            }
+            return;
+        }
+        uint16_t addr = 0x1b00 + 6 * tdpi_stage;
+        const uint8_t* d = st + 94 + 6;
+        bool mine = (state == 2) && (st[93] >= 10) && (st[94 + 3] == (addr >> 8)) && (st[94 + 4] == (addr & 0xFF));
+        uint16_t x = (d[0] | d[1] << 8) + 1, y = (d[2] | d[3] << 8) + 1;
+        if (mine && (x == tdpi_orig[2 * tdpi_stage]) && (y == tdpi_orig[2 * tdpi_stage + 1])) {
+            tdpi_restore = false;
+            tdpi_active = false;
+            tdpi_phase = 0;
+            prefs.remove("tdpi");
+            prefs.remove("tdpis");
+            log_edit_as(EK_TEMP_DPI, "restored", 7, 0);
+            return;
+        }
+        tdpi_phase = 0;  // not there yet: send it again
     }
 }
 
+// POST /api/calibdiag (body: text, 4000 chars at most) | GET: the page's last calibration diagnostics, RAM only (fw29)
+static void h_calibdiag_post() {
+    touch();
+    String d = server.arg("plain");
+    calib_diag = d.substring(0, 4000);
+    ok_json(true);
+}
+
+static void h_calibdiag_get() {
+    server.send(200, "text/plain", calib_diag.length() ? calib_diag : String("none"));
+}
 // /api/set?stage=0..4 | angle=-30..30 | pos=-100..101
 static void h_set() {
     touch();
@@ -1719,6 +1792,9 @@ static void h_palette() {
 // /api/dpi?v=x1,y1,x2,y2,...  (10 numbers, 50..50000)
 static void h_dpi() {
     touch();
+    if (tdpi_active) {
+        return ok_json(false, "a calibration has the DPI lowered for its test: finish it first (the table comes back by itself)");
+    }
     String s = server.arg("v");
     uint8_t d[20];
     int at = 0;
@@ -1924,6 +2000,7 @@ void setup() {
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
     calib_n = prefs.getBytes("calib", calib, sizeof(calib)) / sizeof(CalibRec);   // fw27: calibration summaries
+    tdpi_stage = prefs.getUChar("tdpis", 0xFF);                                        // fw29: which stage the test lowered
     if (prefs.getBytes("tdpi", tdpi_orig, sizeof(tdpi_orig)) == sizeof(tdpi_orig)) { // fw28: a test's DPI still owed back
         tdpi_active = true;
         tdpi_restore = true;
@@ -1955,6 +2032,8 @@ void setup() {
     server.on("/api/hostprof", HTTP_POST, h_hostprof);
     server.on("/api/dirgain", HTTP_POST, h_dirgain);
     server.on("/api/tempdpi", HTTP_POST, h_tempdpi);
+    server.on("/api/calibdiag", HTTP_POST, h_calibdiag_post);
+    server.on("/api/calibdiag", HTTP_GET, h_calibdiag_get);
     server.on("/api/calib", HTTP_POST, h_calib_post);
     server.on("/api/calib", HTTP_GET, h_calib_get);
     server.on("/api/set", HTTP_POST, h_set);
