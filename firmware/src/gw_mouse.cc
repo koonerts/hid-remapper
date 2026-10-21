@@ -1664,7 +1664,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 25
+#define GW_FW_VERSION 26
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1834,6 +1834,8 @@ void gw_link_status(uint8_t* s) {
         q[5] = (uint8_t) e.value;
     }
     gw_dirgain_status(s + 242);  // v24: 242 bit 0 applying, bit 1 got a table; 243 crc8 of the gains as received
+    s[244] = gw_hostcap_upd();  // v26: the capture block's change counter and capture number (= its bytes 258 and 257)
+    s[245] = gw_hostcap_id();
     s[255] = gw_crc8(s + 192, 63);
     gw_hostcap_fill(s + 256);  // v23
 }

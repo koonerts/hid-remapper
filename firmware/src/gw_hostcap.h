@@ -11,6 +11,8 @@
 
 // status bytes 256-511 (layout in gw_hostcap.cc)
 void gw_hostcap_fill(uint8_t* s);
+uint8_t gw_hostcap_id();   // v26
+uint8_t gw_hostcap_upd();  // v26
 
 // changes when there is something new to read in 256-511: at most every 300 ms, and once more after a burst
 uint8_t gw_hostcap_seq();

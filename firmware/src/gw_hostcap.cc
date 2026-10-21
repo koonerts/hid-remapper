@@ -102,6 +102,16 @@ void __not_in_flash_func(tud_event_hook_cb)(uint8_t rhport, uint32_t eventid, bo
     cap_add(p);
 }
 
+// v26: the capture number and its change counter, also put in status bytes 244/245 so the QT Py reads the 256-byte
+// capture block (256-511) only when they moved, not on every recent-actions change
+uint8_t gw_hostcap_id() {
+    return cap_id;
+}
+
+uint8_t gw_hostcap_upd() {
+    return cap_upd;
+}
+
 uint8_t gw_hostcap_seq() {
     static uint8_t seq = 0;
     static uint8_t seen = 0;
