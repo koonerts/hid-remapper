@@ -35,6 +35,17 @@ input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
 /* QT Py fw25: which hosts switch to each stage (lit = this one) */
 .hch{grid-column:3/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center}.hch:empty{display:none}
 .hch button{font-size:12px;padding:2px 10px;border-radius:99px;color:var(--mut)}.hch button.on{background:var(--acc);border-color:var(--acc);color:var(--on);font-weight:600}
+/* QT Py fw26: direction sensitivity */
+.dgrow{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+#dgsvg{width:230px;height:230px;flex:none;touch-action:none}
+#dgsvg .ring{fill:none;stroke:var(--line)}#dgsvg .one{stroke:var(--mut);stroke-dasharray:3 3}#dgsvg .spoke{stroke:var(--line)}
+#dgsvg .poly{fill:var(--acc);fill-opacity:.15;stroke:var(--acc);stroke-width:2}#dgsvg .saved{fill:none;stroke:var(--mut);stroke-dasharray:4 3}
+#dgsvg .sug{fill:none;stroke:var(--ok);stroke-width:1.5;stroke-dasharray:6 3}
+#dgsvg .hd{fill:var(--acc);cursor:grab}#dgsvg text{fill:var(--mut);font-size:13px;text-anchor:middle;dominant-baseline:middle}
+.dgvals{display:grid;grid-template-columns:auto 70px auto 70px;gap:6px 8px;align-items:center}.dgvals input{width:70px}
+#cbwrap{display:none;position:fixed;inset:0;z-index:1000;background:#000}#cbwrap.on{display:block}#cbc{display:block;width:100vw;height:100vh;cursor:none}
+#cbhint{position:absolute;top:14px;left:0;right:0;text-align:center;color:#bbb;font-size:14px;pointer-events:none}
+.cbt{border-collapse:collapse;font-size:13px;margin-top:6px}.cbt td,.cbt th{padding:3px 8px;text-align:right}.cbt th{color:var(--mut);font-weight:600}.cbt td:first-child,.cbt th:first-child{text-align:left}
 .st{height:38px;border-radius:9px;border:1px solid var(--line);font-weight:700;padding:0}
 .cur{font-size:12.5px;font-weight:600;color:var(--acc)}
 .chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mut)}
@@ -147,6 +158,15 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div id="lvwrap"><canvas id="lvc" aria-label="Swipe area"></canvas><div id="lvhint">Swipe left and right a few times · right-click or Esc to finish</div></div>
 <p id="lvr" class="mut" style="margin:8px 0 0">Click the box to start.</p>
 <div class="row" id="lvb" hidden style="margin-top:8px"><button class="p" id="lvset"></button><button id="lvagain">Measure again</button></div>
+</div>
+<div class="card" id="dgc" hidden><div class="hd"><h2>Direction sensitivity</h2><span class="cur" id="dgst"></span></div>
+<p class="mut" style="margin:0 0 8px">A sensitivity for each direction you move the mouse, like Corsair's PureVector: a direction you tend to fall short in gets a little more, one you overshoot a little less. Calibrate with flicks on this computer, or drag the points. 1.00 everywhere changes nothing.</p>
+<div class="dgrow"><svg id="dgsvg" viewBox="-180 -180 360 360" aria-label="Sensitivity per direction: drag a point outwards for more"></svg><div class="dgvals" id="dgvals"></div></div>
+<div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="dghosts"></div></div>
+<div class="row" style="margin-top:10px"><button class="p" id="dgsave" disabled onclick="dgSave()">Save</button><button id="dgrev" disabled onclick="dgRevert()">Revert</button><button onclick="dgFlat()">All 1.00</button><button onclick="cbBegin()">Calibrate…</button></div>
+<p class="mut" id="dgnote" style="margin:8px 0 0">Calibrate: about 5 rounds of flicks, a few minutes. Click the middle target, flick to the one that appears and click it, flick back and click the middle again. Hold the mouse the way you do in game. Turn off Windows' "Enhance pointer precision" for the cleanest measurement.</p>
+<div id="cbres" hidden></div>
+<div id="cbwrap"><canvas id="cbc" aria-label="Flick area"></canvas><div id="cbhint"></div></div>
 </div>
 <div class="card"><div class="hd"><h2>More mouse settings</h2></div>
 <p class="note" id="optnote" hidden></p>
@@ -351,8 +371,113 @@ else if(k===4)s='DPI values';else if(k===5)s='stage colours';else if(k===6)s='ch
 else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap'||o==='sync'?(w==='1'?'on':'off'):o==='spdt'?['none','left button','right button','both buttons'][w]||w:w+(n[1]||''))}
 else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';
 else if(k===10){const[n,w]=v.split('=');return 'Auto ('+(n||'host')+'): DPI stage → stage '+(Number(w)+1)}
-else if(k===11){const[n,w]=v.split('=');s=(n||'a host')+' → '+(w==='0'?'leave the stage':'stage '+w)}else s='edit '+k;
+else if(k===11){const[n,w]=v.split('=');s=(n||'a host')+' → '+(w==='0'?'leave the stage':'stage '+w)}
+else if(k===12)s='direction sensitivity saved (on '+v+')';else s='edit '+k;
 return 'Page ('+DEV[d]+' '+ip+'): '+s}
+// QT Py fw26 + Feather v24: sensitivity per direction (like Corsair's PureVector). Direction k = 0..7 every 45 degrees
+// clockwise on screen from "right" (screen y grows downwards, as in the Feather's atan2).
+const DGA=['→','↘','↓','↙','←','↖','↑','↗'],DGN=['right','down-right','down','down-left','left','up-left','up','up-right'];
+let dgEdit=null,dgDrag=-1,dgKey='',dgBuilt=false,cbLast=null;
+function dgR(g){return 30+(g-.5)/1.5*120}
+function dgSaved(){return S&&S.dg?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1]}
+function dgCur(){return dgEdit||dgSaved()}
+function dgClamp(g){return Math.round(Math.max(.5,Math.min(2,g))*100)/100}
+function dgPts(gs){return gs.map((g,k)=>{const a=k*Math.PI/4,r=dgR(g);return (r*Math.cos(a)).toFixed(1)+','+(r*Math.sin(a)).toFixed(1)}).join(' ')}
+function dgBuild(){dgBuilt=true;$('dgvals').innerHTML=DGA.map((a,k)=>'<span title="'+DGN[k]+'">'+a+' '+DGN[k]+'</span><input type="number" id="dgv'+k+'" min="0.5" max="2" step="0.01" aria-label="Sensitivity '+DGN[k]+'">').join('');
+for(let k=0;k<8;k++)$('dgv'+k).onchange=e=>{const v=parseFloat(e.target.value);if(!(v>0))return;dgEdit=dgCur().slice();dgEdit[k]=dgClamp(v);dgKey='';drawDG()};
+const sv=$('dgsvg');sv.addEventListener('pointerdown',e=>{const k=e.target.dataset&&e.target.dataset.k;if(k==null)return;dgDrag=+k;sv.setPointerCapture(e.pointerId);e.preventDefault()});
+sv.addEventListener('pointermove',e=>{if(dgDrag<0)return;const q=new DOMPoint(e.clientX,e.clientY).matrixTransform(sv.getScreenCTM().inverse()),a=dgDrag*Math.PI/4,d=q.x*Math.cos(a)+q.y*Math.sin(a);
+dgEdit=dgCur().slice();dgEdit[dgDrag]=dgClamp(.5+(d-30)/120*1.5);dgKey='';drawDG()});
+['pointerup','pointercancel'].forEach(t=>sv.addEventListener(t,()=>{dgDrag=-1}))}
+function drawDG(){const c=$('dgc');if(!S||!S.dg){c.hidden=true;return}c.hidden=false;if(!dgBuilt)dgBuild();const d=S.dg;
+$('dgst').textContent=!d.sup?'needs Feather v24':d.on?'applying on this host':d.want?(d.g.every(v=>v===1000)?'on here, all 1.00':'sending…'):'off on this host';
+$('dgsave').disabled=$('dgrev').disabled=!dgEdit;
+const gs=dgCur(),key=JSON.stringify([gs,d.g,d.hosts,S.hosts,cbLast&&cbLast.id]);if(key===dgKey)return;dgKey=key;
+let s='';[.5,1,1.5,2].forEach(g=>{s+='<circle class="ring'+(g===1?' one':'')+'" r="'+dgR(g)+'"/>'});
+for(let k=0;k<8;k++){const a=k*Math.PI/4;s+='<line class="spoke" x1="0" y1="0" x2="'+(150*Math.cos(a)).toFixed(1)+'" y2="'+(150*Math.sin(a)).toFixed(1)+'"/><text x="'+(166*Math.cos(a)).toFixed(1)+'" y="'+(166*Math.sin(a)).toFixed(1)+'">'+DGA[k]+'</text>'}
+if(dgEdit)s+='<polygon class="saved" points="'+dgPts(dgSaved())+'"/>';
+if(cbLast&&cbLast.sug&&!dgEdit)s+='<polygon class="sug" points="'+dgPts(cbLast.sug)+'"/>';
+s+='<polygon class="poly" points="'+dgPts(gs)+'"/>';
+gs.forEach((g,k)=>{const a=k*Math.PI/4,r=dgR(g);s+='<circle class="hd" data-k="'+k+'" r="9" cx="'+(r*Math.cos(a)).toFixed(1)+'" cy="'+(r*Math.sin(a)).toFixed(1)+'"><title>'+DGN[k]+': '+g.toFixed(2)+'</title></circle>'});
+$('dgsvg').innerHTML=s;
+for(let k=0;k<8;k++){const i=$('dgv'+k);if(document.activeElement!==i)i.value=gs[k].toFixed(2)}
+const hs=S.hosts||[];$('dghosts').innerHTML=hs.length?hs.map(x=>{const on=d.hosts.includes(x[0]);return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'">'+esc(hostName(x))+'</button>'}).join(''):'<span class="mut">no host recognised yet</span>';
+$('dghosts').querySelectorAll('button').forEach(b=>b.onclick=()=>{const on=d.hosts.includes(b.dataset.sig),h=on?d.hosts.filter(x=>x!==b.dataset.sig):d.hosts.concat([b.dataset.sig]);dgPost(dgSaved(),h)})}
+function dgPost(gs,hosts){return post('/api/dirgain?g='+gs.map(g=>Math.round(g*1000)).join(',')+'&hosts='+hosts.join(',')).then(r=>{say(r,'Saved');dgKey='';return r})}
+function dgSave(){if(!dgEdit||!S||!S.dg)return;dgPost(dgEdit,S.dg.hosts).then(r=>{if(r.ok)dgEdit=null})}
+function dgRevert(){dgEdit=null;dgKey='';drawDG()}
+function dgFlat(){dgEdit=[1,1,1,1,1,1,1,1];dgKey='';drawDG()}
+
+// ---- flick calibration: full screen with the pointer locked. A home target in the middle and an outer one at a fixed
+// distance in each of the 8 directions (shuffled, once per round): click home, flick to the outer target and click it,
+// flick back and click home (that flick, the opposite direction, counts too), and so on.
+// A flick's first ballistic movement ends where its speed along the target line first drops below 10% of its peak (or
+// the samples pause, or it turns back); how far along the line that is, over the distance to the target, is its reach
+// (1 = on target). Reaches per direction (median) give the suggestion: gain / reach, normalised so the geometric mean
+// change is 1 (overall sensitivity stays), damped (^0.8) and capped at +-25% per run. Measured with whatever gains this
+// host applies now, so a second run refines the first.
+const CBR=5,CBHR=22,CBTR=24;let cb=null;
+function cbBegin(){if(!S||!S.dg||!S.dg.sup){$('dgnote').textContent='Needs Feather firmware v24.';return}
+const c=$('cbc'),w=$('cbwrap');cb={round:0,order:[],i:0,phase:'home',p:{x:0,y:0},fl:null,data:[],skip:0,dts:[],g:S.dg.on?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1],raw:false};
+w.classList.add('on');cb.p={x:innerWidth/2,y:innerHeight/2};cbRound();
+const lock=()=>{try{const r=c.requestPointerLock({unadjustedMovement:true});if(r&&r.then)r.then(()=>{cb&&(cb.raw=true)}).catch(()=>c.requestPointerLock())}catch(e){c.requestPointerLock()}};
+if(w.requestFullscreen)w.requestFullscreen().then(lock).catch(lock);else lock();requestAnimationFrame(cbLoop)}
+function cbRound(){cb.round++;cb.i=0;const o=[0,1,2,3,4,5,6,7];for(let i=7;i>0;i--){const j=Math.floor(Math.random()*(i+1));[o[i],o[j]]=[o[j],o[i]]}cb.order=o}
+function cbGeo(){const W=$('cbc').clientWidth,H=$('cbc').clientHeight;return{W,H,cx:W/2,cy:H/2,D:.3*Math.min(W,H)}}
+function cbMove(e){if(!cb)return;const evs=e.getCoalescedEvents?e.getCoalescedEvents():[e],g=cbGeo();for(const q of (evs.length?evs:[e])){
+cb.p.x=Math.max(0,Math.min(g.W,cb.p.x+q.movementX));cb.p.y=Math.max(0,Math.min(g.H,cb.p.y+q.movementY));
+if(cb.fl){const s=cb.fl.s;if(s.length)cb.dts.push(q.timeStamp-s[s.length-1][0]);s.push([q.timeStamp,cb.p.x,cb.p.y])}}}
+function cbFlick(kind,k,T,e){cb.fl={kind,k,start:{x:cb.p.x,y:cb.p.y},T,t0:e.timeStamp,s:[[e.timeStamp,cb.p.x,cb.p.y]]}}
+function cbEnd(){if(!cb.fl)return;const r=cbAnalyze(cb.fl);if(r)cb.data.push(r);else cb.skip++;cb.fl=null}
+function cbDown(e){if(!cb)return;e.preventDefault();if(e.button===2){cbStop(true);return}if(e.button!==0)return;const g=cbGeo();
+if(cb.phase==='home'){if(Math.hypot(cb.p.x-g.cx,cb.p.y-g.cy)>CBHR)return;cbEnd();
+if(cb.i>=8){if(cb.round>=CBR){cbStop(true);return}cbRound()}
+const k=cb.order[cb.i++],a=k*Math.PI/4;cbFlick('out',k,{x:g.cx+g.D*Math.cos(a),y:g.cy+g.D*Math.sin(a)},e);cb.phase='out'}
+else{const T=cb.fl&&cb.fl.T;if(!T||Math.hypot(cb.p.x-T.x,cb.p.y-T.y)>CBTR)return;const k=cb.fl.k;cbEnd();cbFlick('back',(k+4)%8,{x:g.cx,y:g.cy},e);cb.phase='home'}}
+function cbAnalyze(fl){const sx=fl.start.x,sy=fl.start.y,vx=fl.T.x-sx,vy=fl.T.y-sy,D=Math.hypot(vx,vy);if(D<60)return null;const ux=vx/D,uy=vy/D,s=fl.s;if(s.length<6)return null;
+const a=s.map(q=>(q[1]-sx)*ux+(q[2]-sy)*uy),t=s.map(q=>q[0]),v=[];let j=0;
+for(let i=0;i<s.length;i++){while(j<i-1&&t[i]-t[j+1]>=8)j++;v.push(i>j&&t[i]>t[j]?(a[i]-a[j])/(t[i]-t[j]):0)}
+// the first movement only, anchored where it has covered 30% of the way (holding still or jitter before it can't start
+// it): its start is the last point before that slower than 10% of the speed there; it ends at a pause, or where its
+// speed falls under 10% of its running peak (a quicker correction afterwards can't pass for the flick's peak)
+let i30=-1;for(let i=1;i<s.length;i++)if(a[i]>=.3*D){i30=i;break}if(i30<0||v[i30]<.3)return null;
+let on=i30;while(on>1&&v[on-1]>=.1*v[i30]&&t[on]-t[on-1]<=12)on--;
+let vmax=0,end=s.length-1;for(let i=on;i<s.length;i++){if(i>on&&t[i]-t[i-1]>12){end=i-1;break}if(v[i]>vmax)vmax=v[i];if(i>i30&&v[i]<.1*vmax){end=i;break}}
+const reach=a[end]/D,lat=((s[end][1]-sx)*-uy+(s[end][2]-sy)*ux)/D,rt=t[on]-fl.t0;
+if(rt<80||reach<.4||reach>1.8||Math.abs(lat)>.5)return null;return{k:fl.k,kind:fl.kind,reach,lat,rt,vmax}}
+function cbLoop(){if(!cb)return;const c=$('cbc'),x=c.getContext('2d'),dpr=devicePixelRatio||1,g=cbGeo();
+if(c.width!==Math.round(g.W*dpr)){c.width=Math.round(g.W*dpr);c.height=Math.round(g.H*dpr)}x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,g.W,g.H);
+x.strokeStyle='#222';x.beginPath();x.arc(g.cx,g.cy,g.D,0,7);x.stroke();
+for(let k=0;k<8;k++){const a=k*Math.PI/4;x.beginPath();x.moveTo(g.cx+(g.D-8)*Math.cos(a),g.cy+(g.D-8)*Math.sin(a));x.lineTo(g.cx+(g.D+8)*Math.cos(a),g.cy+(g.D+8)*Math.sin(a));x.stroke()}
+x.fillStyle=cb.phase==='home'?'#2f7de1':'#1a2a40';x.beginPath();x.arc(g.cx,g.cy,CBHR,0,7);x.fill();
+if(cb.phase==='out'&&cb.fl){x.fillStyle='#e8553e';x.beginPath();x.arc(cb.fl.T.x,cb.fl.T.y,CBTR,0,7);x.fill()}
+x.strokeStyle='#fff';x.lineWidth=1.5;x.beginPath();x.moveTo(cb.p.x-7,cb.p.y);x.lineTo(cb.p.x+7,cb.p.y);x.moveTo(cb.p.x,cb.p.y-7);x.lineTo(cb.p.x,cb.p.y+7);x.stroke();x.lineWidth=1;
+$('cbhint').textContent='Round '+cb.round+' of '+CBR+' · target '+cb.i+' of 8 · '+cb.data.length+' flicks measured · click the targets · right-click or Esc to finish';
+requestAnimationFrame(cbLoop)}
+function cbStop(done){if(!cb)return;const m=cb;cb=null;if(document.pointerLockElement===$('cbc'))document.exitPointerLock();if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('cbwrap').classList.remove('on');
+if(done)cbFinish(m)}
+function cbMed(a){const b=a.slice().sort((p,q)=>p-q),n=b.length;return n?(n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2):NaN}
+function cbFinish(m){const per=[];for(let k=0;k<8;k++){const r=m.data.filter(d=>d.k===k).map(d=>d.reach);per.push({n:r.length,med:cbMed(r)})}
+const all=m.data.map(d=>d.reach),pf=all.filter(r=>Math.abs(r-1)<=.05).length,un=all.filter(r=>r<.95).length,ov=all.filter(r=>r>1.05).length;
+// sample spacing: a browser that rounds its clock coarsely (resistFingerprinting) hides where a flick stops
+const dts=m.dts.filter(x=>x>0).sort((p,q)=>p-q),dtm=dts.length?dts[Math.floor(dts.length/2)]:0,coarse=dtm>=8;
+const ok=per.map(p=>p.n>=3&&p.med>0),c=per.map((p,k)=>ok[k]?1/p.med:1),okc=c.filter((v,k)=>ok[k]);
+const gm=okc.length?Math.exp(okc.reduce((s,v)=>s+Math.log(v),0)/okc.length):1;
+const sug=m.g.map((g,k)=>ok[k]?dgClamp(g*Math.max(.8,Math.min(1.25,Math.pow(c[k]/gm,.8)))):g);
+cbLast={id:Date.now(),per,sug,g:m.g,n:all.length,skip:m.skip,coarse,raw:m.raw};
+const pct=v=>Math.round(v*100);let h='<h3 class="sub">Calibration result</h3>';
+if(all.length<16){h+='<p class="note">Only '+all.length+' flicks could be measured ('+m.skip+' skipped). Do at least two rounds.</p>';$('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG();return}
+h+='<p class="mut">'+all.length+' flicks measured, '+m.skip+' skipped (too early, off line or a misclick). On target (within 5%): '+pct(pf/all.length)+'% · short: '+pct(un/all.length)+'% · over: '+pct(ov/all.length)+'%.'+(m.raw?' Raw mouse input.':'')+'</p>';
+if(coarse)h+='<p class="note">This browser spaced the movement samples '+dtm.toFixed(0)+' ms apart, too coarse to find where flicks stop (Firefox\'s resistFingerprinting does this). Treat the numbers below with care.</p>';
+h+='<table class="cbt"><tr><th>Direction</th><th>Flicks</th><th>Reach</th><th>Now</th><th>Suggested</th></tr>'+per.map((p,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+p.n+'</td><td>'+(ok[k]?(p.med<1?pct(1-p.med)+'% short':p.med>1?pct(p.med-1)+'% over':'on target'):'–')+'</td><td>'+m.g[k].toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>';
+h+='<p class="mut">Reach is the median of where each flick\'s first movement stopped. The suggestion keeps your overall sensitivity: only how the directions compare changes. The green dashed shape above shows it.</p>';
+h+='<div class="row"><button class="p" onclick="cbUse()">Use suggested</button><button onclick="cbBegin()">Measure again</button><button onclick="cbDiscard()">Discard</button></div>';
+$('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG()}
+function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgKey='';drawDG();toast('Press Save to keep it')}
+function cbDiscard(){cbLast=null;$('cbres').hidden=true;dgKey='';drawDG()}
+$('cbc').addEventListener('pointermove',cbMove);$('cbc').addEventListener('pointerdown',cbDown);$('cbc').addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('pointerlockchange',()=>{if(cb&&document.pointerLockElement!==$('cbc'))cbStop(cb.data.length>=8)});
+document.addEventListener('keydown',e=>{if(cb&&e.key==='Escape')cbStop(cb.data.length>=8)});
 // QT Py fw23 + Feather v23: the USB host captures (/api/hosts), fetched while the fold-out is open and when they change
 const HDESC={1:'device',2:'config',3:'string',6:'qualifier',7:'other-speed',15:'BOS',0x21:'HID',0x22:'report'};
 function hReq(e){const[t,r,vl,vh,il,ih,ll,lh]=e,v=vl|vh<<8,i=il|ih<<8,l=ll|lh<<8,x=n=>n.toString(16).padStart(4,'0');
@@ -441,7 +566,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
-drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawLevel();foldsApply();
+drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();foldsApply();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain

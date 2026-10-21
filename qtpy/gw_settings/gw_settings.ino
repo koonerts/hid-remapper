@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 25      // this firmware's number, shown in /api/status
+#define QT_FW 26      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -57,6 +57,7 @@
 #define C_SET_OPTION 0x0B  // Feather v14+: [option 0-4, value as the mouse stores it]
 #define C_RAW 0x0C         // Feather v14+: [16 bytes of report 8: a read (08) or the status query (04)]
 #define C_SET_CHORDS 0x0D  // Feather v15+: [part, total, rules] (gw_chords.h)
+#define C_SET_DIRGAIN 0x0E  // Feather v24+: [on, 8 gains uint16 per mille] sensitivity per direction (RAM only there)
 
 // chord table limits and action count (gw_chords.h)
 #define CH_MAX 12
@@ -105,6 +106,7 @@ static uint32_t last_http = 0;
 #define EK_CHORDS_DEFAULT 9
 #define EK_AUTO_STAGE 10  // fw24: the stage set for the host on this power-on ("name=stage 0-4"; dev 7 = automatic)
 #define EK_HOST_STAGE 11  // fw24: a host's stage chosen on the page ("name=stage 0-5")
+#define EK_DIRGAIN 12     // fw26: the direction gains or their hosts saved ("N hosts")
 struct __attribute__((packed)) EditLog {  // 32 bytes
     uint32_t t;     // Unix time (s): the browser's clock sent with the request, else NTP, else 0 = unknown
     uint32_t ms;    // millis() then: ages within the same boot when the time is unknown
@@ -151,6 +153,19 @@ static uint8_t auto_want = 0xFF;  // the stage (0-4) to set, 0xFF = nothing to d
 static uint8_t auto_tries = 0;
 static uint32_t auto_at = 0;
 static uint8_t auto_state = 0;  // 0 waiting, 1 sent, 2 confirmed, 3 gave up, 4 no stage for this host
+// fw26: sensitivity per direction (Feather v24, like Corsair's PureVector): 8 gains in per mille, one per 45 degrees
+// clockwise from "right" on screen, and the hosts they apply on (by signature). NVS "dgain". The QT Py keeps the
+// Feather's copy right: it sends the table, on for an enabled host and off otherwise, whenever the Feather's status
+// (242 applying/got, 243 crc of the gains) doesn't match, e.g. after every power-on.
+struct __attribute__((packed)) DirGainCfg {
+    uint16_t g[8];
+    uint8_t n;
+    uint32_t sig[HPROF_MAX];
+};
+static DirGainCfg dg = { { 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000 }, 0, { 0 } };
+static uint32_t dg_sent_at = 0;
+static bool dg_reread = false;
+static uint16_t dg_sends = 0;  // since boot, for /api/status
 static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
 // Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
@@ -1040,6 +1055,22 @@ static void h_status() {
     }
     // fw22: the saved page edits, newest first: [Unix time or 0, age s (this boot only, else -1), kind, device, "ip", "text"]
     j += ",\"hcap\":" + String(hcap_seq) + ",\"hcap_n\":" + String(hcap_n);  // fw23: /api/hosts changed / how many
+    {  // fw26: direction gains: the table, its hosts, and the Feather's copy (sup = Feather v24+, on = applying now)
+        j += ",\"dg\":{\"g\":[";
+        for (int k = 0; k < 8; k++) {
+            j += (k ? "," : "") + String(dg.g[k]);
+        }
+        j += "],\"hosts\":[";
+        char h[12];
+        for (uint8_t k = 0; k < dg.n; k++) {
+            snprintf(h, sizeof(h), "%08lx", (unsigned long) dg.sig[k]);
+            j += (k ? ",\"" : "\"") + String(h) + "\"";
+        }
+        bool sup = dg_supported() && ev_ok;
+        j += "],\"sup\":" + String(dg_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[50] & 1) ? "true" : "false") +
+             ",\"got\":" + String(sup && (evb[50] & 2) ? "true" : "false") + ",\"want\":" + String(dg_wanted() ? "true" : "false") +
+             ",\"sends\":" + String(dg_sends) + "}";
+    }
     {
         char h[12];  // fw24: this power-on's host signature, the automatic stage's state (auto_state) and stage (1-5, 0 none)
         snprintf(h, sizeof(h), "%08lx", (unsigned long) auto_sig);
@@ -1347,6 +1378,114 @@ static void h_hostprof() {
     ok_json(true);
 }
 
+// ---- fw26: direction gains
+static bool dg_supported() {
+    return st_ok && st_ext && (st[56] >= 24);
+}
+
+static bool dg_wanted() {  // on for the host connected now
+    for (uint8_t k = 0; auto_sig && (k < dg.n); k++) {
+        if (dg.sig[k] == auto_sig) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool dg_flat() {
+    for (int k = 0; k < 8; k++) {
+        if (dg.g[k] != 1000) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint8_t dg_crc() {  // as the Feather computes it: crc8 of the 16 gain bytes, little-endian
+    uint8_t raw[16];
+    for (int k = 0; k < 8; k++) {
+        raw[2 * k] = dg.g[k] & 0xFF;
+        raw[2 * k + 1] = dg.g[k] >> 8;
+    }
+    return crc8(raw, 16);
+}
+
+// the Feather's copy is in status 242-243, which come with the 192-255 block: read only when its change nibble moves,
+// so after sending, read it once more ourselves
+static void dg_tick() {
+    if (!link_up || !dg_supported() || (cq_n > 0)) {
+        return;
+    }
+    if (dg_reread) {
+        if (millis() - dg_sent_at >= 300) {
+            dg_reread = false;
+            read_chords();
+        }
+        return;
+    }
+    if (!ev_ok) {
+        return;
+    }
+    uint8_t f = evb[50];
+    bool want = dg_wanted(), expect_on = want && !dg_flat();
+    bool ok = (f & 2) && (evb[51] == dg_crc()) && (((f & 1) != 0) == expect_on);
+    if (ok || (millis() - dg_sent_at < 1500)) {
+        return;
+    }
+    uint8_t d[17];
+    d[0] = want ? 1 : 0;
+    for (int k = 0; k < 8; k++) {
+        d[1 + 2 * k] = dg.g[k] & 0xFF;
+        d[2 + 2 * k] = dg.g[k] >> 8;
+    }
+    if (queue_cmd(C_SET_DIRGAIN, d, 17)) {
+        dg_sent_at = millis();
+        dg_reread = true;
+        dg_sends++;
+    }
+}
+
+// POST /api/dirgain?g=g0,...,g7 (per mille, 500-2000)&hosts=sig,sig (8 hex each; empty = off everywhere)
+static void h_dirgain() {
+    touch();
+    uint16_t g[8];
+    String s = server.arg("g");
+    int at = 0;
+    for (int k = 0; k < 8; k++) {
+        int comma = s.indexOf(',', at);
+        long v = ((comma < 0) ? s.substring(at) : s.substring(at, comma)).toInt();
+        if ((v < 500) || (v > 2000) || ((comma < 0) && (k < 7))) {
+            return ok_json(false, "need 8 gains, 500-2000 per mille");
+        }
+        g[k] = v;
+        at = comma + 1;
+    }
+    uint32_t sig[HPROF_MAX];
+    uint8_t n = 0;
+    String h = server.arg("hosts");
+    at = 0;
+    while (at < (int) h.length()) {
+        int comma = h.indexOf(',', at);
+        String one = (comma < 0) ? h.substring(at) : h.substring(at, comma);
+        uint32_t v = strtoul(one.c_str(), nullptr, 16);
+        if (v && (n < HPROF_MAX)) {
+            sig[n++] = v;
+        }
+        if (comma < 0) {
+            break;
+        }
+        at = comma + 1;
+    }
+    memcpy(dg.g, g, sizeof(g));
+    dg.n = n;
+    memset(dg.sig, 0, sizeof(dg.sig));
+    memcpy(dg.sig, sig, sizeof(uint32_t) * n);
+    prefs.putBytes("dgain", &dg, sizeof(dg));
+    log_edit(EK_DIRGAIN, String(n) + (n == 1 ? " host" : " hosts"));
+    dg_sent_at = 0;  // send now
+    ok_json(true);
+}
+
 // /api/set?stage=0..4 | angle=-30..30 | pos=-100..101
 static void h_set() {
     touch();
@@ -1600,6 +1739,12 @@ void setup() {
     edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
+    if (prefs.getBytes("dgain", &dg, sizeof(dg)) != sizeof(dg)) {                     // fw26: direction gains
+        for (int k = 0; k < 8; k++) {
+            dg.g[k] = 1000;
+        }
+        dg.n = 0;
+    }
     b_brownouts = prefs.getULong("brownouts", 0);
     b_crashes = prefs.getULong("crashes", 0);
     if (b_reason == ESP_RST_BROWNOUT) {
@@ -1619,6 +1764,7 @@ void setup() {
     server.on("/api/status", HTTP_GET, h_status);
     server.on("/api/hosts", HTTP_GET, h_hosts);
     server.on("/api/hostprof", HTTP_POST, h_hostprof);
+    server.on("/api/dirgain", HTTP_POST, h_dirgain);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);
@@ -1651,6 +1797,7 @@ void loop() {
     radio_tick();
     hcap_tick();
     auto_tick();
+    dg_tick();
     if (ntp_want) {
         ntp_want = false;
         configTime(0, 0, "pool.ntp.org", "time.google.com");  // fw22: UTC; the page shows local time
