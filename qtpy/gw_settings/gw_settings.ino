@@ -180,7 +180,8 @@ static uint8_t auto_state = 0;  // 0 waiting, 1 sent, 2 confirmed, 3 gave up, 4 
 static uint8_t auto_cap = 0;      // fw33: the capture (its number) auto_sig came from; a newer one this power-on is checked too
 static uint8_t auto_from = 0xFF;  // fw33: the mouse's stage before the first send (0xFF = unknown): logged only on a change
 static uint8_t auto_probe_n = 0;  // fw33: the probe count when the stage register read went out
-static uint16_t auto_lost = 0;    // fw33: rounds the mouse didn't answer (asleep): written again, not counted as tries
+static uint16_t auto_lost = 0;    // fw33: rounds the mouse didn't answer (asleep); fw35: only read again, never given up
+static uint32_t auto_since = 0;   // fw35: when this power-on's host was taken (DPI chords after it = the user's choice)
 static bool feather_ran = false;  // fw33: the Feather was already set up at this boot's first status (only the QT Py restarted)
 // fw26: sensitivity per direction (Feather v24, like Corsair's PureVector): 8 gains in per mille, one per 45 degrees
 // clockwise from "right" on screen, and the hosts they apply on (by signature). NVS "dgain". The QT Py keeps the
@@ -1490,10 +1491,53 @@ static HostProf* hprof_at(int k) {
 }
 
 // fw33 (audit 10-21): the host comes from the first capture with a signature, or from a later one this power-on whose
-// signature differs (a UEFI enumeration, then the OS's). The stage counts as set only once the MOUSE reports it (a raw read
-// of its stage register 0x0004): the Feather echoes a stage at once, even when a sleeping mouse lost the write. No answer =
-// asleep: write it again every few seconds, not counted as a try. After a QT Py-only restart (the Feather already set up)
-// the stage the user has now is kept.
+// signature differs (a UEFI enumeration, then the OS's). fw35 (review 10-21): the mouse's own stage register (0x0004,
+// a raw read: [stage, 0x55 - stage]) is read FIRST and the stage written only when it differs, then read again to
+// confirm. No answer = asleep: only the read is repeated (every 3 s, every 15 s after a minute), for the whole power-on;
+// writes to a sleeping mouse are lost anyway, and each one added a Feather event and a status re-read. A DPI chord seen
+// in the Feather's recent actions since the host was taken = the user picked a stage: left alone (state 7).
+// States: 0 read the mouse, 8 reading, 1 written (waiting for the Feather), 5 checking, 2 confirmed, 3 gave up (it
+// answered with another stage 6 times), 4 no stage for this host, 6 kept (QT Py-only restart), 7 changed by hand.
+static bool auto_probe() {  // the Feather has one probe slot: not while the DPI restore uses it
+    if (tdpi_restore || (cq_n > 0)) {
+        return false;
+    }
+    uint8_t r[16] = { 0x08, 0, 0x00, 0x04, 2 };
+    uint8_t sum = 8;
+    for (int i = 0; i < 15; i++) {
+        sum += r[i];
+    }
+    r[15] = 0x55 - sum;
+    auto_probe_n = st[91];
+    if (!queue_cmd(C_RAW, r, 16)) {
+        return false;
+    }
+    auto_at = millis();
+    return true;
+}
+
+static int auto_answer() {  // the mouse's stage from the read, -1 none yet
+    bool mine = (st[91] != auto_probe_n) && ((st[92] & 3) == 2) && (st[93] >= 8) && (st[97] == 0x00) && (st[98] == 0x04);
+    return mine ? st[100] : -1;
+}
+
+static bool stage_chord_since(uint32_t since) {  // a DPI chord on the Feather since then (its recent actions)
+    if (!ev_ok) {
+        return false;
+    }
+    uint32_t span = (millis() - since) / 1000 + 1, read_ago = (millis() - ev_read_at) / 1000;
+    for (uint8_t k = 0; (k < evb[1]) && (k < 8); k++) {
+        const uint8_t* q = evb + 2 + 6 * k;  // newest first: age (s, LE), source, buttons, action, value
+        if ((uint32_t) (q[0] | q[1] << 8) + read_ago > span) {
+            break;
+        }
+        if ((q[2] < 6) && (q[4] >= 1) && (q[4] <= 7)) {  // a chord (sources 0-5), GA_DPI_NEXT/PREV/1-5
+            return true;
+        }
+    }
+    return false;
+}
+
 static void auto_tick() {
     if (hcap_n && (hcap[0].boot == (uint16_t) b_boots) && (hcap[0].blk[1] != auto_cap)) {
         uint32_t sig = hcap_sig(hcap[0]);
@@ -1512,6 +1556,7 @@ static void auto_tick() {
                 auto_lost = 0;
                 auto_at = 0;
                 auto_from = 0xFF;
+                auto_since = millis();
             }
         }
     }
@@ -1519,33 +1564,34 @@ static void auto_tick() {
     auto_rtc.boots = b_boots;
     auto_rtc.sig = auto_sig;
     auto_rtc.state = auto_state;
-    if ((auto_want == 0xFF) || ((auto_state != 0) && (auto_state != 1) && (auto_state != 5)) || !link_up || !st_ok || !(st[3] & 1)) {
+    bool busy = (auto_state == 0) || (auto_state == 1) || (auto_state == 5) || (auto_state == 8);
+    if ((auto_want == 0xFF) || !busy || !link_up || !st_ok || !(st[3] & 1)) {
         return;  // nothing to set, done, or the Warg isn't there yet
     }
-    if (auto_state == 5) {
-        if (st[4] != auto_want) {
-            // the Feather's stage moved off it: a lost write the Feather noticed when it read the mouse again (wake), or a
-            // change by hand within these few seconds of the switch. Write it again (a try; 6 at most)
-            auto_state = 0;
-            auto_at = millis();
-            return;
+    if (stage_chord_since(auto_since)) {
+        auto_state = 7;  // the user picked a stage by chord meanwhile
+        return;
+    }
+    uint32_t wait = (auto_lost >= 20) ? 15000 : 3000;  // unanswered: every 3 s, every 15 s after a minute
+    if (auto_state == 0) {
+        if ((millis() - auto_at >= wait) && auto_probe()) {
+            auto_state = 8;
         }
-        bool mine = (st[91] != auto_probe_n) && ((st[92] & 3) == 2) && (st[93] >= 8) && (st[97] == 0x00) && (st[98] == 0x04);
-        if (!mine) {
-            if (millis() - auto_at > 3000) {  // no answer (asleep?): write it again
-                if (++auto_lost >= 200) {
-                    auto_state = 3;  // about 15 min
-                    return;
-                }
-                if (auto_tries) {
-                    auto_tries--;
-                }
+        return;
+    }
+    if ((auto_state == 8) || (auto_state == 5)) {
+        int v = auto_answer();
+        if (v < 0) {
+            if (millis() - auto_at > 3000) {  // no answer (asleep?): read again later (state 0), write nothing
+                auto_lost++;
                 auto_state = 0;
-                auto_at = 0;
             }
             return;
         }
-        if (st[100] == auto_want) {
+        if (auto_from == 0xFF) {
+            auto_from = (uint8_t) v;  // the mouse's stage before any write
+        }
+        if (v == auto_want) {
             auto_state = 2;
             if (auto_from != auto_want) {  // fw33: only a real change goes into the log (it holds 20)
                 HostProf* p = hprof_at(hprof_find(auto_sig));
@@ -1553,34 +1599,9 @@ static void auto_tick() {
             }
             return;
         }
-        auto_state = 0;  // the mouse has another stage: write it again (a try)
-        auto_at = millis();
-        return;
-    }
-    if ((auto_state == 1) && (st[4] == auto_want)) {
-        if (tdpi_restore || (cq_n > 0)) {
-            return;  // the Feather has one probe slot: after the DPI restore's
-        }
-        uint8_t r[16] = { 0x08, 0, 0x00, 0x04, 2 };  // read 2 bytes at 0x0004: [stage, 0x55 - stage]
-        uint8_t sum = 8;
-        for (int i = 0; i < 15; i++) {
-            sum += r[i];
-        }
-        r[15] = 0x55 - sum;
-        auto_probe_n = st[91];
-        if (queue_cmd(C_RAW, r, 16)) {
-            auto_state = 5;
-            auto_at = millis();
-        }
-        return;
-    }
-    if ((cq_n == 0) && (millis() - auto_at >= 1500)) {
         if (auto_tries >= 6) {
-            auto_state = 3;
+            auto_state = 3;  // it keeps answering with another stage
             return;
-        }
-        if ((auto_from == 0xFF) && (st[3] & 8)) {
-            auto_from = st[4];  // the stage read from the mouse at power-on
         }
         uint8_t b = auto_want;
         if (queue_cmd(C_SET_STAGE, &b, 1)) {
@@ -1588,9 +1609,18 @@ static void auto_tick() {
             auto_at = millis();
             auto_state = 1;
         }
+        return;
+    }
+    // 1: written; once the Feather took it, read the mouse back
+    if (st[4] == auto_want) {
+        if (auto_probe()) {
+            auto_state = 5;
+        }
+    } else if ((cq_n == 0) && (millis() - auto_at >= 1500)) {
+        auto_state = 0;  // the write never showed: read and decide again
+        auto_at = 0;
     }
 }
-
 // GET /api/hosts (fw23): the saved captures, newest first, with each one's signature (fw24); the page decodes the
 // requests. fw24 also: the stage profiles and what happened on this power-on.
 static void h_hosts() {
@@ -1641,6 +1671,7 @@ static void h_hostprof() {
     String name = server.arg("name");
     name.trim();
     HostProf* p = hprof_at(hprof_find(sig));
+    uint8_t was = p ? p->stage : 0;  // fw35: a rename alone mustn't re-apply the stage (review 10-21)
     if (!stage && !name.length()) {
         if (p) {
             *p = hprof[hprof_n - 1];
@@ -1661,15 +1692,20 @@ static void h_hostprof() {
             p->name[i] = ((c < 32) || (c > 126) || (c == '"') || (c == '\\') || (c == '=')) ? '?' : c;
         }
     }
-    prefs.putBytes("hprof", hprof, sizeof(HostProf) * hprof_n);
+    if (hprof_n) {
+        prefs.putBytes("hprof", hprof, sizeof(HostProf) * hprof_n);
+    } else {
+        prefs.remove("hprof");  // fw35: putBytes of 0 bytes writes nothing, so the last forgotten host came back
+    }
     log_edit(EK_HOST_STAGE, String(p && (stage || name.length()) ? p->name : "") + "=" + String(stage));
-    if (sig == auto_sig) {  // the host on now: apply the new choice this power-on too
+    if ((sig == auto_sig) && ((uint8_t) stage != was)) {  // the host on now, its stage changed: apply it this power-on too
         auto_want = (stage >= 1) ? stage - 1 : 0xFF;
         auto_state = (auto_want == 0xFF) ? 4 : 0;
         auto_tries = 0;
         auto_lost = 0;
         auto_at = 0;
         auto_from = 0xFF;
+        auto_since = millis();
     }
     ok_json(true);
 }
@@ -1966,7 +2002,7 @@ static void tdpi_tick() {
         tdpi_sent_at = 0;
         tdpi_phase = 0;
     }
-    if (!tdpi_restore || !link_up || !st_ok || !st_ext || !(st[3] & 1) || (cq_n > 0) || (auto_state == 5)) {
+    if (!tdpi_restore || !link_up || !st_ok || !st_ext || !(st[3] & 1) || (cq_n > 0) || (auto_state == 5) || (auto_state == 8)) {
         return;  // (fw33: not while the automatic stage's read uses the Feather's one probe slot)
     }
     if (!(st[3] & 8)) {  // stage not known yet (just powered on): read the mouse first
@@ -2042,7 +2078,11 @@ static bool from_current_page() {
     if (server.hasArg("t")) {
         return true;
     }
-    log_edit_as(EK_REFUSED, server.uri().substring(5, 20), ua_device(), (uint32_t) server.client().remoteIP());
+    String what = server.uri().substring(5);  // fw35: with its first argument, e.g. "set angle=-14"
+    if (server.args() && (server.argName(0) != "t")) {
+        what += " " + server.argName(0) + "=" + server.arg(0);
+    }
+    log_edit_as(EK_REFUSED, what, ua_device(), (uint32_t) server.client().remoteIP());
     ok_json(false, "this page is out of date: reload it");
     return false;
 }
