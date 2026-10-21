@@ -24,7 +24,7 @@
 #include <Wire.h>
 #include <esp_system.h>
 
-#include "page.h"
+#include "page_gz.h"  // fw35: the page gzipped (page_gz.ps1 makes it from page.h; the build checks it is current)
 
 #define LINK_ADDR 0x42
 #define LINK_SDA 41  // STEMMA QT (Wire1)
@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 34      // this firmware's number, shown in /api/status
+#define QT_FW 35      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -82,6 +82,7 @@ static bool feather_init_done = false;  // tuning/palette pushed since the Feath
 // link diagnostics (/api/status "diag")
 static uint32_t d_polls = 0, d_ok = 0, d_short = 0, d_bad = 0, d_i2c_resets = 0;
 static uint32_t d_rc_fail = 0, d_rc_ms = 0;  // fw33: full-block reads that failed, and the longest one (ms)
+static uint32_t d_rc256 = 0, d_rc512 = 0;   // fw35: block reads by size
 static uint8_t d_last_n = 0, d_b0 = 0, d_b1 = 0;
 static bool last_answered = false;  // the last read returned a full block, valid or not
 // the Feather's chord table (status bytes 128-191), as last read
@@ -445,9 +446,13 @@ static bool events_supported() {
 // actions (when byte 117's high nibble moved)
 static void hcap_take(const uint8_t* u);
 
-static void read_chords() {
-    static uint8_t b[STATUS_FULL];
-    size_t len = hostcap_supported() ? 512 : events_supported() ? 256 : 192;
+// fw35 (Feather v26+): status 244/245 carry the capture block's change counter and number, so after one full read this
+// boot the block (256-511) is read only when they moved: 256 bytes after a chord action instead of 512 (~46 vs ~92 ms
+// of the loop and of the Feather's I2C interrupts). Reset whenever the Feather may have restarted.
+static bool hc_known = false;
+static uint8_t hc_upd = 0, hc_id = 0;
+
+static bool read_block(uint8_t* b, size_t len) {  // the status from byte 0; false = short or bad (counted)
     if (len == 512) {
         Wire1.setTimeOut(150);  // 512 bytes take about 92 ms at 50 kHz; polls keep the short timeout
     }
@@ -464,13 +469,28 @@ static void read_chords() {
             Wire1.read();
         }
         d_rc_fail++;
-        return;
+        return false;
     }
     for (size_t i = 0; i < len; i++) {
         b[i] = Wire1.read();
     }
+    if (len == 512) {
+        d_rc512++;
+    } else if (len == 256) {
+        d_rc256++;
+    }
     if ((b[0] != 'G') || (crc8(b, 63) != b[63]) || (b[128] != 'C') || (crc8(b + 128, 63) != b[191]) || (b[130] > CH_MAX)) {
         d_rc_fail++;
+        return false;
+    }
+    return true;
+}
+
+static void read_chords() {
+    static uint8_t b[STATUS_FULL];
+    bool cap = hostcap_supported(), counters = cap && (st[56] >= 26);
+    size_t len = cap ? ((counters && hc_known) ? 256 : 512) : events_supported() ? 256 : 192;
+    if (!read_block(b, len)) {
         return;
     }
     memcpy(ch, b + 128, 64);
@@ -481,8 +501,20 @@ static void read_chords() {
         ev_read_at = millis();
         ev_nib = b[117] >> 4;
     }
+    bool ev_good = (len >= 256) && (b[192] == 'E') && (crc8(b + 192, 63) == b[255]);
+    if ((len == 256) && cap && ev_good && ((b[244] != hc_upd) || (b[245] != hc_id))) {
+        if (!read_block(b, 512)) {  // the capture moved: read it all
+            return;
+        }
+        len = 512;
+    }
     if ((len == 512) && (b[256] == 'U') && (crc8(b + 256, 255) == b[511]) && (b[257] != 0) && (b[259] <= HCAP_ENTRIES)) {
         hcap_take(b + 256);
+        if (counters && (b[192] == 'E') && (crc8(b + 192, 63) == b[255])) {
+            hc_upd = b[244];
+            hc_id = b[245];
+            hc_known = true;
+        }
     }
 }
 
@@ -764,6 +796,7 @@ static void link_tick() {
         toggles_known = false;
         feather_init_done = false;
         ch_ok = false;  // the Feather may come back restarted: its table number starts at 1 again
+        hc_known = false;  // fw35: and its capture counters too
         // A Feather that resets in the middle of a read (flashed, or restarted on its own) can leave this I2C master
         // stuck: every read then comes back empty until the QT Py restarts (seen 2026-10-16). Start the bus over every
         // 3 s while nothing answers.
@@ -793,6 +826,7 @@ static void link_tick() {
         feather_init_done = false;
         toggles_known = false;
         ch_ok = false;
+        hc_known = false;
     }
     if (!feather_init_done && (cq_n == 0)) {
         push_saved();
@@ -1240,7 +1274,7 @@ static void h_status() {
     j += ",\"qt_fw\":" + String(QT_FW);
     j += ",\"diag\":{\"polls\":" + String(d_polls) + ",\"ok\":" + String(d_ok) + ",\"short\":" + String(d_short) +
          ",\"bad\":" + String(d_bad) + ",\"i2c_resets\":" + String(d_i2c_resets) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
-         ",\"rc_fail\":" + String(d_rc_fail) + ",\"rc_ms\":" + String(d_rc_ms) + ",\"up_s\":" + String(millis() / 1000) + "}";
+         ",\"rc_fail\":" + String(d_rc_fail) + ",\"rc_ms\":" + String(d_rc_ms) + ",\"rc256\":" + String(d_rc256) + ",\"rc512\":" + String(d_rc512) + ",\"up_s\":" + String(millis() / 1000) + "}";
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
     j += (radio == Radio::STA) ? "sta" : (radio == Radio::AP) ? "ap" : (radio == Radio::JOINING) ? "joining" : "off";
@@ -2252,7 +2286,8 @@ static void h_page() {
     // fw21 input guard, whose restored slider values went straight to the mouse (angle -14, position 15).
     server.sendHeader("Cache-Control", "no-store");
     server.sendHeader("Pragma", "no-cache");
-    server.send_P(200, "text/html", PAGE_HTML);
+    server.sendHeader("Content-Encoding", "gzip");  // fw35: 32 KB instead of 88 KB
+    server.send_P(200, "text/html", (PGM_P) PAGE_GZ, PAGE_GZ_LEN);
 }
 
 static void h_not_found() {

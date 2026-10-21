@@ -1,6 +1,7 @@
 #pragma once
-// The settings page, served at / (one file, no external resources).
-static const char PAGE_HTML[] PROGMEM = R"HTML(<!doctype html>
+// The settings page, served at / (one file, no external resources). fw35: served gzipped from page_gz.h: run
+// page_gz.ps1 after editing this file (the build fails until then).
+static constexpr char PAGE_HTML[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Warg settings</title><link rel="icon" id="fav" href="data:,">
 <style>
