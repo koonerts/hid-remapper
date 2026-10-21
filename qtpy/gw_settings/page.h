@@ -32,6 +32,9 @@ input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
 .sep .srow{grid-template-columns:46px 42px 1fr 1fr}
 .srow .dy{display:none}.sep .srow .dy{display:block}
 .srow.on{border-color:var(--acc);background:var(--soft)}
+/* QT Py fw25: which hosts switch to each stage (lit = this one) */
+.hch{grid-column:3/-1;display:flex;gap:6px;flex-wrap:wrap;align-items:center}.hch:empty{display:none}
+.hch button{font-size:12px;padding:2px 10px;border-radius:99px;color:var(--mut)}.hch button.on{background:var(--acc);border-color:var(--acc);color:var(--on);font-weight:600}
 .st{height:38px;border-radius:9px;border:1px solid var(--line);font-weight:700;padding:0}
 .cur{font-size:12.5px;font-weight:600;color:var(--acc)}
 .chk{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mut)}
@@ -118,7 +121,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div id="rows"></div>
 <div class="row" style="margin-top:10px;justify-content:space-between"><div class="row"><button class="p" id="stApply" onclick="applyStages()" disabled>Apply</button><button id="stRevert" onclick="revert()" disabled>Revert</button></div>
 <label class="chk"><input type="checkbox" id="sepy" onchange="sepChange()"> Separate X / Y</label></div>
-<p class="mut" id="stnote">Tap a number to switch stage right away. Colour and DPI edits are sent when you press Apply.</p></div>
+<p class="mut" id="stnote">Tap a number to switch stage right away. Colour and DPI edits are sent when you press Apply.</p><p class="mut" id="hstnote" hidden>Under a stage, a lit host switches to it whenever the ATEN connects the mouse to that host: tap a host to move it here, tap it again to stop switching. Names and details are under Hosts.</p></div>
 
 <div class="card"><div class="hd"><h2>Sensor</h2></div>
 <p class="mut" id="sensok" hidden style="margin:0 0 10px"></p>
@@ -189,8 +192,8 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <details class="card" id="fedits" hidden><summary><div><h2>Recent page edits</h2><div class="mut" id="edlast"></div></div></summary>
 <ol id="edlist"></ol><p class="mut">The last 20 edits made through this page, from any device. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
 
-<details class="card" id="fhosts" hidden><summary><div><h2>DPI per host</h2><div class="mut" id="hauto"></div></div></summary>
-<p class="mut">The Feather recognises what the ATEN connects it to (each kind of host asks for its USB details in its own way) and switches to the stage chosen here when it powers on. Both XIMs look the same, so they share one setting.</p>
+<details class="card" id="fhosts" hidden><summary><div><h2>Hosts</h2><div class="mut" id="hauto"></div></div></summary>
+<p class="mut">What the ATEN can connect the mouse to. The Feather recognises each kind of host by how it asks for its USB details, so both XIMs look the same and share one entry. Rename a host here; choose its stage under DPI stages.</p>
 <div id="hprof"></div>
 <h3 class="sub">USB hosts seen</h3><p class="mut" id="hlast"></p>
 <p class="mut">What the host on the other side of the ATEN asked for while connecting, newest first; each power-on is one host. The QT Py keeps the last 8.</p>
@@ -219,7 +222,7 @@ if(S.angle!=null&&S.pos!=null)return;if(Date.now()-autoRd<5000)return;autoRd=Dat
 
 function rows(){return [...$('rows').children]}
 function paintBtn(i,c){const b=rows()[i].querySelector('.st');b.style.background='#'+c;b.style.color=ink(c)}
-function buildStages(){const el=$('rows');for(let i=0;i<5;i++){const n=i+1;el.insertAdjacentHTML('beforeend','<div class="srow"><button class="st" aria-label="Switch to stage '+n+'">'+n+'</button><input type="color" aria-label="Stage '+n+' colour"><input type="number" class="dx" min="50" max="50000" step="50" placeholder="DPI" aria-label="Stage '+n+' DPI"><input type="number" class="dy" min="50" max="50000" step="50" placeholder="Y" aria-label="Stage '+n+' Y DPI"></div>')}
+function buildStages(){const el=$('rows');for(let i=0;i<5;i++){const n=i+1;el.insertAdjacentHTML('beforeend','<div class="srow"><button class="st" aria-label="Switch to stage '+n+'">'+n+'</button><input type="color" aria-label="Stage '+n+' colour"><input type="number" class="dx" min="50" max="50000" step="50" placeholder="DPI" aria-label="Stage '+n+' DPI"><input type="number" class="dy" min="50" max="50000" step="50" placeholder="Y" aria-label="Stage '+n+' Y DPI"><div class="hch"></div></div>')}
 rows().forEach((r,i)=>{r.querySelector('.st').onclick=()=>{if(!S)return;S.stage=i;edit.stage=Date.now();paintStages();post('/api/set?stage='+i).then(x=>say(x,'Stage '+(i+1)))};
 r.querySelector('input[type=color]').oninput=e=>{dCol=true;paintBtn(i,e.target.value.slice(1));dirty()};
 r.querySelector('.dx').oninput=e=>{dDpi=true;if(!$('sepy').checked)r.querySelector('.dy').value=e.target.value;dirty()};
@@ -229,7 +232,7 @@ if(!dCol&&!keep&&S.palette){const c=S.palette[i];r.querySelector('input[type=col
 if(!dDpi&&!keep&&S.dpi){r.querySelector('.dx').value=S.dpi[i][0]||'';r.querySelector('.dy').value=S.dpi[i][1]||''}});
 if(!sepInit&&S.dpi_known){sepInit=true;if(S.dpi.some(d=>d[0]!==d[1])){$('sepy').checked=true;sepChange()}}
 const d=S.dpi&&S.stage!=null&&S.dpi[S.stage]?S.dpi[S.stage]:null;
-$('cur').textContent=S.stage==null?'':'Stage '+(S.stage+1)+(d&&d[0]?' · '+(d[0]===d[1]?d[0]:d[0]+' × '+d[1])+' DPI':'')}
+paintHostBtns();$('cur').textContent=S.stage==null?'':'Stage '+(S.stage+1)+(d&&d[0]?' · '+(d[0]===d[1]?d[0]:d[0]+' × '+d[1])+' DPI':'')}
 function sepChange(){$('rows').classList.toggle('sep',$('sepy').checked)}
 function dirty(){const d=dCol||dDpi;$('stApply').disabled=!d;$('stRevert').disabled=!d}
 function revert(){dCol=dDpi=false;hold=0;dirty();paintStages()}
@@ -368,13 +371,23 @@ return 'request '+e.map(b=>b.toString(16).padStart(2,'0')).join(' ')}
 // QT Py fw24: a DPI stage per host. Hosts are told apart by a signature of their first 12 requests (the QT Py works it
 // out); the guess below only fills in a name: Windows asks for 64 bytes of the device descriptor first, the XIM for 8.
 let hSeq=null,hBusy=false,hJ=null;
+// QT Py fw25: the host buttons under each DPI stage (S.hosts: [sig, stage 0-5, name, guess when not named]). A host has
+// one stage: lighting it under another stage moves it there; tapping a lit one stops switching for that host.
+let hbKey='';
+function hostName(x){return x[2]||x[3]||'Host'}
+function paintHostBtns(){const hs=S.hosts||[];$('hstnote').hidden=!hs.length;const key=JSON.stringify(hs);if(key===hbKey)return;hbKey=key;
+rows().forEach((r,i)=>{const box=r.querySelector('.hch');box.innerHTML=hs.map(x=>{const on=x[1]===i+1;return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'" title="'+(on?'Switches to stage '+(i+1)+' when the ATEN connects it: tap to stop':'Tap: switch to stage '+(i+1)+' when the ATEN connects it')+'">'+esc(hostName(x))+'</button>'}).join('');
+box.querySelectorAll('button').forEach(b=>b.onclick=()=>hostToStage(b.dataset.sig,i))})}
+function hostToStage(sig,i){const x=(S.hosts||[]).find(x=>x[0]===sig);if(!x)return;const st=x[1]===i+1?0:i+1,nm=hostName(x);
+x[1]=st;x[2]=nm;hbKey='';paintHostBtns();
+post('/api/hostprof?sig='+sig+'&stage='+st+'&name='+encodeURIComponent(nm)).then(r=>{say(r,st?nm+' → stage '+st:nm+': stage no longer switched');hSeq=null})}
 function hDecode(c){const reqs=[],raw=[];for(let k=0;k<c.req.length;k+=16){const e=[];for(let m=0;m<16;m+=2)e.push(parseInt(c.req.substr(k+m,2),16));raw.push(e);reqs.push(hReq(e))}return{reqs,raw}}
 function hGuess(raw){const f=raw.find(e=>!(e[0]===0xFF&&e[1]===0xFF));return !f?'Host':f[6]===64?'PC':f[6]===8?'XIM':'Host'}
 function hName(sig){const p=hJ&&hJ.profiles.find(p=>p.sig===sig);return p&&p.name?p.name:null}
 function hAutoLine(){const a=S.auto;if(!a||a[0]==='00000000')return 'This power-on: the host isn\'t known yet.';
 const n=hName(a[0])||'this host';return 'This power-on: '+n+' · '+(a[1]===4?'no stage chosen':a[1]===2?'stage '+a[2]+' set':a[1]===3?'stage '+a[2]+' didn\'t take (mouse asleep?)':'setting stage '+a[2]+'…')}
-function hSave(sig){const st=$('hs_'+sig).value,nm=$('hn_'+sig);const name=(nm.value||nm.placeholder).trim();
-post('/api/hostprof?sig='+sig+'&stage='+st+'&name='+encodeURIComponent(st==='0'&&!nm.value?'':name)).then(r=>{say(r,'Saved');hSeq=null})}
+function hSave(sig){const p=hJ&&hJ.profiles.find(p=>p.sig===sig),st=p?p.stage:0,nm=$('hn_'+sig);const name=(nm.value||nm.placeholder).trim();
+post('/api/hostprof?sig='+sig+'&stage='+st+'&name='+encodeURIComponent(name)).then(r=>{say(r,'Saved');hSeq=null;hbKey=''})}
 function drawHosts(){const box=$('fhosts');box.hidden=!S||S.hcap==null||!S.hcap_n;if(box.hidden)return;
 $('hauto').textContent=hAutoLine();
 if(!box.open){if(!$('hlast').textContent)$('hlast').textContent=S.hcap_n+' saved';return}
@@ -383,7 +396,7 @@ const sigs=new Map();j.caps.forEach(c=>{if(c.sig==='00000000')return;const d=hDe
 j.profiles.forEach(p=>{if(!sigs.has(p.sig))sigs.set(p.sig,{n:0,last:0,guess:'Host'})});
 $('hprof').innerHTML=[...sigs].map(([sig,g])=>{const p=j.profiles.find(p=>p.sig===sig)||{stage:0,name:''};
 return '<div class="opt"><span><input type="text" id="hn_'+sig+'" maxlength="10" value="'+esc(p.name)+'" placeholder="'+g.guess+'" style="width:8em" onchange="hSave(\''+sig+'\')"> <span class="mut">'+(g.n?'seen '+g.n+'× · last '+(g.last?whenText(g.last):'time unknown'):'not in the saved list')+(sig===j.auto.sig?' · connected now':'')+'</span></span>'+
-'<select id="hs_'+sig+'" onchange="hSave(\''+sig+'\')"><option value="0">leave stage</option>'+[1,2,3,4,5].map(s=>'<option value="'+s+'"'+(p.stage===s?' selected':'')+'>stage '+s+'</option>').join('')+'</select></div>'}).join('')||'<p class="mut">No host recognised yet.</p>';
+'<span class="chip'+(p.stage?' ok':'')+'">'+(p.stage?'stage '+p.stage:'stage not switched')+'</span></div>'}).join('')||'<p class="mut">No host recognised yet.</p>';
 const h=j.caps.map(c=>{const d=hDecode(c);const when=c.t?whenText(c.t*1000):c.boot===j.boot?'this power-on':'power-on #'+c.boot+' (time unknown)';
 const sum=(hName(c.sig)||hGuess(d.raw))+' · '+d.reqs.length+' kept of '+c.seen+' requests · '+c.resets+' bus reset'+(c.resets===1?'':'s')+' · '+(c.cfg_ms===65535?'not configured':'configured after '+c.cfg_ms+' ms');
 return {when,sum,reqs:d.reqs}});

@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 24      // this firmware's number, shown in /api/status
+#define QT_FW 25      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -1044,6 +1044,32 @@ static void h_status() {
         char h[12];  // fw24: this power-on's host signature, the automatic stage's state (auto_state) and stage (1-5, 0 none)
         snprintf(h, sizeof(h), "%08lx", (unsigned long) auto_sig);
         j += ",\"auto\":[\"" + String(h) + "\"," + String(auto_state) + "," + String(auto_want == 0xFF ? 0 : auto_want + 1) + "]";
+        // fw25: every known host for the DPI stage rows: [sig, stage 0-5, name ("" = not named: guess)], profiles first,
+        // then hosts only seen in the captures; the guess is from the first request (Windows asks 64 bytes, the XIM 8)
+        j += ",\"hosts\":[";
+        uint8_t m = 0;
+        for (uint8_t k = 0; k < hprof_n; k++) {
+            snprintf(h, sizeof(h), "%08lx", (unsigned long) hprof[k].sig);
+            j += (m++ ? ",[\"" : "[\"") + String(h) + "\"," + String(hprof[k].stage) + ",\"" + String(hprof[k].name) + "\"]";
+        }
+        uint32_t done[HCAP_KEEP];
+        uint8_t nd = 0;
+        for (uint8_t k = 0; k < hcap_n; k++) {
+            uint32_t sig = hcap_sig(hcap[k]);
+            bool seen = !sig || (hprof_find(sig) >= 0);
+            for (uint8_t d = 0; (d < nd) && !seen; d++) {
+                seen = (done[d] == sig);
+            }
+            if (seen) {
+                continue;
+            }
+            done[nd++] = sig;
+            uint8_t first = 0;
+            hcap_reqs(hcap[k], &first);
+            snprintf(h, sizeof(h), "%08lx", (unsigned long) sig);
+            j += (m++ ? ",[\"" : "[\"") + String(h) + "\",0,\"\",\"" + (first == 64 ? "PC" : first == 8 ? "XIM" : "Host") + "\"]";
+        }
+        j += "]";
     }
     j += ",\"now\":" + String(now_unix()) + ",\"edits\":[";
     for (uint8_t k = 0; k < edit_n; k++) {
