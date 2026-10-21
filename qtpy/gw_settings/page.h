@@ -575,7 +575,7 @@ if(t===0x21&&r===9)return 'set report (interface '+i+', '+['','input','output','
 if(t===0xA1&&r===1)return 'get report (interface '+i+', '+['','input','output','feature'][vh]+' id '+vl+', '+l+' bytes)';
 if(t===0xA1&&r===2)return 'get idle (interface '+i+')';if(t===0xA1&&r===3)return 'get protocol (interface '+i+')';
 return 'request '+e.map(b=>b.toString(16).padStart(2,'0')).join(' ')}
-// QT Py fw24: a DPI stage per host. Hosts are told apart by a signature of their first 12 requests (the QT Py works it
+// QT Py fw24: a DPI stage per host. Hosts are told apart by a signature of their first 6 distinct requests (fw34; the QT Py works it
 // out); the guess below only fills in a name: Windows asks for 64 bytes of the device descriptor first, the XIM for 8.
 let hSeq=null,hBusy=false,hJ=null;
 // QT Py fw25: the host buttons under each DPI stage (S.hosts: [sig, stage 0-5, name, guess when not named]). A host has

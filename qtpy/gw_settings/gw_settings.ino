@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 33      // this firmware's number, shown in /api/status
+#define QT_FW 34      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -146,7 +146,12 @@ static uint8_t hcap_seq = 0;  // in /api/status: the page fetches /api/hosts aga
 // address zeroed: those vary between connections of the same host (seen 10-20: XIM1/XIM2 and FLOW twice each gave the
 // same first 12 otherwise). 0 = not enough requests yet. The user picks a stage per signature on the page; on each
 // power-on the QT Py sets it once the Warg is there, checks the mouse took it, and retries a few times.
-#define HSIG_REQS 12
+// fw34: the first 6 DISTINCT requests (fw24-33: the first 12 as sent). Windows sometimes reads the strings again before
+// configuring (seen 10-21 with the Warg wired: FLOW matched its usual 9 requests, then strings 0/3/1/2 again instead of
+// the configuration), which gave FLOW a second signature with no stage. All 8 saved captures checked: FLOW's two
+// variants give one signature, XIM's another. Saved stages and gain hosts are moved over once (NVS "sigv" = 2).
+#define HSIG_REQS 6
+#define HSIG_V1_REQS 12
 #define HPROF_MAX 8
 struct __attribute__((packed)) HostProf {  // 16 bytes, NVS "hprof"
     uint32_t sig;
@@ -159,6 +164,16 @@ static uint32_t auto_sig = 0;     // this power-on's host, once known
 static uint8_t auto_want = 0xFF;  // the stage (0-4) to set, 0xFF = nothing to do
 static uint8_t auto_tries = 0;
 static uint32_t auto_at = 0;
+// fw34: what the automatic stage did, kept across a QT Py-only restart (RTC memory survives a software reset, not a power
+// cut). A restart keeps a stage that was already set for this host (it may have been changed by hand since) and still
+// sets one that wasn't (fw33 kept whatever was there: after the signature fix, FLOW would have stayed on XIM's stage).
+struct AutoRtc {
+    uint32_t magic, boots, sig;
+    uint8_t state;
+};
+#define AUTO_RTC_MAGIC 0x47574153u
+static RTC_NOINIT_ATTR AutoRtc auto_rtc;
+static AutoRtc auto_prev;  // the previous boot's, taken in setup()
 static uint8_t auto_state = 0;  // 0 waiting, 1 sent, 2 confirmed, 3 gave up, 4 no stage for this host; fw33: 5 checking
                                 // with the mouse, 6 kept (only the QT Py restarted)
 static uint8_t auto_cap = 0;      // fw33: the capture (its number) auto_sig came from; a newer one this power-on is checked too
@@ -1336,21 +1351,95 @@ static uint8_t hcap_reqs(const HostCap& c, uint8_t* first_len) {  // requests ot
     return k;
 }
 
-static uint32_t hcap_sig(const HostCap& c) {
+// v2 (fw34): FNV-1a over the first HSIG_REQS distinct requests (bus resets skipped, SET_ADDRESS's address zeroed, a
+// request equal to an earlier one skipped); v1 (fw24-33, for moving saved hosts over): the first 12 as sent
+static uint32_t hcap_sig_n(const HostCap& c, uint8_t want, bool distinct) {
     uint8_t n = c.blk[3] <= HCAP_ENTRIES ? c.blk[3] : HCAP_ENTRIES, k = 0;
+    uint8_t seen[HSIG_V1_REQS][8];
     uint32_t h = 2166136261u;
-    for (uint8_t i = 0; (i < n) && (k < HSIG_REQS); i++) {
+    for (uint8_t i = 0; (i < n) && (k < want); i++) {
         const uint8_t* e = c.blk + 16 + 8 * i;
         if ((e[0] == 0xFF) && (e[1] == 0xFF)) {
             continue;
         }
-        bool addr = (e[0] == 0x00) && (e[1] == 0x05);
+        uint8_t r[8];
+        memcpy(r, e, 8);
+        if ((r[0] == 0x00) && (r[1] == 0x05)) {
+            r[2] = r[3] = 0;
+        }
+        bool dup = false;
+        for (uint8_t j = 0; distinct && (j < k) && !dup; j++) {
+            dup = !memcmp(seen[j], r, 8);
+        }
+        if (dup) {
+            continue;
+        }
+        memcpy(seen[k], r, 8);
         for (uint8_t b = 0; b < 8; b++) {
-            h = (h ^ ((addr && (b == 2 || b == 3)) ? 0 : e[b])) * 16777619u;
+            h = (h ^ r[b]) * 16777619u;
         }
         k++;
     }
-    return (k < HSIG_REQS) ? 0 : (h ? h : 1);
+    return (k < want) ? 0 : (h ? h : 1);
+}
+
+static uint32_t hcap_sig(const HostCap& c) {
+    return hcap_sig_n(c, HSIG_REQS, true);
+}
+
+// fw34: a host saved under a v1 signature gets the v2 one of a kept capture that had it (0 = none kept)
+static uint32_t sig_v2_of(uint32_t v1) {
+    for (uint8_t k = 0; k < hcap_n; k++) {
+        if (hcap_sig_n(hcap[k], HSIG_V1_REQS, false) == v1) {
+            uint32_t s = hcap_sig(hcap[k]);
+            if (s) {
+                return s;
+            }
+        }
+    }
+    return 0;
+}
+
+static void sig_migrate() {
+    for (uint8_t k = 0; k < hprof_n; k++) {
+        uint32_t s = sig_v2_of(hprof[k].sig);
+        if (s) {
+            hprof[k].sig = s;
+        }
+    }
+    for (uint8_t a = 0; a < hprof_n; a++) {  // two old signatures of one host: keep the one with a stage, else a name
+        for (uint8_t b = a + 1; b < hprof_n;) {
+            if (hprof[b].sig != hprof[a].sig) {
+                b++;
+                continue;
+            }
+            if ((!hprof[a].stage && hprof[b].stage) || (!hprof[a].stage && !hprof[a].name[0] && hprof[b].name[0])) {
+                hprof[a] = hprof[b];
+            }
+            hprof[b] = hprof[--hprof_n];
+        }
+    }
+    if (hprof_n) {
+        prefs.putBytes("hprof", hprof, sizeof(HostProf) * hprof_n);
+    }
+    for (uint8_t k = 0; k < dg.n; k++) {
+        uint32_t s = sig_v2_of(dg.sig[k]);
+        if (s) {
+            dg.sig[k] = s;
+        }
+    }
+    for (uint8_t a = 0; a < dg.n; a++) {
+        for (uint8_t b = a + 1; b < dg.n;) {
+            if (dg.sig[b] == dg.sig[a]) {
+                dg.sig[b] = dg.sig[--dg.n];
+            } else {
+                b++;
+            }
+        }
+    }
+    if (dg.n) {
+        prefs.putBytes("dgain", &dg, sizeof(dg));
+    }
 }
 
 static int hprof_find(uint32_t sig) {  // index, -1 = none (an int: Arduino's prototypes can't name HostProf)
@@ -1381,7 +1470,10 @@ static void auto_tick() {
                 auto_sig = sig;
                 HostProf* p = hprof_at(hprof_find(sig));
                 auto_want = (p && p->stage >= 1 && p->stage <= 5) ? p->stage - 1 : 0xFF;
-                auto_state = (auto_want == 0xFF) ? 4 : (first && feather_ran) ? 6 : 0;
+                // fw34: kept only if the last boot had already set (or kept) this host's stage
+                bool was_set = (auto_prev.magic == AUTO_RTC_MAGIC) && (auto_prev.boots + 1 == b_boots) && (auto_prev.sig == sig) &&
+                               ((auto_prev.state == 2) || (auto_prev.state == 6));
+                auto_state = (auto_want == 0xFF) ? 4 : (first && feather_ran && was_set) ? 6 : 0;
                 auto_tries = 0;
                 auto_lost = 0;
                 auto_at = 0;
@@ -1389,6 +1481,10 @@ static void auto_tick() {
             }
         }
     }
+    auto_rtc.magic = AUTO_RTC_MAGIC;  // fw34: for a QT Py-only restart
+    auto_rtc.boots = b_boots;
+    auto_rtc.sig = auto_sig;
+    auto_rtc.state = auto_state;
     if ((auto_want == 0xFF) || ((auto_state != 0) && (auto_state != 1) && (auto_state != 5)) || !link_up || !st_ok || !(st[3] & 1)) {
         return;  // nothing to set, done, or the Warg isn't there yet
     }
@@ -2201,6 +2297,12 @@ void setup() {
         }
         dg.n = 0;
     }
+    if (prefs.getUChar("sigv", 1) < 2) {  // fw34: hosts saved under the v1 signature
+        sig_migrate();
+        prefs.putUChar("sigv", 2);
+    }
+    auto_prev = auto_rtc;  // fw34: the last boot's automatic stage (garbage after a power cut: the magic and boot say so)
+    auto_rtc.magic = 0;
     b_brownouts = prefs.getULong("brownouts", 0);
     b_crashes = prefs.getULong("crashes", 0);
     if (b_reason == ESP_RST_BROWNOUT) {
