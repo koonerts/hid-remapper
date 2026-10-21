@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 26      // this firmware's number, shown in /api/status
+#define QT_FW 27      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -166,6 +166,18 @@ static DirGainCfg dg = { { 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000 }, 0, 
 static uint32_t dg_sent_at = 0;
 static bool dg_reread = false;
 static uint16_t dg_sends = 0;  // since boot, for /api/status
+// fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
+#define CALIB_KEEP 6
+struct __attribute__((packed)) CalibRec {  // 46 bytes
+    uint32_t t;         // Unix time
+    uint8_t n[8];       // flicks measured per direction
+    uint16_t med[8];    // median reach per mille (0 = too few)
+    uint16_t g[8];      // the gains this host applied while measuring, per mille
+    uint8_t flags;      // bit 0 raw input, bit 1 coarse browser clock
+    uint8_t skipped;    // flicks skipped (at most 255)
+};
+static CalibRec calib[CALIB_KEEP];
+static uint8_t calib_n = 0;
 static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
 // Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
@@ -1486,6 +1498,67 @@ static void h_dirgain() {
     ok_json(true);
 }
 
+// POST /api/calib?n=8 counts&med=8 per mille&g=8 per mille&f=flags&s=skipped (fw27): a calibration run's summary
+static bool csv8(const String& s, long lo, long hi, long* out) {
+    int at = 0;
+    for (int k = 0; k < 8; k++) {
+        int comma = s.indexOf(',', at);
+        long v = ((comma < 0) ? s.substring(at) : s.substring(at, comma)).toInt();
+        if ((v < lo) || (v > hi) || ((comma < 0) && (k < 7))) {
+            return false;
+        }
+        out[k] = v;
+        at = comma + 1;
+    }
+    return true;
+}
+
+static void h_calib_post() {
+    touch();
+    long n[8], med[8], g[8], fl = server.arg("f").toInt(), sk = server.arg("s").toInt();
+    if (!csv8(server.arg("n"), 0, 255, n) || !csv8(server.arg("med"), 0, 3000, med) || !csv8(server.arg("g"), 500, 2000, g)) {
+        return ok_json(false, "need n, med and g: 8 numbers each");
+    }
+    memmove(calib + 1, calib, sizeof(CalibRec) * (CALIB_KEEP - 1));
+    if (calib_n < CALIB_KEEP) {
+        calib_n++;
+    }
+    CalibRec& c = calib[0];
+    c.t = now_unix();
+    for (int k = 0; k < 8; k++) {
+        c.n[k] = n[k];
+        c.med[k] = med[k];
+        c.g[k] = g[k];
+    }
+    c.flags = fl & 0xFF;
+    c.skipped = (sk < 0) ? 0 : (sk > 255) ? 255 : sk;
+    prefs.putBytes("calib", calib, sizeof(CalibRec) * calib_n);
+    ok_json(true);
+}
+
+// GET /api/calib (fw27): the saved summaries, newest first
+static void h_calib_get() {
+    String j = "{\"runs\":[";
+    for (uint8_t k = 0; k < calib_n; k++) {
+        const CalibRec& c = calib[k];
+        j += (k ? ",{\"t\":" : "{\"t\":") + String(c.t) + ",\"flags\":" + String(c.flags) + ",\"skipped\":" + String(c.skipped) + ",\"n\":[";
+        for (int d = 0; d < 8; d++) {
+            j += (d ? "," : "") + String(c.n[d]);
+        }
+        j += "],\"med\":[";
+        for (int d = 0; d < 8; d++) {
+            j += (d ? "," : "") + String(c.med[d]);
+        }
+        j += "],\"g\":[";
+        for (int d = 0; d < 8; d++) {
+            j += (d ? "," : "") + String(c.g[d]);
+        }
+        j += "]}";
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
 // /api/set?stage=0..4 | angle=-30..30 | pos=-100..101
 static void h_set() {
     touch();
@@ -1739,6 +1812,7 @@ void setup() {
     edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
+    calib_n = prefs.getBytes("calib", calib, sizeof(calib)) / sizeof(CalibRec);   // fw27: calibration summaries
     if (prefs.getBytes("dgain", &dg, sizeof(dg)) != sizeof(dg)) {                     // fw26: direction gains
         for (int k = 0; k < 8; k++) {
             dg.g[k] = 1000;
@@ -1765,6 +1839,8 @@ void setup() {
     server.on("/api/hosts", HTTP_GET, h_hosts);
     server.on("/api/hostprof", HTTP_POST, h_hostprof);
     server.on("/api/dirgain", HTTP_POST, h_dirgain);
+    server.on("/api/calib", HTTP_POST, h_calib_post);
+    server.on("/api/calib", HTTP_GET, h_calib_get);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);

@@ -465,14 +465,20 @@ const ok=per.map(p=>p.n>=3&&p.med>0),c=per.map((p,k)=>ok[k]?1/p.med:1),okc=c.fil
 const gm=okc.length?Math.exp(okc.reduce((s,v)=>s+Math.log(v),0)/okc.length):1;
 const sug=m.g.map((g,k)=>ok[k]?dgClamp(g*Math.max(.8,Math.min(1.25,Math.pow(c[k]/gm,.8)))):g);
 cbLast={id:Date.now(),per,sug,g:m.g,n:all.length,skip:m.skip,coarse,raw:m.raw};
+// QT Py fw27: keep the run's summary there (the last 6), and compare with the run before it
+if(all.length>=16){const prev=cbPrev;post('/api/calib?n='+per.map(p=>p.n).join(',')+'&med='+per.map(p=>p.n>=3?Math.round(p.med*1000):0).join(',')+'&g='+m.g.map(g=>Math.round(g*1000)).join(',')+'&f='+((m.raw?1:0)|(coarse?2:0))+'&s='+m.skip).then(()=>cbLoadPrev());cbLast.prev=prev}
 const pct=v=>Math.round(v*100);let h='<h3 class="sub">Calibration result</h3>';
 if(all.length<16){h+='<p class="note">Only '+all.length+' flicks could be measured ('+m.skip+' skipped). Do at least two rounds.</p>';$('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG();return}
 h+='<p class="mut">'+all.length+' flicks measured, '+m.skip+' skipped (too early, off line or a misclick). On target (within 5%): '+pct(pf/all.length)+'% · short: '+pct(un/all.length)+'% · over: '+pct(ov/all.length)+'%.'+(m.raw?' Raw mouse input.':'')+'</p>';
 if(coarse)h+='<p class="note">This browser spaced the movement samples '+dtm.toFixed(0)+' ms apart, too coarse to find where flicks stop (Firefox\'s resistFingerprinting does this). Treat the numbers below with care.</p>';
-h+='<table class="cbt"><tr><th>Direction</th><th>Flicks</th><th>Reach</th><th>Now</th><th>Suggested</th></tr>'+per.map((p,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+p.n+'</td><td>'+(ok[k]?(p.med<1?pct(1-p.med)+'% short':p.med>1?pct(p.med-1)+'% over':'on target'):'–')+'</td><td>'+m.g[k].toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>';
+const pv=cbLast.prev,rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';
+h+='<table class="cbt"><tr><th>Direction</th><th>Flicks</th><th>Reach</th>'+(pv?'<th>Last run</th>':'')+'<th>Now</th><th>Suggested</th></tr>'+per.map((p,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+p.n+'</td><td>'+(ok[k]?rd(p.med):'–')+'</td>'+(pv?'<td>'+(pv.med[k]?rd(pv.med[k]/1000):'–')+'</td>':'')+'<td>'+m.g[k].toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>';
+if(pv)h+='<p class="mut">Last run: '+(pv.t?whenText(pv.t*1000):'time unknown')+(pv.g.some((g,k)=>g!==Math.round(m.g[k]*1000))?', measured with different gains, so its reach isn\'t directly comparable':'')+'.</p>';
 h+='<p class="mut">Reach is the median of where each flick\'s first movement stopped. The suggestion keeps your overall sensitivity: only how the directions compare changes. The green dashed shape above shows it.</p>';
 h+='<div class="row"><button class="p" onclick="cbUse()">Use suggested</button><button onclick="cbBegin()">Measure again</button><button onclick="cbDiscard()">Discard</button></div>';
 $('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG()}
+let cbPrev=null;function cbLoadPrev(){fetch(tq('/api/calib')).then(r=>r.json()).then(j=>{cbPrev=j.runs&&j.runs[0]||null}).catch(()=>{})}
+setTimeout(cbLoadPrev,1500);
 function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgKey='';drawDG();toast('Press Save to keep it')}
 function cbDiscard(){cbLast=null;$('cbres').hidden=true;dgKey='';drawDG()}
 $('cbc').addEventListener('pointermove',cbMove);$('cbc').addEventListener('pointerdown',cbDown);$('cbc').addEventListener('contextmenu',e=>e.preventDefault());
