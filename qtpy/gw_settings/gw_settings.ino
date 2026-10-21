@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 27      // this firmware's number, shown in /api/status
+#define QT_FW 28      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -107,6 +107,7 @@ static uint32_t last_http = 0;
 #define EK_AUTO_STAGE 10  // fw24: the stage set for the host on this power-on ("name=stage 0-4"; dev 7 = automatic)
 #define EK_HOST_STAGE 11  // fw24: a host's stage chosen on the page ("name=stage 0-5")
 #define EK_DIRGAIN 12     // fw26: the direction gains or their hosts saved ("N hosts")
+#define EK_TEMP_DPI 13    // fw28: the calibration's temporary DPI ("N") or the table put back ("restored", dev 7)
 struct __attribute__((packed)) EditLog {  // 32 bytes
     uint32_t t;     // Unix time (s): the browser's clock sent with the request, else NTP, else 0 = unknown
     uint32_t ms;    // millis() then: ages within the same boot when the time is unknown
@@ -177,6 +178,17 @@ struct __attribute__((packed)) CalibRec {  // 46 bytes
     uint8_t skipped;    // flicks skipped (at most 255)
 };
 static CalibRec calib[CALIB_KEEP];
+// fw28: a temporary DPI for the flick calibration. The page lowers the current stage's DPI so flicks as long as the
+// ones in game fit on the screen; the whole table goes back afterwards: when the page says so, when it stops checking
+// in for 12 s (closed, crashed), or after a power cut mid-test (the ATEN): the original table is kept in NVS "tdpi"
+// until the mouse has it back.
+static uint16_t tdpi_orig[10];      // X,Y per stage as they were
+static bool tdpi_active = false;    // lowered now, or a restore is still owed
+static bool tdpi_restore = false;   // put the table back
+static uint16_t tdpi_val = 0;
+static uint32_t tdpi_keep_at = 0;
+static uint32_t tdpi_sent_at = 0;
+static uint32_t tdpi_read_at = 0;
 static uint8_t calib_n = 0;
 static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
@@ -1083,6 +1095,7 @@ static void h_status() {
              ",\"got\":" + String(sup && (evb[50] & 2) ? "true" : "false") + ",\"want\":" + String(dg_wanted() ? "true" : "false") +
              ",\"sends\":" + String(dg_sends) + "}";
     }
+    j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + "}";  // fw28: the calibration's temporary DPI
     {
         char h[12];  // fw24: this power-on's host signature, the automatic stage's state (auto_state) and stage (1-5, 0 none)
         snprintf(h, sizeof(h), "%08lx", (unsigned long) auto_sig);
@@ -1559,6 +1572,104 @@ static void h_calib_get() {
     server.send(200, "application/json", j);
 }
 
+// ---- fw28: temporary DPI for the flick calibration
+static bool tdpi_table_is(const uint16_t* v) {
+    for (int i = 0; i < 5; i++) {
+        if ((u16(23 + 4 * i) != v[2 * i]) || (u16(25 + 4 * i) != v[2 * i + 1])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool tdpi_send(const uint16_t* v) {
+    uint8_t d[20];
+    for (int i = 0; i < 10; i++) {
+        d[2 * i] = v[i] & 0xFF;
+        d[2 * i + 1] = v[i] >> 8;
+    }
+    return queue_cmd(C_SET_DPI, d, 20);
+}
+
+// POST /api/tempdpi?dpi=50-50000 (lower the current stage's DPI; Y keeps its ratio to X) | keep=1 (the page is still
+// testing) | restore=1 (done: put the table back)
+static void h_tempdpi() {
+    touch();
+    if (server.hasArg("restore")) {
+        if (tdpi_active) {
+            tdpi_restore = true;
+            tdpi_sent_at = 0;
+        }
+        return ok_json(true);
+    }
+    if (server.hasArg("keep")) {
+        tdpi_keep_at = millis();
+        return ok_json(tdpi_active && !tdpi_restore);
+    }
+    long v;
+    if (!arg_int("dpi", 50, 50000, &v)) {
+        return ok_json(false, "dpi 50-50000");
+    }
+    if (!link_up || !st_ok || !(st[3] & 128) || (st[4] > 4)) {
+        return ok_json(false, "the DPI table isn't known yet: move the mouse, then Read from mouse");
+    }
+    if (tdpi_restore) {
+        return ok_json(false, "still putting the last test's DPI back: try again in a moment");
+    }
+    if (!tdpi_active) {
+        for (int i = 0; i < 5; i++) {
+            tdpi_orig[2 * i] = u16(23 + 4 * i);
+            tdpi_orig[2 * i + 1] = u16(25 + 4 * i);
+        }
+        prefs.putBytes("tdpi", tdpi_orig, sizeof(tdpi_orig));
+    }
+    uint16_t tb[10];
+    memcpy(tb, tdpi_orig, sizeof(tb));
+    uint8_t s = st[4];
+    long ox = tdpi_orig[2 * s], oy = tdpi_orig[2 * s + 1];
+    long vy = ox ? lround((double) v * oy / ox) : v;
+    tb[2 * s] = v;
+    tb[2 * s + 1] = (vy < 50) ? 50 : (vy > 50000) ? 50000 : vy;
+    if (!tdpi_send(tb)) {
+        if (!tdpi_active) {
+            prefs.remove("tdpi");
+        }
+        return ok_json(false, "busy, try again");
+    }
+    tdpi_active = true;
+    tdpi_val = v;
+    tdpi_keep_at = millis();
+    log_edit(EK_TEMP_DPI, String(v));
+    ok_json(true);
+}
+
+// owed a restore: send the original table every 2 s until the mouse reports it (reading it back if the table isn't
+// known, e.g. right after a power-on), then forget the saved copy
+static void tdpi_tick() {
+    if (tdpi_active && !tdpi_restore && (millis() - tdpi_keep_at > 12000)) {
+        tdpi_restore = true;
+        tdpi_sent_at = 0;
+    }
+    if (!tdpi_restore || !link_up || !st_ok || !(st[3] & 1) || (cq_n > 0)) {
+        return;
+    }
+    if ((st[3] & 128) && tdpi_table_is(tdpi_orig)) {
+        tdpi_restore = false;
+        tdpi_active = false;
+        prefs.remove("tdpi");
+        log_edit_as(EK_TEMP_DPI, "restored", 7, 0);
+        return;
+    }
+    if (millis() - tdpi_sent_at >= 2000) {
+        if (tdpi_send(tdpi_orig)) {
+            tdpi_sent_at = millis();
+        }
+    } else if (!(st[3] & 128) && (millis() - tdpi_read_at >= 5000)) {
+        tdpi_read_at = millis();
+        queue_cmd(C_REFRESH, nullptr, 0);
+    }
+}
+
 // /api/set?stage=0..4 | angle=-30..30 | pos=-100..101
 static void h_set() {
     touch();
@@ -1813,6 +1924,10 @@ void setup() {
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
     calib_n = prefs.getBytes("calib", calib, sizeof(calib)) / sizeof(CalibRec);   // fw27: calibration summaries
+    if (prefs.getBytes("tdpi", tdpi_orig, sizeof(tdpi_orig)) == sizeof(tdpi_orig)) { // fw28: a test's DPI still owed back
+        tdpi_active = true;
+        tdpi_restore = true;
+    }
     if (prefs.getBytes("dgain", &dg, sizeof(dg)) != sizeof(dg)) {                     // fw26: direction gains
         for (int k = 0; k < 8; k++) {
             dg.g[k] = 1000;
@@ -1839,6 +1954,7 @@ void setup() {
     server.on("/api/hosts", HTTP_GET, h_hosts);
     server.on("/api/hostprof", HTTP_POST, h_hostprof);
     server.on("/api/dirgain", HTTP_POST, h_dirgain);
+    server.on("/api/tempdpi", HTTP_POST, h_tempdpi);
     server.on("/api/calib", HTTP_POST, h_calib_post);
     server.on("/api/calib", HTTP_GET, h_calib_get);
     server.on("/api/set", HTTP_POST, h_set);
@@ -1874,6 +1990,7 @@ void loop() {
     hcap_tick();
     auto_tick();
     dg_tick();
+    tdpi_tick();
     if (ntp_want) {
         ntp_want = false;
         configTime(0, 0, "pool.ntp.org", "time.google.com");  // fw22: UTC; the page shows local time

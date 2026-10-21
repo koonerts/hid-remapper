@@ -164,7 +164,9 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="dgrow"><svg id="dgsvg" viewBox="-180 -180 360 360" aria-label="Sensitivity per direction: drag a point outwards for more"></svg><div class="dgvals" id="dgvals"></div></div>
 <div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="dghosts"></div></div>
 <div class="row" style="margin-top:10px"><button class="p" id="dgsave" disabled onclick="dgSave()">Save</button><button id="dgrev" disabled onclick="dgRevert()">Revert</button><button onclick="dgFlat()">All 1.00</button><button onclick="cbBegin()">Calibrate…</button></div>
-<p class="mut" id="dgnote" style="margin:8px 0 0">Calibrate: about 5 rounds of flicks, a few minutes. Click the middle target, flick to the one that appears and click it, flick back and click the middle again. Hold the mouse the way you do in game. Turn off Windows' "Enhance pointer precision" for the cleanest measurement.</p>
+<div class="row" style="margin-top:10px"><label class="mut">Flick lengths <input type="text" id="cblen" value="10" style="width:7em" aria-label="Flick lengths in cm"> cm</label><label class="mut">Rounds per length <input type="number" id="cbrpl" value="3" min="1" max="8" style="width:4.5em" aria-label="Rounds per length"></label></div>
+<p class="note" id="cbmsg" hidden></p>
+<p class="mut" id="dgnote" style="margin:8px 0 0">Calibrate: flicks at the lengths you use in game (e.g. "6, 12, 18" cm), each round the 8 directions. Click the middle target, flick to the one that appears and click it, flick back and click the middle again. For long flicks the test lowers the DPI and puts it back afterwards. Keep Windows' pointer speed at 6 of 11 (the default) with "Enhance pointer precision" off.</p>
 <div id="cbres" hidden></div>
 <div id="cbwrap"><canvas id="cbc" aria-label="Flick area"></canvas><div id="cbhint"></div></div>
 </div>
@@ -372,8 +374,8 @@ else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap
 else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';
 else if(k===10){const[n,w]=v.split('=');return 'Auto ('+(n||'host')+'): DPI stage → stage '+(Number(w)+1)}
 else if(k===11){const[n,w]=v.split('=');s=(n||'a host')+' → '+(w==='0'?'leave the stage':'stage '+w)}
-else if(k===12)s='direction sensitivity saved (on '+v+')';else s='edit '+k;
-return 'Page ('+DEV[d]+' '+ip+'): '+s}
+else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':'calibration DPI → '+v+' for the test';else s='edit '+k;
+return (d===7?'QT Py: ':'Page ('+DEV[d]+' '+ip+'): ')+s}
 // QT Py fw26 + Feather v24: sensitivity per direction (like Corsair's PureVector). Direction k = 0..7 every 45 degrees
 // clockwise on screen from "right" (screen y grows downwards, as in the Feather's atan2).
 const DGA=['→','↘','↓','↙','←','↖','↑','↗'],DGN=['right','down-right','down','down-left','left','up-left','up','up-right'];
@@ -416,23 +418,49 @@ function dgFlat(){dgEdit=[1,1,1,1,1,1,1,1];dgKey='';drawDG()}
 // (1 = on target). Reaches per direction (median) give the suggestion: gain / reach, normalised so the geometric mean
 // change is 1 (overall sensitivity stays), damped (^0.8) and capped at +-25% per run. Measured with whatever gains this
 // host applies now, so a second run refines the first.
-const CBR=5,CBHR=22,CBTR=24;let cb=null;
-function cbBegin(){if(!S||!S.dg||!S.dg.sup){$('dgnote').textContent='Needs Feather firmware v24.';return}
-const w=$('cbwrap');cb={round:0,order:[],i:0,phase:'home',p:{x:innerWidth/2,y:innerHeight/2},fl:null,data:[],skip:0,dts:[],g:S.dg.on?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1],raw:false,geo:null,fs:false};
-// Windows' own cursor (a hardware cursor: as smooth as on the desktop) rather than one drawn in the page, which lagged
-// a frame or more behind; no pointer lock. With pointer speed 6/11 and no Enhance pointer precision it moves 1:1 with the mouse.
-w.classList.add('on');cbRound();const go=()=>{if(cb){cb.geo=null;cbDraw()}};if(w.requestFullscreen)w.requestFullscreen().then(()=>{if(cb)cb.fs=true;go()}).catch(go);else go()}
-function cbRound(){cb.round++;cb.i=0;const o=[0,1,2,3,4,5,6,7];for(let i=7;i>0;i--){const j=Math.floor(Math.random()*(i+1));[o[i],o[j]]=[o[j],o[i]]}cb.order=o}
-function cbGeo(){if(cb&&cb.geo)return cb.geo;const W=$('cbc').clientWidth,H=$('cbc').clientHeight,g={W,H,cx:W/2,cy:H/2,D:.27*Math.min(W,H)};if(cb)cb.geo=g;return g}
+// ---- flick calibration. Full screen with Windows' own cursor (a hardware cursor, as smooth as on the desktop; a cursor
+// drawn by the page lagged a frame or more), no pointer lock. With pointer speed 6/11 and no Enhance pointer precision
+// the cursor moves 1:1 with the mouse's counts, so a flick's length on the pad is its length on screen over the DPI.
+// fw28: flicks at the lengths given in cm (the size of flicks in game). So the longest one spans a third of the screen,
+// the QT Py lowers the current stage's DPI for the test (only ever lowered, not below 50) and puts it back afterwards,
+// also if this page closes. Rounds cycle through the lengths; each round is the 8 directions shuffled: click home, flick
+// to the target and click it, flick back and click home (that flick, the opposite direction, counts too).
+// A flick's first ballistic movement ends where its speed along the target line first drops below 10% of its peak (or
+// the samples pause, or it turns back); how far along the line that is, over the distance to the target, is its reach
+// (1 = on target). Reaches per direction (median, all lengths) give the suggestion: gain / reach, normalised so the
+// geometric mean change is 1 (overall sensitivity stays), damped (^0.8) and capped at +-25% per run. Measured with the
+// gains this host applies now, so a second run refines the first.
+const CBHR=22,CBTR=24;let cb=null;
+function cbMsg(m){const e=$('cbmsg');e.textContent=m||'';e.hidden=!m}
+function cbLens(){const v=String($('cblen').value||'').split(/[\s,;]+/).map(Number).filter(x=>x>=1&&x<=40);return v.length?[...new Set(v)].sort((a,b)=>a-b).slice(0,4):[10]}
+function cbRpl(){const v=parseInt($('cbrpl').value,10);return v>=1&&v<=8?v:3}
+function cbPlan(lens){const short=Math.min(screen.width,screen.height),dpr=devicePixelRatio||1,cur=S.dpi[S.stage][0],Lmax=lens[lens.length-1];
+let dpi=Math.round(short/3*dpr/(Lmax/2.54));if(dpi>cur)dpi=cur;if(dpi<50)dpi=50;return{dpi,cur,temp:dpi!==cur,short,Ds:lens.map(L=>L/2.54*dpi/dpr)}}
+function cbBegin(){cbMsg('');if(!S||!S.dg||!S.dg.sup){cbMsg('Needs Feather firmware v24.');return}
+if(!S.dpi_known||S.stage==null||!S.dpi||!S.dpi[S.stage]||!S.dpi[S.stage][0]){cbMsg('The page doesn\'t know the mouse\'s DPI yet: move the mouse, then press Read from mouse.');return}
+if(S.tdpi&&S.tdpi.restoring){cbMsg('Still putting the last test\'s DPI back: try again in a few seconds.');return}
+const lens=cbLens(),plan=cbPlan(lens);try{localStorage.setItem('cblen',$('cblen').value);localStorage.setItem('cbrpl',$('cbrpl').value)}catch(e){}
+if(plan.Ds[plan.Ds.length-1]>.42*plan.short){cbMsg('A '+lens[lens.length-1]+' cm flick doesn\'t fit on this screen even at 50 DPI.');return}
+const w=$('cbwrap');cb={lens,Ds:plan.Ds,dpi:plan.dpi,cur:plan.cur,temp:plan.temp,rounds:cbRpl()*lens.length,round:0,li:0,order:[],i:0,phase:'wait',p:{x:innerWidth/2,y:innerHeight/2},fl:null,data:[],skip:0,dts:[],
+g:S.dg.on?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1],raw:false,geo:null,fs:false,keep:0};
+w.classList.add('on');if(w.requestFullscreen)w.requestFullscreen().then(()=>{if(cb)cb.fs=true;cbGeoReset()}).catch(()=>{});cbDraw();  // fullscreen only inside the click
+const start=()=>{if(!cb)return;cbRound();cb.phase='home';cbDraw()};if(!plan.temp){start();return}
+post('/api/tempdpi?dpi='+plan.dpi).then(r=>{if(!cb)return;if(!r.ok){cbStop(false);cbMsg('Couldn\'t lower the DPI for the test: '+(r.err||'no answer'));return}
+cb.keep=setInterval(()=>post('/api/tempdpi?keep=1'),3000);const t0=Date.now(),wait=()=>{if(!cb)return;
+if(S.dpi&&S.stage!=null&&S.dpi[S.stage]&&S.dpi[S.stage][0]===plan.dpi){start();return}
+if(Date.now()-t0>6000){cbStop(false);cbMsg('The mouse didn\'t take the test DPI (asleep?): move it and try again.');return}setTimeout(wait,250)};wait()})}
+function cbRound(){cb.round++;cb.li=(cb.round-1)%cb.lens.length;cb.i=0;const o=[0,1,2,3,4,5,6,7];for(let i=7;i>0;i--){const j=Math.floor(Math.random()*(i+1));[o[i],o[j]]=[o[j],o[i]]}cb.order=o}
+function cbGeo(){if(cb&&cb.geo)return cb.geo;const W=$('cbc').clientWidth,H=$('cbc').clientHeight,g={W,H,cx:W/2,cy:H/2};if(cb)cb.geo=g;return g}
+function cbGeoReset(){if(cb){cb.geo=null;cbDraw()}}
 // the cursor's own positions, every one Windows reported (coalesced events), with their times
 function cbMove(e){if(!cb)return;const evs=e.getCoalescedEvents?e.getCoalescedEvents():[];for(const q of (evs.length?evs:[e])){cb.p.x=q.clientX;cb.p.y=q.clientY;
 if(cb.fl){const s=cb.fl.s;if(s.length)cb.dts.push(q.timeStamp-s[s.length-1][0]);s.push([q.timeStamp,q.clientX,q.clientY])}}}
-function cbFlick(kind,k,T,e){cb.fl={kind,k,start:{x:cb.p.x,y:cb.p.y},T,t0:e.timeStamp,s:[[e.timeStamp,cb.p.x,cb.p.y]]}}
-function cbEnd(){if(!cb.fl)return;const r=cbAnalyze(cb.fl);if(r)cb.data.push(r);else cb.skip++;cb.fl=null}
-function cbDown(e){if(!cb)return;e.preventDefault();if(e.button===2){cbStop(true);return}if(e.button!==0)return;cb.p.x=e.clientX;cb.p.y=e.clientY;const g=cbGeo();
+function cbFlick(kind,k,T,e){cb.fl={kind,k,L:cb.li,start:{x:cb.p.x,y:cb.p.y},T,t0:e.timeStamp,s:[[e.timeStamp,cb.p.x,cb.p.y]]}}
+function cbEnd(){if(!cb.fl)return;const r=cbAnalyze(cb.fl);if(r){r.L=cb.fl.L;cb.data.push(r)}else cb.skip++;cb.fl=null}
+function cbDown(e){if(!cb)return;e.preventDefault();if(e.button===2){cbStop(true);return}if(e.button!==0||cb.phase==='wait')return;cb.p.x=e.clientX;cb.p.y=e.clientY;const g=cbGeo();
 if(cb.phase==='home'){if(Math.hypot(cb.p.x-g.cx,cb.p.y-g.cy)>CBHR)return;cbEnd();
-if(cb.i>=8){if(cb.round>=CBR){cbStop(true);return}cbRound()}
-const k=cb.order[cb.i++],a=k*Math.PI/4;cbFlick('out',k,{x:g.cx+g.D*Math.cos(a),y:g.cy+g.D*Math.sin(a)},e);cb.phase='out'}
+if(cb.i>=8){if(cb.round>=cb.rounds){cbStop(true);return}cbRound()}
+const k=cb.order[cb.i++],a=k*Math.PI/4,D=cb.Ds[cb.li];cbFlick('out',k,{x:g.cx+D*Math.cos(a),y:g.cy+D*Math.sin(a)},e);cb.phase='out'}
 else{const T=cb.fl&&cb.fl.T;if(!T||Math.hypot(cb.p.x-T.x,cb.p.y-T.y)>CBTR)return;const k=cb.fl.k;cbEnd();cbFlick('back',(k+4)%8,{x:g.cx,y:g.cy},e);cb.phase='home'}
 cbDraw()}
 function cbAnalyze(fl){const sx=fl.start.x,sy=fl.start.y,vx=fl.T.x-sx,vy=fl.T.y-sy,D=Math.hypot(vx,vy);if(D<60)return null;const ux=vx/D,uy=vy/D,s=fl.s;if(s.length<6)return null;
@@ -449,39 +477,44 @@ if(rt<80||reach<.4||reach>1.8||Math.abs(lat)>.5)return null;return{k:fl.k,kind:f
 // drawn only when a target changes (the cursor is Windows' own, so nothing needs redrawing while you move)
 function cbDraw(){if(!cb)return;const c=$('cbc'),x=c.getContext('2d'),dpr=devicePixelRatio||1,g=cbGeo();
 if(c.width!==Math.round(g.W*dpr)||c.height!==Math.round(g.H*dpr)){c.width=Math.round(g.W*dpr);c.height=Math.round(g.H*dpr)}x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,g.W,g.H);
-x.strokeStyle='#222';x.beginPath();x.arc(g.cx,g.cy,g.D,0,7);x.stroke();
-for(let k=0;k<8;k++){const a=k*Math.PI/4;x.beginPath();x.moveTo(g.cx+(g.D-8)*Math.cos(a),g.cy+(g.D-8)*Math.sin(a));x.lineTo(g.cx+(g.D+8)*Math.cos(a),g.cy+(g.D+8)*Math.sin(a));x.stroke()}
-x.fillStyle=cb.phase==='home'?'#2f7de1':'#1a2a40';x.beginPath();x.arc(g.cx,g.cy,CBHR,0,7);x.fill();
+cb.Ds.forEach((D,li)=>{x.strokeStyle=li===cb.li&&cb.phase!=='wait'?'#333':'#1a1a1a';x.beginPath();x.arc(g.cx,g.cy,D,0,7);x.stroke()});
+const D=cb.Ds[cb.li];x.strokeStyle='#333';for(let k=0;k<8;k++){const a=k*Math.PI/4;x.beginPath();x.moveTo(g.cx+(D-8)*Math.cos(a),g.cy+(D-8)*Math.sin(a));x.lineTo(g.cx+(D+8)*Math.cos(a),g.cy+(D+8)*Math.sin(a));x.stroke()}
+if(cb.phase!=='wait'){x.fillStyle=cb.phase==='home'?'#2f7de1':'#1a2a40';x.beginPath();x.arc(g.cx,g.cy,CBHR,0,7);x.fill()}
 if(cb.phase==='out'&&cb.fl){x.fillStyle='#e8553e';x.beginPath();x.arc(cb.fl.T.x,cb.fl.T.y,CBTR,0,7);x.fill()}
-$('cbhint').textContent='Round '+cb.round+' of '+CBR+' · target '+cb.i+' of 8 · '+cb.data.length+' flicks measured · click the targets · right-click or Esc to finish'}
-function cbStop(done){if(!cb)return;const m=cb;cb=null;if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('cbwrap').classList.remove('on');if(done)cbFinish(m)}
+const dp=cb.temp?' · DPI '+cb.dpi+' for the test (back to '+cb.cur+' after)':'';
+$('cbhint').textContent=cb.phase==='wait'?'Setting the DPI to '+cb.dpi+' for the test…':'Round '+cb.round+' of '+cb.rounds+' · '+cb.lens[cb.li]+' cm flicks · target '+cb.i+' of 8 · '+cb.data.length+' measured'+dp+' · right-click or Esc to finish'}
+function cbStop(done){if(!cb)return;const m=cb;cb=null;if(m.keep)clearInterval(m.keep);if(m.temp)post('/api/tempdpi?restore=1');
+if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('cbwrap').classList.remove('on');if(done)cbFinish(m)}
 function cbMed(a){const b=a.slice().sort((p,q)=>p-q),n=b.length;return n?(n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2):NaN}
-function cbFinish(m){const per=[];for(let k=0;k<8;k++){const r=m.data.filter(d=>d.k===k).map(d=>d.reach);per.push({n:r.length,med:cbMed(r)})}
+function cbFinish(m){const per=[],perL=[];for(let k=0;k<8;k++){const r=m.data.filter(d=>d.k===k).map(d=>d.reach);per.push({n:r.length,med:cbMed(r)});
+perL.push(m.lens.map((L,li)=>{const q=m.data.filter(d=>d.k===k&&d.L===li).map(d=>d.reach);return{n:q.length,med:cbMed(q)}}))}
 const all=m.data.map(d=>d.reach),pf=all.filter(r=>Math.abs(r-1)<=.05).length,un=all.filter(r=>r<.95).length,ov=all.filter(r=>r>1.05).length;
 // sample spacing: a browser that rounds its clock coarsely (resistFingerprinting) hides where a flick stops
 const dts=m.dts.filter(x=>x>0).sort((p,q)=>p-q),dtm=dts.length?dts[Math.floor(dts.length/2)]:0,coarse=dtm>=8;
 const ok=per.map(p=>p.n>=3&&p.med>0),c=per.map((p,k)=>ok[k]?1/p.med:1),okc=c.filter((v,k)=>ok[k]);
 const gm=okc.length?Math.exp(okc.reduce((s,v)=>s+Math.log(v),0)/okc.length):1;
 const sug=m.g.map((g,k)=>ok[k]?dgClamp(g*Math.max(.8,Math.min(1.25,Math.pow(c[k]/gm,.8)))):g);
-cbLast={id:Date.now(),per,sug,g:m.g,n:all.length,skip:m.skip,coarse,raw:m.raw};
+cbLast={id:Date.now(),per,perL,lens:m.lens,sug,g:m.g,n:all.length,skip:m.skip,coarse,raw:m.raw};
 // QT Py fw27: keep the run's summary there (the last 6), and compare with the run before it
 if(all.length>=16){const prev=cbPrev;post('/api/calib?n='+per.map(p=>p.n).join(',')+'&med='+per.map(p=>p.n>=3?Math.round(p.med*1000):0).join(',')+'&g='+m.g.map(g=>Math.round(g*1000)).join(',')+'&f='+((m.raw?1:0)|(coarse?2:0))+'&s='+m.skip).then(()=>cbLoadPrev());cbLast.prev=prev}
-const pct=v=>Math.round(v*100);let h='<h3 class="sub">Calibration result</h3>';
+const pct=v=>Math.round(v*100),rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';let h='<h3 class="sub">Calibration result</h3>';
 if(all.length<16){h+='<p class="note">Only '+all.length+' flicks could be measured ('+m.skip+' skipped). Do at least two rounds.</p>';$('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG();return}
-h+='<p class="mut">'+all.length+' flicks measured, '+m.skip+' skipped (too early, off line or a misclick). On target (within 5%): '+pct(pf/all.length)+'% · short: '+pct(un/all.length)+'% · over: '+pct(ov/all.length)+'%.'+(m.raw?' Raw mouse input.':'')+'</p>';
+h+='<p class="mut">'+all.length+' flicks of '+m.lens.join(', ')+' cm'+(m.temp?' (at '+m.dpi+' DPI for the test)':'')+', '+m.skip+' skipped (too early, off line or a misclick). On target (within 5%): '+pct(pf/all.length)+'% · short: '+pct(un/all.length)+'% · over: '+pct(ov/all.length)+'%.</p>';
+if(m.lens.length>1)h+='<p class="mut">Overall by length: '+m.lens.map((L,li)=>{const q=m.data.filter(d=>d.L===li).map(d=>d.reach);return L+' cm '+(q.length?rd(cbMed(q)):'–')}).join(' · ')+'. Only how the directions compare goes into the suggestion.</p>';
 if(coarse)h+='<p class="note">This browser spaced the movement samples '+dtm.toFixed(0)+' ms apart, too coarse to find where flicks stop (Firefox\'s resistFingerprinting does this). Treat the numbers below with care.</p>';
-const pv=cbLast.prev,rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';
-h+='<table class="cbt"><tr><th>Direction</th><th>Flicks</th><th>Reach</th>'+(pv?'<th>Last run</th>':'')+'<th>Now</th><th>Suggested</th></tr>'+per.map((p,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+p.n+'</td><td>'+(ok[k]?rd(p.med):'–')+'</td>'+(pv?'<td>'+(pv.med[k]?rd(pv.med[k]/1000):'–')+'</td>':'')+'<td>'+m.g[k].toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>';
+const pv=cbLast.prev,ml=m.lens.length>1;
+h+='<table class="cbt"><tr><th>Direction</th><th>Flicks</th>'+(ml?m.lens.map(L=>'<th>'+L+' cm</th>').join(''):'')+'<th>'+(ml?'All':'Reach')+'</th>'+(pv?'<th>Last run</th>':'')+'<th>Now</th><th>Suggested</th></tr>'+per.map((p,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+p.n+'</td>'+(ml?perL[k].map(q=>'<td>'+(q.n>=2?rd(q.med):'–')+'</td>').join(''):'')+'<td>'+(ok[k]?rd(p.med):'–')+'</td>'+(pv?'<td>'+(pv.med[k]?rd(pv.med[k]/1000):'–')+'</td>':'')+'<td>'+m.g[k].toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>';
 if(pv)h+='<p class="mut">Last run: '+(pv.t?whenText(pv.t*1000):'time unknown')+(pv.g.some((g,k)=>g!==Math.round(m.g[k]*1000))?', measured with different gains, so its reach isn\'t directly comparable':'')+'.</p>';
 h+='<p class="mut">Reach is the median of where each flick\'s first movement stopped. The suggestion keeps your overall sensitivity: only how the directions compare changes. The green dashed shape above shows it.</p>';
 h+='<div class="row"><button class="p" onclick="cbUse()">Use suggested</button><button onclick="cbBegin()">Measure again</button><button onclick="cbDiscard()">Discard</button></div>';
 $('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG()}
 let cbPrev=null;function cbLoadPrev(){fetch(tq('/api/calib')).then(r=>r.json()).then(j=>{cbPrev=j.runs&&j.runs[0]||null}).catch(()=>{})}
-setTimeout(cbLoadPrev,1500);
+setTimeout(cbLoadPrev,1500);try{const a=localStorage.getItem('cblen'),b=localStorage.getItem('cbrpl');if(a)$('cblen').value=a;if(b)$('cbrpl').value=b}catch(e){}
 function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgKey='';drawDG();toast('Press Save to keep it')}
 function cbDiscard(){cbLast=null;$('cbres').hidden=true;dgKey='';drawDG()}
 $('cbc').addEventListener('pointermove',cbMove);$('cbc').addEventListener('pointerdown',cbDown);$('cbc').addEventListener('contextmenu',e=>e.preventDefault());
-document.addEventListener('fullscreenchange',()=>{if(!cb)return;if(document.fullscreenElement){cb.geo=null;cbDraw()}else if(cb.fs)cbStop(cb.data.length>=8)});addEventListener('resize',()=>{if(cb){cb.geo=null;cbDraw()}});
+document.addEventListener('fullscreenchange',()=>{if(!cb)return;if(document.fullscreenElement)cbGeoReset();else if(cb.fs)cbStop(cb.data.length>=8)});addEventListener('resize',cbGeoReset);
+addEventListener('pagehide',()=>{if(cb&&cb.temp&&navigator.sendBeacon)navigator.sendBeacon('/api/tempdpi?restore=1')});  // the QT Py also restores after 12 s without a keep-alive
 document.addEventListener('keydown',e=>{if(cb&&e.key==='Escape')cbStop(cb.data.length>=8)});
 // QT Py fw23 + Feather v23: the USB host captures (/api/hosts), fetched while the fold-out is open and when they change
 const HDESC={1:'device',2:'config',3:'string',6:'qualifier',7:'other-speed',15:'BOS',0x21:'HID',0x22:'report'};
