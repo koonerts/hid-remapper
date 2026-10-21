@@ -1664,7 +1664,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 24
+#define GW_FW_VERSION 25
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1692,6 +1692,12 @@ static uint8_t in_4us(uint32_t us) {
 }
 
 void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
+    static bool started = false;
+    if (!started) {  // v25: the first window starts here, not at boot (it counted the ~0.5 s USB enumeration as one second: 255 skipped)
+        started = true;
+        ft_at = time_us_32();
+        merged_at = ticks_merged();
+    }
     ft_sum += total_us;
     fc_sum += chords_us;
     ft_n++;

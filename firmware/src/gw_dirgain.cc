@@ -68,12 +68,21 @@ void gw_dirgain_filter(int32_t* x, int32_t* y) {
     float f = s - k;
     k %= GW_DIRGAIN_N;
     float g = gain[k] * (1.0f - f) + gain[(k + 1) % GW_DIRGAIN_N] * f;
-    float fx = dx * g + rx, fy = dy * g + ry;
-    int32_t nx = (int32_t) lroundf(fx), ny = (int32_t) lroundf(fy);
-    rx = fx - nx;
-    ry = fy - ny;
-    *x = nx;
-    *y = ny;
+    // v25: an axis that didn't move stays 0 (its carried fraction waits for its next motion: lroundf on an exact
+    // -0.5/+0.5 carry flipped it -1/+1 every frame, a 1-count shiver), floor(x + 0.5) rounding so a carry of -0.5 is
+    // stable, and the result clamped to what a 16-bit report holds (it would wrap and turn the motion around)
+    if (dx != 0) {
+        float fx = dx * g + rx;
+        int32_t nx = (int32_t) floorf(fx + 0.5f);
+        rx = fx - nx;
+        *x = (nx > 32767) ? 32767 : (nx < -32767) ? -32767 : nx;
+    }
+    if (dy != 0) {
+        float fy = dy * g + ry;
+        int32_t ny = (int32_t) floorf(fy + 0.5f);
+        ry = fy - ny;
+        *y = (ny > 32767) ? 32767 : (ny < -32767) ? -32767 : ny;
+    }
 }
 
 void gw_dirgain_status(uint8_t* s) {

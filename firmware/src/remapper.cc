@@ -1114,8 +1114,8 @@ void process_mapping(bool auto_repeat) {
 
     // chords take their buttons and the wheel out of what the mappings see (put back at the end)
     gw_chords_filter(gw_ch_in);
+    uint32_t gw_chords_us = (uint32_t) (get_time() - now);  // the chord filter alone (v25: not the gains too)
     gw_dirgain_filter(gw_xy_in[0], gw_xy_in[1]);  // v24: the frame's X/Y, before any mapping reads them
-    uint32_t gw_chords_us = (uint32_t) (get_time() - now);
 
     for (auto& tap_hold : tap_hold_usages) {
         if ((*tap_hold.input_state != 0) && (*(tap_hold.input_state + PREV_STATE_OFFSET) == 0)) {
