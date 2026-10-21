@@ -441,7 +441,7 @@ if(!S.dpi_known||S.stage==null||!S.dpi||!S.dpi[S.stage]||!S.dpi[S.stage][0]){cbM
 if(S.tdpi&&(S.tdpi.restoring||S.tdpi.on)){cbMsg('The last test\'s DPI is still being put back: try again in a few seconds.');return}
 const lens=cbLens(),plan=cbPlan(lens);try{localStorage.setItem('cblen',$('cblen').value);localStorage.setItem('cbrpl',$('cbrpl').value)}catch(e){}
 if(plan.Ds[plan.Ds.length-1]>.42*plan.short){cbMsg('A '+lens[lens.length-1]+' cm flick doesn\'t fit on this screen even at 50 DPI.');return}
-const w=$('cbwrap');cb={lens,Ds:plan.Ds,dpi:plan.dpi,cur:plan.cur,temp:plan.temp,rounds:cbRpl()*lens.length,round:0,li:0,order:[],i:0,phase:'wait',p:{x:innerWidth/2,y:innerHeight/2},fl:null,data:[],skip:0,dts:[],why:{},traces:[],
+const w=$('cbwrap');cb={lens,Ds:plan.Ds,dpi:plan.dpi,cur:plan.cur,temp:plan.temp,rounds:cbRpl()*lens.length,round:0,li:0,order:[],i:0,phase:'wait',p:{x:innerWidth/2,y:innerHeight/2},fl:null,data:[],skip:0,dts:[],dte:[],why:{},traces:[],
 g:S.dg.on?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1],raw:false,geo:null,fs:false,keep:0};
 w.classList.add('on');if(w.requestFullscreen)w.requestFullscreen().then(()=>{if(cb)cb.fs=true;cbGeoReset()}).catch(()=>{});cbDraw();  // fullscreen only inside the click
 const start=()=>{if(!cb)return;cbRound();cb.phase='home';cbDraw()};if(!plan.temp){start();return}
@@ -452,10 +452,13 @@ if(Date.now()-t0>6000){cbStop(false);cbMsg('The mouse didn\'t take the test DPI 
 function cbRound(){cb.round++;cb.li=(cb.round-1)%cb.lens.length;cb.i=0;const o=[0,1,2,3,4,5,6,7];for(let i=7;i>0;i--){const j=Math.floor(Math.random()*(i+1));[o[i],o[j]]=[o[j],o[i]]}cb.order=o}
 function cbGeo(){if(cb&&cb.geo)return cb.geo;const W=$('cbc').clientWidth,H=$('cbc').clientHeight,g={W,H,cx:W/2,cy:H/2};if(cb)cb.geo=g;return g}
 function cbGeoReset(){if(cb){cb.geo=null;cbDraw()}}
-// the cursor's own positions, every one Windows reported (coalesced events), with their times
-function cbMove(e){if(!cb)return;const evs=e.getCoalescedEvents?e.getCoalescedEvents():[];for(const q of (evs.length?evs:[e])){cb.p.x=q.clientX;cb.p.y=q.clientY;
-if(cb.fl){const s=cb.fl.s;if(s.length)cb.dts.push(q.timeStamp-s[s.length-1][0]);s.push([q.timeStamp,q.clientX,q.clientY])}}}
-function cbFlick(kind,k,T,e){cb.fl={kind,k,L:cb.li,start:{x:cb.p.x,y:cb.p.y},T,t0:e.timeStamp,s:[[e.timeStamp,cb.p.x,cb.p.y]]}}
+// the cursor's own positions with their times. fw30: Firefox stamps mouse events with Windows' message clock, in ~16 ms
+// steps (measured 10-21: 57% of samples shared a stamp, every other gap was 16 ms or more), so each sample is timed by
+// the page's own clock as it arrives instead; a browser that hands over its in-between samples (getCoalescedEvents,
+// https or Chrome) has them stamped properly, and those keep their own times. Both clocks go into the diagnostics.
+function cbMove(e){if(!cb)return;const now=performance.now(),evs=e.getCoalescedEvents?e.getCoalescedEvents():[],many=evs.length>1;for(const q of (many?evs:[e])){const tq=many?q.timeStamp:now;cb.p.x=q.clientX;cb.p.y=q.clientY;
+if(cb.fl){const s=cb.fl.s;if(s.length){cb.dts.push(tq-s[s.length-1][0]);cb.dte.push(q.timeStamp-cb.fl.ev)}cb.fl.ev=q.timeStamp;s.push([tq,q.clientX,q.clientY])}}}
+function cbFlick(kind,k,T,e){const now=performance.now();cb.fl={kind,k,L:cb.li,start:{x:cb.p.x,y:cb.p.y},T,t0:now,ev:e.timeStamp,s:[[now,cb.p.x,cb.p.y]]}}
 function cbEnd(){if(!cb.fl)return;const r=cbAnalyze(cb.fl);if(r&&!r.why){r.L=cb.fl.L;cb.data.push(r)}else{cb.skip++;const w=r?r.why:'?';cb.why[w]=(cb.why[w]||0)+1;if(cb.traces.length<6)cb.traces.push(cbTrace(cb.fl,w))}cb.fl=null}
 function cbDown(e){if(!cb)return;e.preventDefault();if(e.button===2){cbStop(true);return}if(e.button!==0||cb.phase==='wait')return;cb.p.x=e.clientX;cb.p.y=e.clientY;const g=cbGeo();
 if(cb.phase==='home'){if(Math.hypot(cb.p.x-g.cx,cb.p.y-g.cy)>CBHR)return;
@@ -513,16 +516,16 @@ if(all.length>=16){const prev=cbPrev;post('/api/calib?n='+per.map(p=>p.n).join('
 const pct=v=>Math.round(v*100),rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';let h='<h3 class="sub">Calibration result</h3>';
 // fw29: why flicks were skipped and how this browser delivered the movement (also kept on the QT Py: GET /api/calibdiag)
 const dz=m.dts.filter(x=>x<=0).length,dp=m.dts.filter(x=>x>0).sort((p,q)=>p-q),dmed=dp.length?dp[Math.floor(dp.length/2)]:0,dp95=dp.length?dp[Math.floor(dp.length*.95)]:0,d12=dp.filter(x=>x>12).length;
-const sub=typeof PointerEvent!=='undefined'&&'getCoalescedEvents' in PointerEvent.prototype;
+const sub=typeof PointerEvent!=='undefined'&&'getCoalescedEvents' in PointerEvent.prototype;const ez=m.dte.filter(x=>x<=0).length,ep=m.dte.filter(x=>x>0).sort((p,q)=>p-q),emed=ep.length?ep[Math.floor(ep.length/2)]:0;
 const diag={t:Math.floor(Date.now()/1000),qt_fw:S&&S.qt_fw,dpi:m.dpi,lens:m.lens,measured:all.length,out:m.data.filter(d=>d.kind==='out').length,back:m.data.filter(d=>d.kind==='back').length,skipped:m.skip,why:m.why,
-dt:{n:m.dts.length,median:+dmed.toFixed(2),p95:+dp95.toFixed(2),same_pct:m.dts.length?Math.round(dz/m.dts.length*100):0,over12_pct:dp.length?Math.round(d12/dp.length*100):0},subframe:sub,secure:!!window.isSecureContext,ua:navigator.userAgent.slice(0,90),traces:m.traces};
+dt:{n:m.dts.length,median:+dmed.toFixed(2),p95:+dp95.toFixed(2),same_pct:m.dts.length?Math.round(dz/m.dts.length*100):0,over12_pct:dp.length?Math.round(d12/dp.length*100):0},ev_clock:{median:+emed.toFixed(2),same_pct:m.dte.length?Math.round(ez/m.dte.length*100):0},subframe:sub,secure:!!window.isSecureContext,ua:navigator.userAgent.slice(0,90),traces:m.traces};
 post('/api/calibdiag',JSON.stringify(diag));
 const whyTxt=Object.entries(m.why).sort((p,q)=>q[1]-p[1]).map(([w,c])=>c+' '+w).join(' · ');
-const diagH='<p class="mut">Skipped: '+(whyTxt||'none')+'.<br>Movement samples: every '+dmed.toFixed(1)+' ms usually ('+dp95.toFixed(1)+' ms at the 95th percentile), '+diag.dt.over12_pct+'% more than 12 ms apart, '+diag.dt.same_pct+'% sharing a timestamp; '+(sub?'with':'without')+' the browser\'s in-between samples.</p>';
+const diagH='<p class="mut">Skipped: '+(whyTxt||'none')+'.<br>Movement samples: every '+dmed.toFixed(1)+' ms usually ('+dp95.toFixed(1)+' ms at the 95th percentile), '+diag.dt.over12_pct+'% more than 12 ms apart, '+diag.dt.same_pct+'% sharing a timestamp (the browser\'s own event clock: '+emed.toFixed(1)+' ms, '+diag.ev_clock.same_pct+'% shared); '+(sub?'with':'without')+' the browser\'s in-between samples.</p>';
 if(all.length<16){h+='<p class="note">Only '+all.length+' flicks could be measured ('+m.skip+' skipped). Do at least two rounds.</p>'+diagH;$('cbres').innerHTML=h;$('cbres').hidden=false;dgKey='';drawDG();return}
 h+='<p class="mut">'+all.length+' flicks of '+m.lens.join(', ')+' cm'+(m.temp?' (at '+m.dpi+' DPI for the test)':'')+', '+m.skip+' skipped (too early, off line or a misclick). On target (within 5%): '+pct(pf/all.length)+'% · short: '+pct(un/all.length)+'% · over: '+pct(ov/all.length)+'%.</p>';
 if(m.lens.length>1)h+='<p class="mut">Overall by length: '+m.lens.map((L,li)=>{const q=m.data.filter(d=>d.L===li).map(d=>d.reach);return L+' cm '+(q.length?rd(cbMed(q)):'–')}).join(' · ')+'. Only how the directions compare goes into the suggestion.</p>';
-h+=diagH;if(coarse)h+='<p class="note">This browser spaced the movement samples '+dtm.toFixed(0)+' ms apart, too coarse to find where flicks stop (Firefox\'s resistFingerprinting does this). Treat the numbers below with care.</p>';
+h+=diagH;if(coarse)h+='<p class="note">Mouse movement arrived only every '+dtm.toFixed(0)+' ms, too coarse to find exactly where flicks stop. In Firefox, set dom.events.coalesce.mousemove to false in about:config (it hands over every movement instead of one per frame), then measure again. Treat the numbers below with care.</p>';
 const pv=cbLast.prev,ml=m.lens.length>1;
 h+='<table class="cbt"><tr><th>Direction</th><th>Flicks</th>'+(ml?m.lens.map(L=>'<th>'+L+' cm</th>').join(''):'')+'<th>'+(ml?'All':'Reach')+'</th>'+(pv?'<th>Last run</th>':'')+'<th>Now</th><th>Suggested</th></tr>'+per.map((p,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+p.n+'</td>'+(ml?perL[k].map(q=>'<td>'+(q.n>=2?rd(q.med):'–')+'</td>').join(''):'')+'<td>'+(ok[k]?rd(p.med):'–')+'</td>'+(pv?'<td>'+(pv.med[k]?rd(pv.med[k]/1000):'–')+'</td>':'')+'<td>'+m.g[k].toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>';
 if(pv)h+='<p class="mut">Last run: '+(pv.t?whenText(pv.t*1000):'time unknown')+(pv.g.some((g,k)=>g!==Math.round(m.g[k]*1000))?', measured with different gains, so its reach isn\'t directly comparable':'')+'.</p>';
