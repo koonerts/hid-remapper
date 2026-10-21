@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 31      // this firmware's number, shown in /api/status
+#define QT_FW 32      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -107,6 +107,7 @@ static uint32_t last_http = 0;
 #define EK_AUTO_STAGE 10  // fw24: the stage set for the host on this power-on ("name=stage 0-4"; dev 7 = automatic)
 #define EK_HOST_STAGE 11  // fw24: a host's stage chosen on the page ("name=stage 0-5")
 #define EK_DIRGAIN 12     // fw26: the direction gains or their hosts saved ("N hosts")
+#define EK_REFUSED 14     // fw32: a change refused from an out-of-date page (no "t": before fw22); text = the endpoint
 #define EK_TEMP_DPI 13    // fw28: the calibration's temporary DPI ("N") or the table put back ("restored", dev 7)
 struct __attribute__((packed)) EditLog {  // 32 bytes
     uint32_t t;     // Unix time (s): the browser's clock sent with the request, else NTP, else 0 = unknown
@@ -865,6 +866,9 @@ static void h_probe() {
 // POST /api/opt?k=poll&v=1000 | k=lod&v=0.7..1.6 | k=snap|sync&v=0|1 | k=spdt&v=0-3 (bit 0 left, bit 1 right)
 static void h_opt() {
     touch();
+    if (!from_current_page()) {
+        return;
+    }
     if (!st_ok || !link_up) {
         return ok_json(false, "no answer from the Feather");
     }
@@ -966,6 +970,9 @@ static String chords_json() {
 // Kept on the Feather (flash) and here, so a Feather on its built-in table gets it back.
 static void h_chords() {
     touch();
+    if (!from_current_page()) {
+        return;
+    }
     if (!st_ok || !link_up) {
         return ok_json(false, "no answer from the Feather");
     }
@@ -1371,6 +1378,9 @@ static void h_hosts() {
 // POST /api/hostprof?sig=8 hex&stage=0-5&name=... (fw24): set a host's stage and name; stage 0 with no name removes it
 static void h_hostprof() {
     touch();
+    if (!from_current_page()) {
+        return;
+    }
     uint32_t sig = strtoul(server.arg("sig").c_str(), nullptr, 16);
     long stage;
     if (!sig || !arg_int("stage", 0, 5, &stage)) {
@@ -1480,6 +1490,9 @@ static void dg_tick() {
 // POST /api/dirgain?g=g0,...,g7 (per mille, 500-2000)&hosts=sig,sig (8 hex each; empty = off everywhere)
 static void h_dirgain() {
     touch();
+    if (!from_current_page()) {
+        return;
+    }
     uint16_t g[8];
     String s = server.arg("g");
     int at = 0;
@@ -1615,6 +1628,9 @@ static void h_tempdpi() {
         return ok_json(tdpi_active && !tdpi_restore);
     }
     long v;
+    if (!from_current_page()) {
+        return;
+    }
     if (!arg_int("dpi", 50, 50000, &v)) {
         return ok_json(false, "dpi 50-50000");
     }
@@ -1743,9 +1759,23 @@ static void h_calibdiag_post() {
 static void h_calibdiag_get() {
     server.send(200, "text/plain", calib_diag.length() ? calib_diag : String("none"));
 }
+// fw32: requests that change a setting must come from a current page (fw22+ adds "t", its clock, to every request;
+// scripts and BallSheet send it too). An older page, e.g. a stale copy a browser restored, is refused and logged.
+static bool from_current_page() {
+    if (server.hasArg("t")) {
+        return true;
+    }
+    log_edit_as(EK_REFUSED, server.uri().substring(5, 20), ua_device(), (uint32_t) server.client().remoteIP());
+    ok_json(false, "this page is out of date: reload it");
+    return false;
+}
+
 // /api/set?stage=0..4 | angle=-30..30 | pos=-100..101
 static void h_set() {
     touch();
+    if (!from_current_page()) {
+        return;
+    }
     long v;
     if (arg_int("stage", 0, 4, &v)) {
         return set_cmd(C_SET_STAGE, v);
@@ -1777,6 +1807,9 @@ static bool parse_colours(const String& s, uint8_t* out) {  // "rrggbb,rrggbb,..
 // /api/palette?c=rrggbb,rrggbb,rrggbb,rrggbb,rrggbb
 static void h_palette() {
     touch();
+    if (!from_current_page()) {
+        return;
+    }
     uint8_t p[15];
     if (!parse_colours(server.arg("c"), p)) {
         return ok_json(false, "need 5 colours");
@@ -1792,6 +1825,9 @@ static void h_palette() {
 // /api/dpi?v=x1,y1,x2,y2,...  (10 numbers, 50..50000)
 static void h_dpi() {
     touch();
+    if (!from_current_page()) {
+        return;
+    }
     if (tdpi_active) {
         return ok_json(false, "a calibration has the DPI lowered for its test: finish it first (the table comes back by itself)");
     }
@@ -1819,6 +1855,9 @@ static void h_dpi() {
 // /api/tune?as=&ps=&ah=&ph=&fl=&poh=&wh=&rh=
 static void h_tune() {
     touch();
+    if (!from_current_page()) {
+        return;
+    }
     long as, ps, ah, ph, fl, poh, wh, rh;
     if (!(arg_int("as", 1, 10, &as) && arg_int("ps", 1, 25, &ps) && arg_int("ah", -30, 30, &ah) && arg_int("ph", -100, 101, &ph) &&
             arg_int("fl", 100, 5000, &fl) && arg_int("poh", 150, 3000, &poh) && arg_int("wh", 0, 3000, &wh) && arg_int("rh", 200, 3000, &rh))) {
@@ -1966,6 +2005,10 @@ static void h_update_done() {
 static void h_page() {
     touch();
     queue_cmd(C_REFRESH, nullptr, 0);  // opening the page reads the mouse's current settings
+    // fw32: never cached. On 10-21 Firefox restored an unloaded HYDROC tab from its cache: an old page without the
+    // fw21 input guard, whose restored slider values went straight to the mouse (angle -14, position 15).
+    server.sendHeader("Cache-Control", "no-store");
+    server.sendHeader("Pragma", "no-cache");
     server.send_P(200, "text/html", PAGE_HTML);
 }
 
