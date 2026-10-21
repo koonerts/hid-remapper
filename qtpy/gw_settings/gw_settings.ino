@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 35      // this firmware's number, shown in /api/status
+#define QT_FW 36      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -197,15 +197,20 @@ static uint32_t dg_sent_at = 0;
 static bool dg_reread = false;
 static uint16_t dg_sends = 0;  // since boot, for /api/status
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
+// fw36: + the cursor speed the run used (BallSheet's %, 0 = not known: the page's runs, and runs from before fw36), so
+// the page and BallSheet can pool runs made at a similar speed (NVS "calib2"; "calib" is moved over once)
 #define CALIB_KEEP 6
-struct __attribute__((packed)) CalibRec {  // 46 bytes
+#define CALIB_V1_SIZE 46
+struct __attribute__((packed)) CalibRec {  // 47 bytes
     uint32_t t;         // Unix time
     uint8_t n[8];       // flicks measured per direction
     uint16_t med[8];    // median reach per mille (0 = too few)
     uint16_t g[8];      // the gains this host applied while measuring, per mille
     uint8_t flags;      // bit 0 raw input, bit 1 coarse browser clock
     uint8_t skipped;    // flicks skipped (at most 255)
+    uint8_t speed;      // fw36: cursor speed %, 0 = not known
 };
+static_assert(sizeof(CalibRec) == CALIB_V1_SIZE + 1, "fw36 appended one byte to the fw27 record");
 static CalibRec calib[CALIB_KEEP];
 // fw28: a temporary DPI for the flick calibration. The page lowers the current stage's DPI so flicks as long as the
 // ones in game fit on the screen; the whole table goes back afterwards: when the page says so, when it stops checking
@@ -1858,8 +1863,31 @@ static void h_calib_post() {
     }
     c.flags = fl & 0xFF;
     c.skipped = (sk < 0) ? 0 : (sk > 255) ? 255 : sk;
-    prefs.putBytes("calib", calib, sizeof(CalibRec) * calib_n);
+    long sp = server.arg("sp").toInt();  // fw36: BallSheet's cursor speed %
+    c.speed = (sp < 0) ? 0 : (sp > 255) ? 255 : sp;
+    prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
     ok_json(true);
+}
+
+// POST /api/calibspeed?run=<its Unix time>&sp=<%> (fw36): the speed of a run saved before runs carried one (only when
+// it has none yet)
+static void h_calibspeed() {
+    touch();
+    long run = server.arg("run").toInt(), sp = server.arg("sp").toInt();
+    if ((sp < 1) || (sp > 255)) {
+        return ok_json(false, "sp 1-255");
+    }
+    for (uint8_t k = 0; k < calib_n; k++) {
+        if ((long) calib[k].t == run) {
+            if (calib[k].speed) {
+                return ok_json(false, "that run has its speed already");
+            }
+            calib[k].speed = sp;
+            prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+            return ok_json(true);
+        }
+    }
+    ok_json(false, "no saved run at that time");
 }
 
 // GET /api/calib (fw27): the saved summaries, newest first
@@ -1867,7 +1895,7 @@ static void h_calib_get() {
     String j = "{\"runs\":[";
     for (uint8_t k = 0; k < calib_n; k++) {
         const CalibRec& c = calib[k];
-        j += (k ? ",{\"t\":" : "{\"t\":") + String(c.t) + ",\"flags\":" + String(c.flags) + ",\"skipped\":" + String(c.skipped) + ",\"n\":[";
+        j += (k ? ",{\"t\":" : "{\"t\":") + String(c.t) + ",\"flags\":" + String(c.flags) + ",\"skipped\":" + String(c.skipped) + ",\"speed\":" + String(c.speed) + ",\"n\":[";
         for (int d = 0; d < 8; d++) {
             j += (d ? "," : "") + String(c.n[d]);
         }
@@ -2360,7 +2388,19 @@ void setup() {
     edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
-    calib_n = prefs.getBytes("calib", calib, sizeof(calib)) / sizeof(CalibRec);   // fw27: calibration summaries
+    calib_n = prefs.getBytes("calib2", calib, sizeof(calib)) / sizeof(CalibRec);  // fw27: calibration summaries (fw36: + speed)
+    if (!calib_n && prefs.isKey("calib")) {  // fw36: move the fw27-35 records (46 bytes, no speed) over once
+        uint8_t old[CALIB_KEEP * CALIB_V1_SIZE];
+        calib_n = prefs.getBytes("calib", old, sizeof(old)) / CALIB_V1_SIZE;
+        for (uint8_t k = 0; k < calib_n; k++) {
+            memcpy(&calib[k], old + CALIB_V1_SIZE * k, CALIB_V1_SIZE);
+            calib[k].speed = 0;
+        }
+        if (calib_n) {
+            prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+        }
+        prefs.remove("calib");
+    }
     tdpi_stage = prefs.getUChar("tdpis", 0xFF);                                        // fw29: which stage the test lowered
     if (prefs.getBytes("tdpi", tdpi_orig, sizeof(tdpi_orig)) == sizeof(tdpi_orig)) { // fw28: a test's DPI still owed back
         tdpi_active = true;
@@ -2403,6 +2443,7 @@ void setup() {
     server.on("/api/calibdiag", HTTP_GET, h_calibdiag_get);
     server.on("/api/calib", HTTP_POST, h_calib_post);
     server.on("/api/calib", HTTP_GET, h_calib_get);
+    server.on("/api/calibspeed", HTTP_POST, h_calibspeed);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);

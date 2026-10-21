@@ -546,13 +546,28 @@ let cbRuns=[],cbRunsAt=0;
 function cbSug(r){const ok=r.n.map((n,k)=>n>=3&&r.med[k]>0),c=r.med.map((m,k)=>ok[k]?1000/m:1),okc=c.filter((v,k)=>ok[k]);
 const gm=okc.length?Math.exp(okc.reduce((s,v)=>s+Math.log(v),0)/okc.length):1;
 return r.g.map((g,k)=>{const gg=g/1000;return ok[k]?dgClamp(gg*Math.max(.8,Math.min(1.25,Math.pow(c[k]/gm,.8)))):gg})}
+// QT Py fw36: a suggestion pooled from several saved runs. Each run is corrected for the gains it was measured with (the
+// hand's own reach = reach / gain), the runs are averaged in log space weighted by flicks, and the result is scaled so
+// the overall sensitivity stays (geometric mean of the gains in use). Comparable by default: same tool (BallSheet or this
+// page), not coarse, 16+ flicks, and for BallSheet a known speed within 5 points of the newest run's. Tick boxes override.
+function cbComparable(r,ref){if(!r||!ref||(r.flags&2)||(r.flags&1)!==(ref.flags&1)||r.n.reduce((a,b)=>a+b,0)<16)return false;return !(r.flags&1)||(r.speed>0&&ref.speed>0&&Math.abs(r.speed-ref.speed)<=5)}
+let cbPoolSel=null;  // run times ticked for pooling; null = the comparable ones
+function cbPoolRuns(){if(!cbRuns.length)return[];if(cbPoolSel)return cbRuns.filter(r=>cbPoolSel.includes(r.t));return cbRuns.filter(r=>cbComparable(r,cbRuns[0]))}
+function cbPooled(runs){const cur=dgSaved(),lh=[0,0,0,0,0,0,0,0],w=[0,0,0,0,0,0,0,0];
+runs.forEach(r=>{for(let k=0;k<8;k++)if(r.n[k]>=3&&r.med[k]>0&&r.g[k]>0){lh[k]+=r.n[k]*Math.log(r.med[k]/r.g[k]);w[k]+=r.n[k]}});
+const ok=w.map(x=>x>0),m=ok.filter(Boolean).length;if(!m)return cur.slice();
+const ideal=lh.map((s,k)=>ok[k]?Math.exp(-s/w[k]):cur[k]),lg=a=>a.reduce((s,v,k)=>ok[k]?s+Math.log(v):s,0),sc=Math.exp((lg(cur)-lg(ideal))/m);
+return ideal.map((v,k)=>ok[k]?dgClamp(Math.max(cur[k]*.8,Math.min(cur[k]*1.25,v*sc))):cur[k])}
+function cbPoolTick(t,on){if(!cbPoolSel)cbPoolSel=cbPoolRuns().map(r=>r.t);cbPoolSel=on?cbPoolSel.concat([t]):cbPoolSel.filter(x=>x!==t);cbDrawRuns()}
+function cbUsePooled(){const rs=cbPoolRuns();if(!rs.length)return;dgEdit=cbPooled(rs);dgKey='';drawDG();toast('Pooled from '+rs.length+' run'+(rs.length>1?'s':'')+': press Save to keep it')}
 function cbLoadRuns(){cbRunsAt=Date.now();fetchJ(tq('/api/calib')).then(j=>{cbRuns=j.runs||[];if(!cb)cbDrawRuns()}).catch(()=>{})}
 function cbDrawRuns(){const box=$('cbsaved');box.hidden=!cbRuns.length;if(!cbRuns.length)return;$('cbsavedn').textContent='('+cbRuns.length+')';
 const pct=v=>Math.round(v*100),rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';
-$('cbsavedlist').innerHTML=cbRuns.map((r,i)=>{const sug=cbSug(r),tot=r.n.reduce((a,b)=>a+b,0);
-return '<h3 class="sub">'+(r.t?whenText(r.t*1000):'time unknown')+' · '+(r.flags&1?'BallSheet (raw input)':'this page')+'</h3><p class="mut">'+tot+' flicks measured, '+r.skipped+' skipped.</p>'+
+const pr=cbPoolRuns(),ps=pr.length?cbPooled(pr):null,inPool=r=>pr.includes(r);
+$('cbsavedlist').innerHTML=(ps?'<h3 class="sub">Pooled from '+pr.length+' run'+(pr.length>1?'s':'')+'</h3><p class="mut">'+DGA.map((a,k)=>a+' '+ps[k].toFixed(2)).join(' · ')+'</p><div class="row" style="margin-bottom:10px"><button class="p" onclick="cbUsePooled()">Use pooled suggestion</button></div>':'<p class="mut">No comparable runs to pool: tick some below.</p>')+cbRuns.map((r,i)=>{const sug=cbSug(r),tot=r.n.reduce((a,b)=>a+b,0);
+return '<h3 class="sub">'+(r.t?whenText(r.t*1000):'time unknown')+' · '+(r.flags&1?'BallSheet (raw input'+(r.speed?', '+r.speed+'% speed':'')+')':'this page')+'</h3><p class="mut">'+tot+' flicks measured, '+r.skipped+' skipped. <label><input type="checkbox"'+(inPool(r)?' checked':'')+' onchange="cbPoolTick('+r.t+',this.checked)"> in the pooled suggestion</label></p>'+
 '<table class="cbt"><tr><th>Direction</th><th>Flicks</th><th>Reach</th><th>Gain then</th><th>Suggested</th></tr>'+r.n.map((n,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+n+'</td><td>'+(n>=3&&r.med[k]?rd(r.med[k]/1000):'–')+'</td><td>'+(r.g[k]/1000).toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>'+
-'<div class="row" style="margin-top:6px"><button onclick="cbUseRun('+i+')">Use suggested</button></div>'}).join('')}
+'<div class="row" style="margin-top:6px"><button onclick="cbUseRun('+i+')">Use this run alone</button></div>'}).join('')}
 function cbUseRun(i){const r=cbRuns[i];if(!r)return;dgEdit=cbSug(r);dgKey='';drawDG();toast('Loaded into the editor: press Save to keep it')}
 setTimeout(cbLoadRuns,2000);setInterval(()=>{if(!cb&&document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
 function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgKey='';drawDG();toast('Press Save to keep it')}
