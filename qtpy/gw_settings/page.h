@@ -43,7 +43,7 @@ input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
 #dgsvg .sug{fill:none;stroke:var(--ok);stroke-width:1.5;stroke-dasharray:6 3}
 #dgsvg .hd{fill:var(--acc);cursor:grab}#dgsvg text{fill:var(--mut);font-size:13px;text-anchor:middle;dominant-baseline:middle}
 .dgvals{display:grid;grid-template-columns:auto 70px auto 70px;gap:6px 8px;align-items:center}.dgvals input{width:70px}
-#cbwrap{display:none;position:fixed;inset:0;z-index:1000;background:#000}#cbwrap.on{display:block}#cbc{display:block;width:100vw;height:100vh;cursor:none}
+#cbwrap{display:none;position:fixed;inset:0;z-index:1000;background:#000}#cbwrap.on{display:block}#cbc{display:block;width:100vw;height:100vh;cursor:crosshair}
 #cbhint{position:absolute;top:14px;left:0;right:0;text-align:center;color:#bbb;font-size:14px;pointer-events:none}
 .cbt{border-collapse:collapse;font-size:13px;margin-top:6px}.cbt td,.cbt th{padding:3px 8px;text-align:right}.cbt th{color:var(--mut);font-weight:600}.cbt td:first-child,.cbt th:first-child{text-align:left}
 .st{height:38px;border-radius:9px;border:1px solid var(--line);font-weight:700;padding:0}
@@ -418,22 +418,23 @@ function dgFlat(){dgEdit=[1,1,1,1,1,1,1,1];dgKey='';drawDG()}
 // host applies now, so a second run refines the first.
 const CBR=5,CBHR=22,CBTR=24;let cb=null;
 function cbBegin(){if(!S||!S.dg||!S.dg.sup){$('dgnote').textContent='Needs Feather firmware v24.';return}
-const c=$('cbc'),w=$('cbwrap');cb={round:0,order:[],i:0,phase:'home',p:{x:0,y:0},fl:null,data:[],skip:0,dts:[],g:S.dg.on?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1],raw:false};
-w.classList.add('on');cb.p={x:innerWidth/2,y:innerHeight/2};cbRound();
-const lock=()=>{try{const r=c.requestPointerLock({unadjustedMovement:true});if(r&&r.then)r.then(()=>{cb&&(cb.raw=true)}).catch(()=>c.requestPointerLock())}catch(e){c.requestPointerLock()}};
-if(w.requestFullscreen)w.requestFullscreen().then(lock).catch(lock);else lock();requestAnimationFrame(cbLoop)}
+const w=$('cbwrap');cb={round:0,order:[],i:0,phase:'home',p:{x:innerWidth/2,y:innerHeight/2},fl:null,data:[],skip:0,dts:[],g:S.dg.on?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1],raw:false,geo:null,fs:false};
+// Windows' own cursor (a hardware cursor: as smooth as on the desktop) rather than one drawn in the page, which lagged
+// a frame or more behind; no pointer lock. With pointer speed 6/11 and no Enhance pointer precision it moves 1:1 with the mouse.
+w.classList.add('on');cbRound();const go=()=>{if(cb){cb.geo=null;cbDraw()}};if(w.requestFullscreen)w.requestFullscreen().then(()=>{if(cb)cb.fs=true;go()}).catch(go);else go()}
 function cbRound(){cb.round++;cb.i=0;const o=[0,1,2,3,4,5,6,7];for(let i=7;i>0;i--){const j=Math.floor(Math.random()*(i+1));[o[i],o[j]]=[o[j],o[i]]}cb.order=o}
-function cbGeo(){const W=$('cbc').clientWidth,H=$('cbc').clientHeight;return{W,H,cx:W/2,cy:H/2,D:.3*Math.min(W,H)}}
-function cbMove(e){if(!cb)return;const evs=e.getCoalescedEvents?e.getCoalescedEvents():[e],g=cbGeo();for(const q of (evs.length?evs:[e])){
-cb.p.x=Math.max(0,Math.min(g.W,cb.p.x+q.movementX));cb.p.y=Math.max(0,Math.min(g.H,cb.p.y+q.movementY));
-if(cb.fl){const s=cb.fl.s;if(s.length)cb.dts.push(q.timeStamp-s[s.length-1][0]);s.push([q.timeStamp,cb.p.x,cb.p.y])}}}
+function cbGeo(){if(cb&&cb.geo)return cb.geo;const W=$('cbc').clientWidth,H=$('cbc').clientHeight,g={W,H,cx:W/2,cy:H/2,D:.27*Math.min(W,H)};if(cb)cb.geo=g;return g}
+// the cursor's own positions, every one Windows reported (coalesced events), with their times
+function cbMove(e){if(!cb)return;const evs=e.getCoalescedEvents?e.getCoalescedEvents():[];for(const q of (evs.length?evs:[e])){cb.p.x=q.clientX;cb.p.y=q.clientY;
+if(cb.fl){const s=cb.fl.s;if(s.length)cb.dts.push(q.timeStamp-s[s.length-1][0]);s.push([q.timeStamp,q.clientX,q.clientY])}}}
 function cbFlick(kind,k,T,e){cb.fl={kind,k,start:{x:cb.p.x,y:cb.p.y},T,t0:e.timeStamp,s:[[e.timeStamp,cb.p.x,cb.p.y]]}}
 function cbEnd(){if(!cb.fl)return;const r=cbAnalyze(cb.fl);if(r)cb.data.push(r);else cb.skip++;cb.fl=null}
-function cbDown(e){if(!cb)return;e.preventDefault();if(e.button===2){cbStop(true);return}if(e.button!==0)return;const g=cbGeo();
+function cbDown(e){if(!cb)return;e.preventDefault();if(e.button===2){cbStop(true);return}if(e.button!==0)return;cb.p.x=e.clientX;cb.p.y=e.clientY;const g=cbGeo();
 if(cb.phase==='home'){if(Math.hypot(cb.p.x-g.cx,cb.p.y-g.cy)>CBHR)return;cbEnd();
 if(cb.i>=8){if(cb.round>=CBR){cbStop(true);return}cbRound()}
 const k=cb.order[cb.i++],a=k*Math.PI/4;cbFlick('out',k,{x:g.cx+g.D*Math.cos(a),y:g.cy+g.D*Math.sin(a)},e);cb.phase='out'}
-else{const T=cb.fl&&cb.fl.T;if(!T||Math.hypot(cb.p.x-T.x,cb.p.y-T.y)>CBTR)return;const k=cb.fl.k;cbEnd();cbFlick('back',(k+4)%8,{x:g.cx,y:g.cy},e);cb.phase='home'}}
+else{const T=cb.fl&&cb.fl.T;if(!T||Math.hypot(cb.p.x-T.x,cb.p.y-T.y)>CBTR)return;const k=cb.fl.k;cbEnd();cbFlick('back',(k+4)%8,{x:g.cx,y:g.cy},e);cb.phase='home'}
+cbDraw()}
 function cbAnalyze(fl){const sx=fl.start.x,sy=fl.start.y,vx=fl.T.x-sx,vy=fl.T.y-sy,D=Math.hypot(vx,vy);if(D<60)return null;const ux=vx/D,uy=vy/D,s=fl.s;if(s.length<6)return null;
 const a=s.map(q=>(q[1]-sx)*ux+(q[2]-sy)*uy),t=s.map(q=>q[0]),v=[];let j=0;
 for(let i=0;i<s.length;i++){while(j<i-1&&t[i]-t[j+1]>=8)j++;v.push(i>j&&t[i]>t[j]?(a[i]-a[j])/(t[i]-t[j]):0)}
@@ -445,17 +446,15 @@ let on=i30;while(on>1&&v[on-1]>=.1*v[i30]&&t[on]-t[on-1]<=12)on--;
 let vmax=0,end=s.length-1;for(let i=on;i<s.length;i++){if(i>on&&t[i]-t[i-1]>12){end=i-1;break}if(v[i]>vmax)vmax=v[i];if(i>i30&&v[i]<.1*vmax){end=i;break}}
 const reach=a[end]/D,lat=((s[end][1]-sx)*-uy+(s[end][2]-sy)*ux)/D,rt=t[on]-fl.t0;
 if(rt<80||reach<.4||reach>1.8||Math.abs(lat)>.5)return null;return{k:fl.k,kind:fl.kind,reach,lat,rt,vmax}}
-function cbLoop(){if(!cb)return;const c=$('cbc'),x=c.getContext('2d'),dpr=devicePixelRatio||1,g=cbGeo();
-if(c.width!==Math.round(g.W*dpr)){c.width=Math.round(g.W*dpr);c.height=Math.round(g.H*dpr)}x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,g.W,g.H);
+// drawn only when a target changes (the cursor is Windows' own, so nothing needs redrawing while you move)
+function cbDraw(){if(!cb)return;const c=$('cbc'),x=c.getContext('2d'),dpr=devicePixelRatio||1,g=cbGeo();
+if(c.width!==Math.round(g.W*dpr)||c.height!==Math.round(g.H*dpr)){c.width=Math.round(g.W*dpr);c.height=Math.round(g.H*dpr)}x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,g.W,g.H);
 x.strokeStyle='#222';x.beginPath();x.arc(g.cx,g.cy,g.D,0,7);x.stroke();
 for(let k=0;k<8;k++){const a=k*Math.PI/4;x.beginPath();x.moveTo(g.cx+(g.D-8)*Math.cos(a),g.cy+(g.D-8)*Math.sin(a));x.lineTo(g.cx+(g.D+8)*Math.cos(a),g.cy+(g.D+8)*Math.sin(a));x.stroke()}
 x.fillStyle=cb.phase==='home'?'#2f7de1':'#1a2a40';x.beginPath();x.arc(g.cx,g.cy,CBHR,0,7);x.fill();
 if(cb.phase==='out'&&cb.fl){x.fillStyle='#e8553e';x.beginPath();x.arc(cb.fl.T.x,cb.fl.T.y,CBTR,0,7);x.fill()}
-x.strokeStyle='#fff';x.lineWidth=1.5;x.beginPath();x.moveTo(cb.p.x-7,cb.p.y);x.lineTo(cb.p.x+7,cb.p.y);x.moveTo(cb.p.x,cb.p.y-7);x.lineTo(cb.p.x,cb.p.y+7);x.stroke();x.lineWidth=1;
-$('cbhint').textContent='Round '+cb.round+' of '+CBR+' · target '+cb.i+' of 8 · '+cb.data.length+' flicks measured · click the targets · right-click or Esc to finish';
-requestAnimationFrame(cbLoop)}
-function cbStop(done){if(!cb)return;const m=cb;cb=null;if(document.pointerLockElement===$('cbc'))document.exitPointerLock();if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('cbwrap').classList.remove('on');
-if(done)cbFinish(m)}
+$('cbhint').textContent='Round '+cb.round+' of '+CBR+' · target '+cb.i+' of 8 · '+cb.data.length+' flicks measured · click the targets · right-click or Esc to finish'}
+function cbStop(done){if(!cb)return;const m=cb;cb=null;if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('cbwrap').classList.remove('on');if(done)cbFinish(m)}
 function cbMed(a){const b=a.slice().sort((p,q)=>p-q),n=b.length;return n?(n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2):NaN}
 function cbFinish(m){const per=[];for(let k=0;k<8;k++){const r=m.data.filter(d=>d.k===k).map(d=>d.reach);per.push({n:r.length,med:cbMed(r)})}
 const all=m.data.map(d=>d.reach),pf=all.filter(r=>Math.abs(r-1)<=.05).length,un=all.filter(r=>r<.95).length,ov=all.filter(r=>r>1.05).length;
@@ -482,7 +481,7 @@ setTimeout(cbLoadPrev,1500);
 function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgKey='';drawDG();toast('Press Save to keep it')}
 function cbDiscard(){cbLast=null;$('cbres').hidden=true;dgKey='';drawDG()}
 $('cbc').addEventListener('pointermove',cbMove);$('cbc').addEventListener('pointerdown',cbDown);$('cbc').addEventListener('contextmenu',e=>e.preventDefault());
-document.addEventListener('pointerlockchange',()=>{if(cb&&document.pointerLockElement!==$('cbc'))cbStop(cb.data.length>=8)});
+document.addEventListener('fullscreenchange',()=>{if(!cb)return;if(document.fullscreenElement){cb.geo=null;cbDraw()}else if(cb.fs)cbStop(cb.data.length>=8)});addEventListener('resize',()=>{if(cb){cb.geo=null;cbDraw()}});
 document.addEventListener('keydown',e=>{if(cb&&e.key==='Escape')cbStop(cb.data.length>=8)});
 // QT Py fw23 + Feather v23: the USB host captures (/api/hosts), fetched while the fold-out is open and when they change
 const HDESC={1:'device',2:'config',3:'string',6:'qualifier',7:'other-speed',15:'BOS',0x21:'HID',0x22:'report'};
