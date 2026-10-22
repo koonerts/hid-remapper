@@ -9,7 +9,17 @@ static constexpr char PAGE_HTML[] = R"HTML(<!doctype html>
 @media (prefers-color-scheme:dark){:root{--bg:#121416;--card:#1b1e22;--fg:#e8eaed;--mut:#9aa1ab;--line:#2e333a;--soft:#24282e;--acc:#5a9cf5;--on:#0c1420;--ok:#4cc27e;--bad:#f0796c;--warn:#f0b65a;--warnbg:#33290f}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:600px;margin:0 auto;padding:14px 16px 72px}
+main{max-width:1080px;margin:0 auto;padding:4px 16px 72px}
+/* QT Py fw37: title row, a status bar + tabs that stay at the top, cards in two columns where there is room */
+.top{max-width:1080px;margin:0 auto;padding:14px 16px 6px}.top h1{margin:0}
+.bar{position:sticky;top:0;z-index:50;background:var(--bg);border-bottom:1px solid var(--line)}
+.barin{max-width:1080px;margin:0 auto;padding:8px 16px 0}
+#state,#sbar{display:contents}
+.tabs{display:flex;gap:2px;margin-top:6px;overflow-x:auto;scrollbar-width:none}
+.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 14px;color:var(--mut);font-weight:600;white-space:nowrap}
+.tabs button.on{color:var(--fg);border-bottom-color:var(--acc)}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,430px),1fr));gap:0 16px;align-items:start}
+details.cap{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0}details.cap>summary{font-size:13px}details.cap[open]>summary{margin-bottom:6px}
 h1{font-size:21px;font-weight:650;margin:4px 0 8px;letter-spacing:-.01em}
 h2{font-size:15px;font-weight:650;margin:0}
 p{margin:8px 0 0}
@@ -124,11 +134,11 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.bad{background:var(--bad);color:#fff}
 @media (prefers-reduced-motion:reduce){.toast,details>summary::after{transition:none}}
-</style></head><body><main>
-<h1>Warg settings</h1>
-<div id="state" class="chips"><span class="chip">Connecting…</span></div>
-<div class="row" style="margin-top:10px"><button onclick="readMouse()">Read from mouse</button><button onclick="post('/api/flash?c=ffffff').then(r=>say(r,'Flash sent'))">Test flash</button></div>
-
+</style></head><body><div class="top"><div class="row" style="justify-content:space-between"><h1>Warg settings</h1><div class="row"><button onclick="readMouse()">Read from mouse</button><button onclick="post('/api/flash?c=ffffff').then(r=>say(r,'Flash sent'))">Test flash</button></div></div></div>
+<header class="bar"><div class="barin"><div class="chips"><span id="state" class="chips"><span class="chip">Connecting…</span></span><span id="sbar" class="chips"></span></div>
+<nav class="tabs" role="tablist" aria-label="Sections"><button role="tab" id="tb-mouse" onclick="tabShow('mouse',1)">Mouse</button><button role="tab" id="tb-aim" onclick="tabShow('aim',1)">Aim</button><button role="tab" id="tb-setup" onclick="tabShow('setup',1)">Setup</button><button role="tab" id="tb-diag" onclick="tabShow('diag',1)">Diagnostics</button></nav></div></header>
+<main>
+<section class="tab" id="t-mouse" role="tabpanel"><div class="cols">
 <div class="card"><div class="hd"><h2>DPI stages</h2><span class="cur" id="cur"></span></div>
 <div id="rows"></div>
 <div class="row" style="margin-top:10px;justify-content:space-between"><div class="row"><button class="p" id="stApply" onclick="applyStages()" disabled>Apply</button><button id="stRevert" onclick="revert()" disabled>Revert</button></div>
@@ -153,25 +163,6 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" autocomplete="off" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div></div>
 <p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where the reset chords put it. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
 
-<div class="card" id="lvl"><div class="hd"><h2>Level your swipes</h2></div>
-<p class="mut" style="margin:0 0 8px">Suggests a sensor angle that makes left-right swipes come out level, starting from the angle the mouse has now. Use the mouse on this computer: click the box, swipe left and right a few times the way you do in game, then right-click or press Esc.</p>
-<p class="note" id="lvsnap" hidden>Angle Snap is on: it straightens swipes, so it hides the tilt. Turn it off under More mouse settings to measure.</p>
-<div id="lvwrap"><canvas id="lvc" aria-label="Swipe area"></canvas><div id="lvhint">Swipe left and right a few times · right-click or Esc to finish</div></div>
-<p id="lvr" class="mut" style="margin:8px 0 0">Click the box to start.</p>
-<div class="row" id="lvb" hidden style="margin-top:8px"><button class="p" id="lvset"></button><button id="lvagain">Measure again</button></div>
-</div>
-<div class="card" id="dgc" hidden><div class="hd"><h2>Direction sensitivity</h2><span class="cur" id="dgst"></span></div>
-<p class="mut" style="margin:0 0 8px">A sensitivity for each direction you move the mouse, like Corsair's PureVector: a direction you tend to fall short in gets a little more, one you overshoot a little less. Calibrate with flicks on this computer, or drag the points. 1.00 everywhere changes nothing.</p>
-<div class="dgrow"><svg id="dgsvg" viewBox="-180 -180 360 360" aria-label="Sensitivity per direction: drag a point outwards for more"></svg><div class="dgvals" id="dgvals"></div></div>
-<div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="dghosts"></div></div>
-<div class="row" style="margin-top:10px"><button class="p" id="dgsave" disabled onclick="dgSave()">Save</button><button id="dgrev" disabled onclick="dgRevert()">Revert</button><button onclick="dgFlat()">All 1.00</button><button onclick="cbBegin()">Calibrate…</button></div>
-<div class="row" style="margin-top:10px"><label class="mut">Flick lengths <input type="text" id="cblen" value="10" style="width:7em" aria-label="Flick lengths in cm"> cm</label><label class="mut">Rounds per length <input type="number" id="cbrpl" value="3" min="1" max="8" style="width:4.5em" aria-label="Rounds per length"></label></div>
-<p class="note" id="cbmsg" hidden></p>
-<p class="mut" id="dgnote" style="margin:8px 0 0">Calibrate: flicks at the lengths you use in game (e.g. "6, 12, 18" cm), each round the 8 directions. Click the middle target, flick to the one that appears and click it, flick back and click the middle again. For long flicks the test lowers the DPI and puts it back afterwards. Keep Windows' pointer speed at 6 of 11 (the default) with "Enhance pointer precision" off.</p>
-<div id="cbres" hidden></div>
-<details id="cbsaved" hidden><summary><span>Saved runs</span> <span class="mut" id="cbsavedn"></span></summary><div id="cbsavedlist"></div></details>
-<div id="cbwrap"><canvas id="cbc" aria-label="Flick area"></canvas><div id="cbhint"></div></div>
-</div>
 <div class="card"><div class="hd"><h2>More mouse settings</h2></div>
 <p class="note" id="optnote" hidden></p>
 <div class="opt" id="pv">
@@ -184,8 +175,30 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <span>Battery</span><span class="mut" id="batt">not read yet</span>
 </div>
 <p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p></div>
-
-<details class="card" id="fchords"><summary><div><h2>Chords</h2><div class="mut">Hold one button, press another: what each pair does</div></div></summary>
+</div></section>
+<section class="tab" id="t-aim" role="tabpanel" hidden><div class="cols">
+<div class="card" id="dgc" hidden><div class="hd"><h2>Direction sensitivity</h2><span class="cur" id="dgst"></span></div>
+<p class="mut" style="margin:0 0 8px">A sensitivity for each direction you move the mouse, like Corsair's PureVector: a direction you tend to fall short in gets a little more, one you overshoot a little less. Calibrate with flicks on this computer, or drag the points. 1.00 everywhere changes nothing.</p>
+<div class="dgrow"><svg id="dgsvg" viewBox="-180 -180 360 360" aria-label="Sensitivity per direction: drag a point outwards for more"></svg><div class="dgvals" id="dgvals"></div></div>
+<div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="dghosts"></div></div>
+<div class="row" style="margin-top:10px"><button class="p" id="dgsave" disabled onclick="dgSave()">Save</button><button id="dgrev" disabled onclick="dgRevert()">Revert</button><button onclick="dgFlat()">All 1.00</button><button onclick="cbBegin()">Calibrate…</button></div>
+<div class="row" style="margin-top:10px"><label class="mut">Flick lengths <input type="text" id="cblen" value="10" style="width:7em" aria-label="Flick lengths in cm"> cm</label><label class="mut">Rounds per length <input type="number" id="cbrpl" value="3" min="1" max="8" style="width:4.5em" aria-label="Rounds per length"></label></div>
+<p class="note" id="cbmsg" hidden></p>
+<p class="mut" id="dgnote" style="margin:8px 0 0">Calibrate: flicks at the lengths you use in game (e.g. "6, 12, 18" cm), each round the 8 directions. Click the middle target, flick to the one that appears and click it, flick back and click the middle again. For long flicks the test lowers the DPI and puts it back afterwards. Keep Windows' pointer speed at 6 of 11 (the default) with "Enhance pointer precision" off.</p>
+<div id="cbres" hidden></div>
+<details id="cbsaved" hidden><summary><span>Saved runs</span> <span class="mut" id="cbsavedn"></span></summary><div id="cbsavedlist"></div></details>
+<div id="cbwrap"><canvas id="cbc" aria-label="Flick area"></canvas><div id="cbhint"></div></div>
+</div>
+<div class="card" id="lvl"><div class="hd"><h2>Level your swipes</h2></div>
+<p class="mut" style="margin:0 0 8px">Suggests a sensor angle that makes left-right swipes come out level, starting from the angle the mouse has now. Use the mouse on this computer: click the box, swipe left and right a few times the way you do in game, then right-click or press Esc.</p>
+<p class="note" id="lvsnap" hidden>Angle Snap is on: it straightens swipes, so it hides the tilt. Turn it off under More mouse settings to measure.</p>
+<div id="lvwrap"><canvas id="lvc" aria-label="Swipe area"></canvas><div id="lvhint">Swipe left and right a few times · right-click or Esc to finish</div></div>
+<p id="lvr" class="mut" style="margin:8px 0 0">Click the box to start.</p>
+<div class="row" id="lvb" hidden style="margin-top:8px"><button class="p" id="lvset"></button><button id="lvagain">Measure again</button></div>
+</div>
+</div></section>
+<section class="tab" id="t-setup" role="tabpanel" hidden><div class="cols">
+<div class="card" id="fchords"><div class="hd"><div><h2>Chords</h2><div class="mut">Hold one button, press another: what each pair does</div></div></div>
 <div id="ched" hidden>
 <p class="note" id="chnote" hidden></p>
 <fieldset id="chfs" style="border:0;padding:0;margin:0;min-width:0"><div id="chlist"></div></fieldset>
@@ -194,15 +207,10 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut">The second button never reaches the game while it's part of a chord; the first one always does. Pressing them the other way round isn't a chord. A tap acts when the second button comes up; with no hold action it acts as soon as it goes down.</p>
 </div>
 <p class="mut" id="chstate"></p>
-<div id="perf" hidden><h3 class="sub">Frame timing <span class="mut">(last second)</span></h3>
-<div class="bud" role="img" id="bud"><i id="budw"></i><i id="buda"></i></div>
-<p class="mut" id="budt" style="margin:0"></p>
-<table class="pt"><thead><tr><th></th><th>Average</th><th>Worst</th></tr></thead><tbody id="ptb"></tbody></table>
-<p class="mut" id="pskip"></p></div>
 <ul class="ch" id="chords"></ul>
 <h3 class="sub">Tuning</h3>
 <div class="tune" id="tune"></div>
-<div class="row" style="margin-top:12px"><button class="p" onclick="saveTune()">Save tuning</button></div></details>
+<div class="row" style="margin-top:12px"><button class="p" onclick="saveTune()">Save tuning</button></div></div>
 
 <div class="card"><div class="hd"><h2>Wi-Fi</h2><button onclick="post('/api/radio_off')">Turn off now</button></div>
 <p class="mut" id="radio" style="margin:0 0 12px"></p>
@@ -212,16 +220,26 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut" style="margin:0 0 8px">The QT Py joins this network when its Wi-Fi comes on. 2.4 GHz only.</p>
 <input type="text" id="ssid" placeholder="Network name" aria-label="Network name"><div style="height:6px"></div><input type="password" id="pass" placeholder="Password" aria-label="Password">
 <div class="row" style="margin-top:8px"><button class="p" onclick="saveWifi()">Save and join</button></div></details></div>
+</div></section>
+<section class="tab" id="t-diag" role="tabpanel" hidden><div class="cols">
+<div class="card" id="perfc"><div class="hd"><h2>Frame timing</h2><span class="mut">last second</span></div>
+<div id="perf" hidden>
+<div class="bud" role="img" id="bud"><i id="budw"></i><i id="buda"></i></div>
+<p class="mut" id="budt" style="margin:0"></p>
+<table class="pt"><thead><tr><th></th><th>Average</th><th>Worst</th></tr></thead><tbody id="ptb"></tbody></table>
+<p class="mut" id="pskip"></p></div>
+<p class="mut" id="perfnone">Needs Feather firmware v19 or later.</p></div>
 
 <details class="card" id="fedits" hidden><summary><div><h2>Recent page edits</h2><div class="mut" id="edlast"></div></div></summary>
 <ol id="edlist"></ol><p class="mut">The last 20 edits made through this page, from any device. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
-
+</div>
 <details class="card" id="fhosts" hidden><summary><div><h2>Hosts</h2><div class="mut" id="hauto"></div></div></summary>
 <p class="mut">What the ATEN can connect the mouse to. The Feather recognises each kind of host by how it asks for its USB details, so both XIMs look the same and share one entry. Rename a host here; choose its stage under DPI stages.</p>
 <div id="hprof"></div>
 <h3 class="sub">USB hosts seen</h3><p class="mut" id="hlast"></p>
 <p class="mut">What the host on the other side of the ATEN asked for while connecting, newest first; each power-on is one host. The QT Py keeps the last 8.</p>
 <div id="hlist"></div></details>
+</section>
 
 <p class="mut" id="ver" style="text-align:center"></p>
 </main><div class="toast" id="toast" role="status"></div>
@@ -351,7 +369,7 @@ function chDefaults(){if(!S||!S.chords||!confirm('Replace your chords with the b
 post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(x.ok)chDirty=false;else chWait=-1;chCheck()})}
 function us(v){return v>=1020?'1020+':String(v)}
 // frame timing (Feather v15+; the whole frame from v19): a bar of each 1 ms frame's use, then the parts
-function drawPerf(pf){const el=$('perf');el.hidden=!pf;if(!pf)return;const v19=pf.missed_1s!==undefined,f=x=>us(x)+' µs';
+function drawPerf(pf){const el=$('perf');el.hidden=!pf;$('perfnone').hidden=!!pf;if(!pf)return;const v19=pf.missed_1s!==undefined,f=x=>us(x)+' µs';
 const rows=[];if(v19)rows.push(['USB to the mouse','1 ms interrupt',f(pf.usb_avg_us),f(pf.usb_max_us)]);
 rows.push(['Remapping','',pf.avg_us.toFixed(1)+' µs',pf.max_us+' µs']);rows.push(['chord check','',pf.chords_avg_us.toFixed(1)+' µs',pf.chords_max_us+' µs',1]);
 if(v19)rows.push(['Frame finished','after its tick',f(pf.tick_avg_us),f(pf.tick_max_us)]);
@@ -625,7 +643,7 @@ const h=j.caps.map(c=>{const d=hDecode(c);const when=c.t?whenText(c.t*1000):c.bo
 const sum=(hName(c.sig)||hGuess(d.raw))+' · '+d.reqs.length+' kept of '+c.seen+' requests · '+c.resets+' bus reset'+(c.resets===1?'':'s')+' · '+(c.cfg_ms===65535?'not configured':'configured after '+c.cfg_ms+' ms');
 return {when,sum,reqs:d.reqs}});
 $('hlast').textContent=h.length?'Last: '+h[0].when+' · '+h[0].sum:'';
-$('hlist').innerHTML=h.map(c=>'<h3 class="sub">'+esc(c.when)+'</h3><p class="mut">'+esc(c.sum)+'</p><ol class="hreq">'+c.reqs.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ol>').join('')}).catch(()=>{}).finally(()=>{hBusy=false})}
+$('hlist').innerHTML=h.map(c=>'<details class="cap"><summary><span>'+esc(c.when)+' · '+esc(c.sum)+'</span></summary><ol class="hreq">'+c.reqs.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ol></details>').join('')}).catch(()=>{}).finally(()=>{hBusy=false})}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function whenText(ms){if(!ms)return 'earlier (time unknown)';const d=new Date(ms),t=d.toLocaleTimeString();
 return d.toDateString()===new Date().toDateString()?t:d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+t}
@@ -659,6 +677,19 @@ document.querySelectorAll('#keep button').forEach(b=>b.classList.toggle('on',Num
 const wc=wifiChord();$('keepnote').textContent='Wi-Fi stays on and comes on by itself at power-up. '+(wc?wc+' to switch it off for a session.':'The QT Py\'s own button switches it off for a session.')}
 function saveWifi(){const b=new URLSearchParams({ssid:$('ssid').value,pass:$('pass').value});fetch('/api/wifi',{method:'POST',body:b}).then(()=>{$('radio').textContent='Joining '+$('ssid').value+'… reconnect to that network and open gwolves.local'})}
 
+// QT Py fw37: the tabs; the open one is kept on the QT Py like the fold-outs (a #hash in the address wins)
+const TABS=['mouse','aim','setup','diag'];let tabSet=false;
+function tabShow(n,save){if(!TABS.includes(n))n='mouse';TABS.forEach(t=>{$('t-'+t).hidden=t!==n;const b=$('tb-'+t);b.classList.toggle('on',t===n);b.setAttribute('aria-selected',t===n?'true':'false')});
+if(save){tabSet=true;try{history.replaceState(null,'','#'+n)}catch(e){}post('/api/ui?tab='+TABS.indexOf(n))}}
+function tabApply(){if(tabSet||!S)return;tabSet=true;if(TABS.includes(location.hash.slice(1)))return;if(S.ui_tab>=0&&S.ui_tab<TABS.length)tabShow(TABS[S.ui_tab])}
+tabShow(location.hash.slice(1));
+// status bar: the host the ATEN connects, its DPI stage, direction gains, battery
+function drawBar(){const b=[],a=S.auto,hs=S.hosts||[],ch=(c,s,t)=>'<span class="chip'+(c?' '+c:'')+'"'+(t?' title="'+esc(t)+'"':'')+'>'+esc(s)+'</span>';
+if(a&&a[0]!=='00000000'){const x=hs.find(x=>x[0]===a[0]);b.push(ch(a[1]===3?'bad':'',x?hostName(x):'Host',hAutoLine()))}
+const d=S.stage!=null&&S.dpi&&S.dpi[S.stage];if(d)b.push(ch('','Stage '+(S.stage+1)+' · '+d[0]+(d[1]&&d[1]!==d[0]?'/'+d[1]:'')+' DPI'));
+if(S.dg&&S.dg.sup)b.push(ch(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off')));
+const bt=S.battery;if(bt)b.push(ch(bt.pct<=15?'bad':'','Battery '+bt.pct+'%'));
+$('sbar').innerHTML=b.join('')}
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
 else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
@@ -667,7 +698,7 @@ paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.st
 if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
 drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();foldsApply();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
-$('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw}
+$('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw;drawBar();tabApply()}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
 // address answers and move there, so reloads and button presses don't need another .local name
 // lookup (those fail on some phones and PCs). If the address doesn't answer, stay on .local.
