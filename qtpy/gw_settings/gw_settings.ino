@@ -1172,9 +1172,9 @@ static void osd_push(const String& s) {
     }
 }
 
-static String osd_stage_text(int s) {
+static String osd_stage_text(int s, const char* host = nullptr) {  // "DPI 10000 (stage 2)", the kanata OSD's style
     uint16_t x = u16(23 + 4 * s), y = u16(25 + 4 * s);
-    return "DPI " + String(s + 1) + " \xC2\xB7 " + String(x) + ((y && y != x) ? "/" + String(y) : String(""));
+    return "DPI " + String(x) + ((y && y != x) ? "/" + String(y) : String("")) + " (stage " + String(s + 1) + (host ? String(", ") + host : String("")) + ")";
 }
 
 static void osd_tick() {
@@ -1192,13 +1192,13 @@ static void osd_tick() {
     }
     if (f & 16) {
         if ((osd_angle != 0x7FFF) && (s8(5) != osd_angle)) {
-            osd_push("Angle " + String(s8(5)) + "\xC2\xB0");
+            osd_push("angle " + String(s8(5)) + "\xC2\xB0");
         }
         osd_angle = s8(5);
     }
     if (f & 32) {
         if ((osd_pos != 0x7FFF) && (s8(6) != osd_pos)) {
-            osd_push("Position " + String(s8(6)));
+            osd_push("position " + String(s8(6)));
         }
         osd_pos = s8(6);
     }
@@ -1674,7 +1674,7 @@ static void auto_tick() {
             if (auto_from != auto_want) {  // fw33: only a real change goes into the log (it holds 20)
                 HostProf* p = hprof_at(hprof_find(auto_sig));
                 log_edit_as(EK_AUTO_STAGE, String(p ? p->name : "") + "=" + String(auto_want), 7, 0);
-                osd_push(String(p && p->name[0] ? p->name : "Host") + " \xE2\x86\x92 " + osd_stage_text(auto_want));  // fw38
+                osd_push(osd_stage_text(auto_want, p && p->name[0] ? p->name : "this host"));  // fw38: "DPI 400 (stage 1, FLOW)"
                 osd_stage = auto_want;  // shown once, as the host's
             }
             return;
