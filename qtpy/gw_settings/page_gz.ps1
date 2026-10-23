@@ -4,25 +4,30 @@
 # page_gz.h also checks itself against page.h at compile time (FNV-1a of the page): an edited page.h without a
 # re-run of this script fails the build instead of serving the old page.
 #
-#   page_gz.ps1 [-i page.h] [-o page_gz.h]
+#   page_gz.ps1 [-i page.h] [-o page_gz.h] [-p HOST]
 #   -i, --input FILE    the page source (default: page.h next to this script)
 #   -o, --output FILE   the header to write (default: page_gz.h next to this script)
+#   -p, --push HOST     also upload the page to the QT Py at HOST (fw41+): it serves it from flash at once, no firmware update
 #   -h, --help          show this help and exit
 param([Parameter(ValueFromRemainingArguments)] [string[]]$Rest)
 
 $in = Join-Path $PSScriptRoot 'page.h'
 $out = Join-Path $PSScriptRoot 'page_gz.h'
+$push = $null
 $usage = @'
-Usage: page_gz.ps1 [-i FILE] [-o FILE]
+Usage: page_gz.ps1 [-i FILE] [-o FILE] [-p HOST]
 Gzips the settings page (page.h's raw literal) into page_gz.h for the QT Py firmware.
 
   -i, --input FILE    the page source (default: page.h next to this script)
   -o, --output FILE   the header to write (default: page_gz.h next to this script)
+  -p, --push HOST     also upload the page to the QT Py at HOST (QT Py fw41+): it serves it at once,
+                      no firmware update (a firmware update later brings its own page)
   -h, --help          show this help and exit
 
 Examples:
   page_gz.ps1
   page_gz.ps1 --output C:\tmp\page_gz.h
+  page_gz.ps1 --push gwolves.local
 '@
 for ($i = 0; $i -lt $Rest.Count; $i++) {
     $a = $Rest[$i]
@@ -32,6 +37,7 @@ for ($i = 0; $i -lt $Rest.Count; $i++) {
     switch -regex ($name) {
         '^(-h|--help|-Help)$' { $usage; exit 0 }
         '^(-i|--input|-Input)$' { if ($null -eq $val) { $i++; $val = $Rest[$i] }; if (-not $val) { [Console]::Error.WriteLine("page_gz: $name needs a FILE`nTry 'page_gz.ps1 --help'."); exit 2 }; $in = $val }
+        '^(-p|--push|-Push)$' { if ($null -eq $val) { $i++; $val = $Rest[$i] }; if (-not $val) { [Console]::Error.WriteLine("page_gz: $name needs a HOST`nTry 'page_gz.ps1 --help'."); exit 2 }; $push = $val }
         '^(-o|--output|-Output)$' { if ($null -eq $val) { $i++; $val = $Rest[$i] }; if (-not $val) { [Console]::Error.WriteLine("page_gz: $name needs a FILE`nTry 'page_gz.ps1 --help'."); exit 2 }; $out = $val }
         default { [Console]::Error.WriteLine("page_gz: unknown option '$a'`nTry 'page_gz.ps1 --help'."); exit 2 }
     }
@@ -66,3 +72,12 @@ for ($i = 0; $i -lt $z.Length; $i += 24) {
 [void]$sb.Append("};`n")
 [IO.File]::WriteAllText($out, $sb.ToString(), [Text.UTF8Encoding]::new($false))
 "page_gz: $($bytes.Length) bytes -> $($z.Length) gzipped ($([Math]::Round(100.0 * $z.Length / $bytes.Length))%), fnv 0x{0:x8} -> $out" -f $h
+if ($push) {
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) 'page.gz'
+    [IO.File]::WriteAllBytes($tmp, $z)
+    $r = & curl.exe -s -m 20 -F "file=@$tmp;filename=page.gz" "http://$push/api/page"
+    Remove-Item $tmp -ErrorAction SilentlyContinue
+    if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("page_gz: upload to $push failed (curl exit $LASTEXITCODE)"); exit 1 }
+    "page_gz: pushed to ${push}: $r"
+    if ($r -notmatch '"ok":true') { exit 1 }
+}

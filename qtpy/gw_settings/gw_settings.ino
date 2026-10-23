@@ -23,6 +23,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <esp_system.h>
+#include <FFat.h>
 
 #include "page_gz.h"  // fw35: the page gzipped (page_gz.ps1 makes it from page.h; the build checks it is current)
 
@@ -34,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 40      // this firmware's number, shown in /api/status
+#define QT_FW 41      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -133,6 +134,15 @@ struct OsdItem {
     char text[48];
 };
 static OsdItem osdq[OSD_KEEP];  // osdq[0] newest
+// fw41: the page can be replaced without a firmware update. POST /api/page (multipart: the gzipped page, as page_gz.ps1
+// --push sends it) stores it in the flash FAT partition ("ffat", 3.7 MB, unused until now) and / serves it from there;
+// the built-in copy is the fallback. The partition is formatted on the first upload (never at boot), and a page uploaded
+// under another firmware number is dropped at boot: a firmware update brings its own matching page.
+static bool fs_ok = false;
+static bool page_fs = false;
+static uint32_t page_fs_t = 0, page_fs_len = 0;
+static File page_up;
+static uint32_t page_up_len = 0;
 static uint8_t osd_n = 0;
 static uint16_t osd_seq = 0;
 static int16_t osd_stage = -1, osd_angle = 0x7FFF, osd_pos = 0x7FFF;  // last known values (sentinels: not yet)
@@ -1358,7 +1368,7 @@ static void h_status() {
     }
     j += ext_json();
     j += ",\"battery\":" + battery_json();
-    j += ",\"qt_fw\":" + String(QT_FW);
+    j += ",\"qt_fw\":" + String(QT_FW) + ",\"page\":{\"fs\":" + String(page_fs ? "true" : "false") + ",\"t\":" + String(page_fs_t) + ",\"len\":" + String(page_fs_len) + "}";  // fw41
     j += ",\"diag\":{\"polls\":" + String(d_polls) + ",\"ok\":" + String(d_ok) + ",\"short\":" + String(d_short) +
          ",\"bad\":" + String(d_bad) + ",\"i2c_resets\":" + String(d_i2c_resets) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
          ",\"rc_fail\":" + String(d_rc_fail) + ",\"rc_ms\":" + String(d_rc_ms) + ",\"rc256\":" + String(d_rc256) + ",\"rc512\":" + String(d_rc512) + ",\"up_s\":" + String(millis() / 1000) + "}";
@@ -2475,6 +2485,82 @@ static void h_update_done() {
     ESP.restart();
 }
 
+static void page_fs_load() {  // fw41: is there an uploaded page for this firmware?
+    page_fs = false;
+    if (!fs_ok || !FFat.exists("/page.gz") || !FFat.exists("/page.fw")) {
+        return;
+    }
+    File m = FFat.open("/page.fw", "r");
+    String meta = m ? m.readString() : String("");
+    if (m) {
+        m.close();
+    }
+    long fw = 0, t = 0, len = 0;
+    sscanf(meta.c_str(), "%ld %ld %ld", &fw, &t, &len);
+    if (fw != QT_FW) {  // uploaded for another firmware: this firmware's own page is the right one
+        FFat.remove("/page.gz");
+        FFat.remove("/page.fw");
+        return;
+    }
+    page_fs = true;
+    page_fs_t = t;
+    page_fs_len = len;
+}
+
+static void h_page_upload() {
+    HTTPUpload& u = server.upload();
+    if (u.status == UPLOAD_FILE_START) {
+        page_up_len = 0;
+        if (!fs_ok) {
+            fs_ok = FFat.begin(true);  // the first upload formats the partition (a few seconds)
+        }
+        page_up = fs_ok ? FFat.open("/page.tmp", "w") : File();
+    } else if (u.status == UPLOAD_FILE_WRITE) {
+        if (page_up) {
+            page_up.write(u.buf, u.currentSize);
+        }
+        page_up_len += u.currentSize;
+    } else if ((u.status == UPLOAD_FILE_END) || (u.status == UPLOAD_FILE_ABORTED)) {
+        if (page_up) {
+            page_up.close();
+        }
+    }
+}
+
+// POST /api/page (multipart "file": the gzipped page) | ?reset=1 back to the built-in page (fw41)
+static void h_page_done() {
+    touch();
+    if (server.hasArg("reset")) {
+        if (fs_ok) {
+            FFat.remove("/page.gz");
+            FFat.remove("/page.fw");
+        }
+        page_fs = false;
+        return ok_json(true);
+    }
+    if (!fs_ok) {
+        return ok_json(false, "no file system");
+    }
+    File f = FFat.open("/page.tmp", "r");
+    bool good = f && (f.size() > 1024) && (f.read() == 0x1f) && (f.read() == 0x8b);
+    if (f) {
+        f.close();
+    }
+    if (!good) {
+        FFat.remove("/page.tmp");
+        return ok_json(false, "not a gzipped page");
+    }
+    FFat.remove("/page.gz");
+    FFat.rename("/page.tmp", "/page.gz");
+    File m = FFat.open("/page.fw", "w");
+    if (m) {
+        m.print(String(QT_FW) + " " + String(now_unix()) + " " + String(page_up_len));
+        m.close();
+    }
+    page_fs_load();
+    ok_json(page_fs, page_fs ? nullptr : "stored, but couldn't read it back");
+}
+
 static void h_page() {
     touch();
     queue_cmd(C_REFRESH, nullptr, 0);  // opening the page reads the mouse's current settings
@@ -2482,6 +2568,14 @@ static void h_page() {
     // fw21 input guard, whose restored slider values went straight to the mouse (angle -14, position 15).
     server.sendHeader("Cache-Control", "no-store");
     server.sendHeader("Pragma", "no-cache");
+    if (page_fs) {  // fw41: the uploaded page (streamFile adds Content-Encoding: gzip for a .gz name)
+        File f = FFat.open("/page.gz", "r");
+        if (f) {
+            server.streamFile(f, "text/html");
+            f.close();
+            return;
+        }
+    }
     server.sendHeader("Content-Encoding", "gzip");  // fw35: 32 KB instead of 88 KB
     server.send_P(200, "text/html", (PGM_P) PAGE_GZ, PAGE_GZ_LEN);
 }
@@ -2535,6 +2629,8 @@ void setup() {
         tdpi_active = true;
         tdpi_restore = true;
     }
+    fs_ok = FFat.begin(false);  // fw41: an uploaded page (no format here: an unformatted partition waits for the first upload)
+    page_fs_load();
     dg_src = prefs.getString("dgsrc", "");  // fw39: where the gains came from
     dg_src_t = prefs.getULong("dgsrct", 0);
     if (prefs.getBytes("dgain", &dg, sizeof(dg)) != sizeof(dg)) {                     // fw26: direction gains
@@ -2577,6 +2673,7 @@ void setup() {
     server.on("/api/calib", HTTP_GET, h_calib_get);
     server.on("/api/calibspeed", HTTP_POST, h_calibspeed);
     server.on("/api/calibdel", HTTP_POST, h_calibdel);
+    server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);
