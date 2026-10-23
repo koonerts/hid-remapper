@@ -39,6 +39,9 @@ p{margin:8px 0 0}
 .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:26px}
 .chip{font-size:12.5px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--soft);color:var(--mut)}
 button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
+[hidden]{display:none!important}  /* a .row's display:flex beat the hidden attribute (the swipe test's buttons, the cm/360 answers) */
+.c3f label{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--mut)}.c3f input,.c3f select{width:110px}
+.c3t{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}.c3t td,.c3t th{padding:4px 6px;text-align:left;border-top:1px solid var(--line)}.c3t th{color:var(--mut);font-weight:600}.c3t button{padding:2px 8px}
 .chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}
 button{font:inherit;padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 button:disabled{opacity:.45;cursor:default}
@@ -207,6 +210,14 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p id="lvr" class="mut" style="margin:8px 0 0">Click the box to start.</p>
 <div class="row" id="lvb" hidden style="margin-top:8px"><button class="p" id="lvset"></button><button id="lvagain">Measure again</button></div>
 </div>
+<div class="card" id="c3card"><div class="hd"><h2>cm/360 in game</h2></div>
+<p class="mut" style="margin:0 0 10px">How far the mouse moves for one full turn in game, through the XIM. The Feather turns the view by itself at a steady speed, so the distance is exact; you only say where the crosshair stopped, and each answer halves the range. In BF6: stand still (firing range), put the crosshair on a sharp vertical edge, let go of the mouse (touching it stops the turn), then Turn.</p>
+<p class="mut" id="c3off" hidden></p>
+<div class="row c3f"><label>Guess, cm/360<input type="number" id="c3est" step="0.1" min="2" max="300"></label><label>Speed<select id="c3sp"><option value="5">5 cm/s</option><option value="10" selected>10 cm/s</option><option value="20">20 cm/s</option><option value="40">40 cm/s</option><option value="80">80 cm/s</option></select></label><label>Turns<select id="c3tn"><option>1</option><option>2</option><option>3</option></select></label></div>
+<div class="row" style="margin-top:10px"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button></div>
+<p id="c3now" style="margin:10px 0 6px"></p>
+<div class="row" id="c3ans" hidden><span>Where did the crosshair stop?</span><button onclick="c3Ans(-1)">Short of the edge</button><button class="p" onclick="c3Ans(0)">On it</button><button onclick="c3Ans(1)">Past it</button></div>
+<table class="c3t" id="c3list"></table></div>
 <details class="card wide" id="cbsaved" hidden><summary><div><h2>Calibration runs <span class="mut" id="cbsavedn"></span></h2><div class="mut" id="cbsrc"></div></div></summary><div id="cbsavedlist"></div></details>
 </div></section>
 <section class="tab" id="t-setup" role="tabpanel" hidden><div class="cols">
@@ -770,7 +781,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 if(pgNew)st.insertAdjacentHTML('beforeend','<button class="chip" onclick="pgGo()">New page version: reload</button>');
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
-drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();foldsApply();
+drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();c3Draw();foldsApply();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw+(S.page&&S.page.fs?' · page uploaded '+whenText(S.page.t*1000):'');drawBar();tabApply()}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
@@ -787,7 +798,7 @@ if(touched)return false;location.replace('http://'+ip+'/');return true}
 // everything but the style, so equal stamps mean only the style changed.
 let pgKey=null,pgNew=false,pgFetching=false;
 function pgKeyOf(j){return j.qt_fw+':'+(j.page&&j.page.fs?j.page.t+':'+j.page.len:'built-in')}
-function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
+function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.busy||c3.n||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
 (a&&a!==document.body&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=='range'&&a.type!=='checkbox'&&a.type!=='color'))}
 // back to where it was: the cards below fill in over a few seconds, so keep trying until the page is that tall (or you scroll)
 function pgScroll(want){const t0=Date.now();let stop=false;['wheel','pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,()=>{stop=true},{once:true,passive:true}));
@@ -853,6 +864,32 @@ else{h+=' Suggested angle: <b>'+want+'°</b>.';
 $('lvset').hidden=false;$('lvset').textContent='Set '+want+'°';$('lvset').onclick=()=>post('/api/set?angle='+want).then(r=>say(r,'Angle set to '+want+'°'));$('lvb').hidden=false}
 $('lvr').innerHTML=h}
 $('lvagain').onclick=()=>lvBegin();
+// fw43: cm/360 in game, through the XIM. The Feather turns the view by itself at a steady speed (v27 gw_turn), so the
+// mouse travel is exact; you say whether the crosshair stopped short of the edge, on it or past it, and each answer
+// halves the range. No small nudges: the XIM turns short bursts unreliably. Results are kept on the QT Py (c360).
+let c3={n:0,lo:0,hi:0,sp:0,tn:1,busy:false,run:-1,at:0,dur:0,ask:false,msg:'',lk:''};
+function c3Cpc(){const d=S&&S.stage!=null&&S.dpi&&S.dpi[S.stage];return d&&d[0]?d[0]/2.54:0}
+function c3Reset(){c3.n=c3.lo=c3.hi=0;c3.ask=false;c3.msg='';c3Draw()}
+async function c3Turn(){const cpc=c3Cpc(),e=Number($('c3est').value),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
+if(!S.turn||!S.turn.sup||!cpc||c3.busy)return;if(sp!==c3.sp||tn!==c3.tn){c3.lo=c3.hi=0;c3.sp=sp;c3.tn=tn}
+if(!c3.n){if(!(e>=2&&e<=300)){toast('Type a guess first (cm/360)',true);return}c3.n=Math.round(e*cpc)}
+const total=c3.n*tn,dur=total/(sp*cpc)*1000;if(dur>28000){toast('Too long for one turn (30 s at most): a faster speed or fewer turns',true);return}
+c3.run=(S.turn.run+1)&255;c3.busy=true;c3.ask=false;c3.at=Date.now();c3.dur=dur;c3.msg='Turning'+(tn>1?' '+tn+' times':'')+'… hands off the mouse.';c3Draw();
+const r=await post('/api/turn?n='+total+'&r='+Math.round(sp*cpc)+'&hand='+Math.round(cpc*0.2));if(!r||!r.ok){c3.busy=false;c3.msg='The QT Py refused: '+(r&&r.err||'no answer')+'.';c3Draw()}}
+function c3Stop(){post('/api/turn?stop=1')}
+function c3Ans(a){const cpc=c3Cpc();if(!c3.n||!cpc)return;
+if(a===0){const cm=c3.n/cpc,sp=c3.sp;post('/api/c360?cm='+Math.round(cm*100)+'&sp='+Math.round(sp*10)+'&dpi='+Math.round(cpc*2.54)).then(r=>{if(r&&r.ok){toast('Saved: '+cm.toFixed(2)+' cm/360 at '+sp+' cm/s');$('c3est').value=cm.toFixed(2);c3Reset()}else toast('Not saved: '+(r&&r.err||'no answer'),true)});return}
+if(a<0)c3.lo=c3.n;else c3.hi=c3.n;c3.n=Math.round(c3.lo&&c3.hi?(c3.lo+c3.hi)/2:c3.n*(a<0?1.06:0.94));c3.ask=false;c3.msg='Line the crosshair up on the edge again, let go, then Turn.';c3Draw()}
+function c3Del(t){post('/api/c360?del='+t).then(r=>{if(!(r&&r.ok))toast('Not removed',true)})}
+function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&&t.sup&&cpc);
+if(c3.busy&&t&&t.run===c3.run&&t.state!==1){c3.busy=false;c3.ask=t.state===2;c3.msg=t.state===3?'Stopped: the mouse moved. Let go of it during a turn, line up again, then Turn.':t.state===4?'Stopped.':t.state===5?'Stopped after 30 s.':''}
+if(c3.busy&&Date.now()-c3.at>c3.dur+8000){c3.busy=false;c3.msg='No word from the Feather about the turn: try again.'}
+$('c3off').hidden=ok;$('c3off').textContent=!(t&&t.sup)?'Needs Feather firmware v27 or newer.':'The DPI isn\'t known yet: Read from mouse.';
+$('c3go').disabled=!ok||c3.busy;$('c3stop').disabled=!c3.busy;$('c3reset').disabled=c3.busy||!c3.n;$('c3ans').hidden=!c3.ask||c3.busy;
+const cm=c3.n&&cpc?c3.n/cpc:0,rg=c3.lo||c3.hi?' · between '+(c3.lo?(c3.lo/cpc).toFixed(2):'?')+' and '+(c3.hi?(c3.hi/cpc).toFixed(2):'?')+' cm':'';
+$('c3now').textContent=(c3.msg?c3.msg+' ':'')+(cm?'This try: '+cm.toFixed(2)+' cm/360'+rg:'');$('c3go').textContent=cm?'Turn ('+cm.toFixed(2)+' cm)':'Turn';
+const L=S.c360||[],k=JSON.stringify(L);if(!$('c3est').value&&L.length&&document.activeElement!==$('c3est'))$('c3est').value=(L[0][1]/100).toFixed(2);
+if(k!==c3.lk){c3.lk=k;$('c3list').innerHTML=L.length?'<tr><th>When</th><th>cm/360</th><th>Speed</th><th>DPI</th><th></th></tr>'+L.map(r=>'<tr><td>'+esc(whenText(r[0]*1000))+'</td><td><b>'+(r[1]/100).toFixed(2)+'</b></td><td>'+r[2]/10+' cm/s</td><td>'+r[3]+'</td><td><button onclick="c3Del('+r[0]+')" aria-label="Remove">✕</button></td></tr>').join(''):''}}
 function drawLevel(){const sn=!!(S.opt&&(S.opt.snap===true||S.opt.snap===1));$('lvsnap').hidden=!sn}
 new ResizeObserver(()=>lvDraw()).observe(LV);
 // fold-outs open as they were left (kept on the QT Py: the page's address changes, and it's shared by your devices)

@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 42      // this firmware's number, shown in /api/status
+#define QT_FW 43      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -59,6 +59,7 @@
 #define C_RAW 0x0C         // Feather v14+: [16 bytes of report 8: a read (08) or the status query (04)]
 #define C_SET_CHORDS 0x0D  // Feather v15+: [part, total, rules] (gw_chords.h)
 #define C_SET_DIRGAIN 0x0E  // Feather v24+: [on, 8 gains uint16 per mille] sensitivity per direction (RAM only there)
+#define C_TURN 0x0F         // Feather v27+: [total int32, counts a second uint32, hand counts uint32] a measured turn; [] stops it
 
 // chord table limits and action count (gw_chords.h)
 #define CH_MAX 12
@@ -244,6 +245,16 @@ struct __attribute__((packed)) CalibRec {  // 47 bytes
 };
 static_assert(sizeof(CalibRec) == CALIB_V1_SIZE + 1, "fw36 appended one byte to the fw27 record");
 static CalibRec calib[CALIB_KEEP];
+// fw43: the cm/360 card's results (measured with the Feather's steady turn, v27), newest first; NVS "c360"
+#define C360_KEEP 12
+struct __attribute__((packed)) C360Rec {  // 12 bytes
+    uint32_t t;      // Unix time
+    uint16_t cm100;  // cm/360 x 100
+    uint16_t sp10;   // the turn's speed, cm/s x 10
+    uint32_t dpi;    // the DPI it was measured at
+};
+static C360Rec c360[C360_KEEP];
+static uint8_t c360_n = 0;
 // fw28: a temporary DPI for the flick calibration. The page lowers the current stage's DPI so flicks as long as the
 // ones in game fit on the screen; the whole table goes back afterwards: when the page says so, when it stops checking
 // in for 12 s (closed, crashed), or after a power cut mid-test (the ATEN): the original table is kept in NVS "tdpi"
@@ -1317,6 +1328,17 @@ static void h_status() {
              ",\"sends\":" + String(dg_sends) + ",\"temp\":" + String(dgt_on ? "true" : "false") + ",\"applied\":" + String(dg_applied() ? "true" : "false") + "}";  // fw42
     }
     j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
+    {  // fw43: the measured turn (Feather v27: status 246-251, read with the 192-255 block when a turn starts or ends)
+        bool sup = turn_supported() && ev_ok;
+        int32_t sent = sup ? (int32_t) ((uint32_t) evb[56] | (uint32_t) evb[57] << 8 | (uint32_t) evb[58] << 16 | (uint32_t) evb[59] << 24) : 0;
+        j += ",\"turn\":{\"sup\":" + String(sup ? "true" : "false") + ",\"state\":" + String(sup ? evb[54] : 0) + ",\"run\":" + String(sup ? evb[55] : 0) +
+             ",\"sent\":" + String((long) sent) + "}";
+        j += ",\"c360\":[";
+        for (uint8_t k = 0; k < c360_n; k++) {
+            j += String(k ? "," : "") + "[" + String(c360[k].t) + "," + String(c360[k].cm100) + "," + String(c360[k].sp10) + "," + String(c360[k].dpi) + "]";
+        }
+        j += "]";
+    }
     {
         char h[12];  // fw24: this power-on's host signature, the automatic stage's state (auto_state) and stage (1-5, 0 none)
         snprintf(h, sizeof(h), "%08lx", (unsigned long) auto_sig);
@@ -2056,6 +2078,80 @@ static void h_calibdel() {
     ok_json(false, "no saved run at that time");
 }
 
+// ---- fw43: the cm/360 card. POST /api/turn?n=<counts, signed>&r=<counts a second>&hand=<counts> starts the
+// Feather's measured turn (v27: it moves the view by itself, steadily); ?stop=1 stops it. Not an edit: no setting
+// changes, so nothing is logged.
+static bool turn_supported() {
+    return st_ok && st_ext && (st[56] >= 27);
+}
+
+static void put32le(uint8_t* p, uint32_t v) {
+    p[0] = v & 0xFF;
+    p[1] = (v >> 8) & 0xFF;
+    p[2] = (v >> 16) & 0xFF;
+    p[3] = v >> 24;
+}
+
+static void h_turn() {
+    touch();
+    if (!from_current_page()) {
+        return;
+    }
+    if (!turn_supported()) {
+        return ok_json(false, "needs Feather v27");
+    }
+    if (server.hasArg("stop")) {
+        return ok_json(queue_cmd(C_TURN, nullptr, 0), "the Feather's queue is full");
+    }
+    long n = server.arg("n").toInt(), r = server.arg("r").toInt(), hand = server.arg("hand").toInt();
+    if ((n == 0) || (labs(n) > 20000000L) || (r < 10) || (r > 20000000L) || (hand < 0)) {
+        return ok_json(false, "need n (counts, not 0), r (counts a second) and hand (counts)");
+    }
+    uint8_t d[12];
+    put32le(d, (uint32_t) n);
+    put32le(d + 4, (uint32_t) r);
+    put32le(d + 8, (uint32_t) hand);
+    ok_json(queue_cmd(C_TURN, d, 12), "the Feather's queue is full");
+}
+
+// POST /api/c360?cm=<cm/360 x 100>&sp=<cm/s x 10>&dpi=<n> keeps a result (newest first); ?del=<its Unix time> removes one
+static void h_c360() {
+    touch();
+    if (!from_current_page()) {
+        return;
+    }
+    if (server.hasArg("del")) {
+        long t = server.arg("del").toInt();
+        for (uint8_t k = 0; k < c360_n; k++) {
+            if ((long) c360[k].t == t) {
+                memmove(c360 + k, c360 + k + 1, sizeof(C360Rec) * (c360_n - k - 1));
+                c360_n--;
+                if (c360_n) {
+                    prefs.putBytes("c360", c360, sizeof(C360Rec) * c360_n);
+                } else {
+                    prefs.remove("c360");
+                }
+                return ok_json(true);
+            }
+        }
+        return ok_json(false, "no result at that time");
+    }
+    long cm = server.arg("cm").toInt(), sp = server.arg("sp").toInt(), dpi = server.arg("dpi").toInt();
+    if ((cm < 100) || (cm > 60000) || (sp < 0) || (sp > 65535) || (dpi < 50) || (dpi > 100000)) {
+        return ok_json(false, "need cm (x100), sp (cm/s x10) and dpi");
+    }
+    memmove(c360 + 1, c360, sizeof(C360Rec) * (C360_KEEP - 1));
+    if (c360_n < C360_KEEP) {
+        c360_n++;
+    }
+    c360[0].t = now_unix();
+    c360[0].cm100 = (uint16_t) cm;
+    c360[0].sp10 = (uint16_t) sp;
+    c360[0].dpi = (uint32_t) dpi;
+    prefs.putBytes("c360", c360, sizeof(C360Rec) * c360_n);
+    ok_json(true);
+}
+
 // POST /api/calibspeed?run=<its Unix time>&sp=<%> (fw36): the speed of a run saved before runs carried one (only when
 // it has none yet)
 static void h_calibspeed() {
@@ -2668,6 +2764,7 @@ void setup() {
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
     calib_n = prefs.getBytes("calib2", calib, sizeof(calib)) / sizeof(CalibRec);  // fw27: calibration summaries (fw36: + speed)
+    c360_n = prefs.getBytes("c360", c360, sizeof(c360)) / sizeof(C360Rec);       // fw43: cm/360 results
     if (!calib_n && prefs.isKey("calib")) {  // fw36: move the fw27-35 records (46 bytes, no speed) over once
         uint8_t old[CALIB_KEEP * CALIB_V1_SIZE];
         calib_n = prefs.getBytes("calib", old, sizeof(old)) / CALIB_V1_SIZE;
@@ -2730,6 +2827,8 @@ void setup() {
     server.on("/api/calibspeed", HTTP_POST, h_calibspeed);
     server.on("/api/calibdel", HTTP_POST, h_calibdel);
     server.on("/api/dgtemp", HTTP_POST, h_dgtemp);
+    server.on("/api/turn", HTTP_POST, h_turn);  // fw43
+    server.on("/api/c360", HTTP_POST, h_c360);  // fw43
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
