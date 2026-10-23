@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 41      // this firmware's number, shown in /api/status
+#define QT_FW 42      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -220,6 +220,11 @@ static DirGainCfg dg = { { 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000 }, 0, 
 // ";hand" appended when edited after loading a suggestion), and when they were saved. NVS "dgsrc" / "dgsrct".
 static String dg_src;
 static uint32_t dg_src_t = 0;
+// fw42: temporary gains for BallSheet's blind A/B accuracy test: applied on the host connected now instead of the saved
+// table, never saved or logged, back to the saved table on restore=1 or 12 s after the last keep-alive
+static bool dgt_on = false;
+static uint16_t dgt_g[8];
+static uint32_t dgt_keep_at = 0;
 static uint32_t dg_sent_at = 0;
 static bool dg_reread = false;
 static uint16_t dg_sends = 0;  // since boot, for /api/status
@@ -1309,7 +1314,7 @@ static void h_status() {
         j += "],\"src\":\"" + dg_src + "\",\"src_t\":" + String(dg_src_t);  // fw39
         j += ",\"sup\":" + String(dg_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[50] & 1) ? "true" : "false") +
              ",\"got\":" + String(sup && (evb[50] & 2) ? "true" : "false") + ",\"want\":" + String(dg_wanted() ? "true" : "false") +
-             ",\"sends\":" + String(dg_sends) + "}";
+             ",\"sends\":" + String(dg_sends) + ",\"temp\":" + String(dgt_on ? "true" : "false") + ",\"applied\":" + String(dg_applied() ? "true" : "false") + "}";  // fw42
     }
     j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
     {
@@ -1822,9 +1827,18 @@ static bool dg_wanted() {  // on for the host connected now
     return false;
 }
 
+static const uint16_t* dg_eff() {  // fw42: the table the Feather should have: the temporary one during an A/B test
+    return dgt_on ? dgt_g : dg.g;
+}
+
+static bool dg_eff_want() {
+    return dgt_on || dg_wanted();
+}
+
 static bool dg_flat() {
+    const uint16_t* g = dg_eff();
     for (int k = 0; k < 8; k++) {
-        if (dg.g[k] != 1000) {
+        if (g[k] != 1000) {
             return false;
         }
     }
@@ -1832,12 +1846,21 @@ static bool dg_flat() {
 }
 
 static uint8_t dg_crc() {  // as the Feather computes it: crc8 of the 16 gain bytes, little-endian
+    const uint16_t* g = dg_eff();
     uint8_t raw[16];
     for (int k = 0; k < 8; k++) {
-        raw[2 * k] = dg.g[k] & 0xFF;
-        raw[2 * k + 1] = dg.g[k] >> 8;
+        raw[2 * k] = g[k] & 0xFF;
+        raw[2 * k + 1] = g[k] >> 8;
     }
     return crc8(raw, 16);
+}
+
+static bool dg_applied() {  // fw42: the Feather holds the table it should (status: BallSheet waits for it between A/B blocks)
+    if (!ev_ok || !(evb[50] & 2)) {
+        return false;
+    }
+    bool expect_on = dg_eff_want() && !dg_flat();
+    return (evb[51] == dg_crc()) && (((evb[50] & 1) != 0) == expect_on);
 }
 
 // the Feather's copy is in status 242-243, which come with the 192-255 block: read only when its change nibble moves,
@@ -1859,23 +1882,56 @@ static void dg_tick() {
     if (!ev_ok) {
         return;
     }
-    uint8_t f = evb[50];
-    bool want = dg_wanted(), expect_on = want && !dg_flat();
-    bool ok = (f & 2) && (evb[51] == dg_crc()) && (((f & 1) != 0) == expect_on);
-    if (ok || (millis() - dg_sent_at < 1500)) {
+    if (dgt_on && (millis() - dgt_keep_at > 12000)) {
+        dgt_on = false;  // fw42: BallSheet stopped checking in: back to the saved table
+        dg_sent_at = 0;
+    }
+    bool want = dg_eff_want();
+    if (dg_applied() || (millis() - dg_sent_at < 1500)) {
         return;
     }
+    const uint16_t* g = dg_eff();
     uint8_t d[17];
     d[0] = want ? 1 : 0;
     for (int k = 0; k < 8; k++) {
-        d[1 + 2 * k] = dg.g[k] & 0xFF;
-        d[2 + 2 * k] = dg.g[k] >> 8;
+        d[1 + 2 * k] = g[k] & 0xFF;
+        d[2 + 2 * k] = g[k] >> 8;
     }
     if (queue_cmd(C_SET_DIRGAIN, d, 17)) {
         dg_sent_at = millis();
         dg_reread = true;
         dg_sends++;
     }
+}
+
+// POST /api/dgtemp?g=g0,...,g7 | keep=1 | restore=1 (fw42): BallSheet's A/B accuracy test, see dgt_on
+static void h_dgtemp() {
+    touch();
+    if (server.hasArg("restore")) {
+        if (dgt_on) {
+            dgt_on = false;
+            dg_sent_at = 0;
+        }
+        return ok_json(true);
+    }
+    if (server.hasArg("keep")) {
+        dgt_keep_at = millis();
+        return ok_json(dgt_on);
+    }
+    if (!from_current_page()) {
+        return;
+    }
+    long v[8];
+    if (!csv8(server.arg("g"), 500, 2000, v)) {
+        return ok_json(false, "need 8 gains, 500-2000 per mille");
+    }
+    for (int k = 0; k < 8; k++) {
+        dgt_g[k] = v[k];
+    }
+    dgt_on = true;
+    dgt_keep_at = millis();
+    dg_sent_at = 0;  // send now
+    ok_json(true);
 }
 
 // POST /api/dirgain?g=g0,...,g7 (per mille, 500-2000)&hosts=sig,sig (8 hex each; empty = off everywhere)
@@ -2673,6 +2729,7 @@ void setup() {
     server.on("/api/calib", HTTP_GET, h_calib_get);
     server.on("/api/calibspeed", HTTP_POST, h_calibspeed);
     server.on("/api/calibdel", HTTP_POST, h_calibdel);
+    server.on("/api/dgtemp", HTTP_POST, h_dgtemp);
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);

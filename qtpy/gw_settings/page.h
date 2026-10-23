@@ -435,7 +435,7 @@ sv.addEventListener('pointermove',e=>{if(dgDrag<0)return;const q=new DOMPoint(e.
 dgEdit=dgCur().slice();dgEdit[dgDrag]=dgClamp(.5+(d-30)/120*1.5);dgSrcHand();dgKey='';drawDG()});
 ['pointerup','pointercancel'].forEach(t=>sv.addEventListener(t,()=>{dgDrag=-1}))}
 function drawDG(){const c=$('dgc');if(!S||!S.dg){c.hidden=true;return}c.hidden=false;if(!dgBuilt)dgBuild();const d=S.dg;
-$('dgst').textContent=!d.sup?'needs Feather v24':d.on?'applying on this host':d.want?(d.g.every(v=>v===1000)?'on here, all 1.00':'sending…'):'off on this host';
+$('dgst').textContent=!d.sup?'needs Feather v24':d.temp?'BallSheet A/B test: temporary gains':d.on?'applying on this host':d.want?(d.g.every(v=>v===1000)?'on here, all 1.00':'sending…'):'off on this host';
 $('dgsave').disabled=$('dgrev').disabled=!dgEdit;
 const gs=dgCur(),key=JSON.stringify([gs,d.g,d.hosts,S.hosts,cbLast&&cbLast.id]);if(key===dgKey)return;dgKey=key;
 let s='';[.5,1,1.5,2].forEach(g=>{s+='<circle class="ring'+(g===1?' one':'')+'" r="'+dgR(g)+'"/>'});
