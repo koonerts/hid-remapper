@@ -11,6 +11,7 @@
 #include "globals.h"
 #include "gw_chords.h"
 #include "gw_dirgain.h"
+#include "gw_turn.h"
 #include "gw_hostcap.h"
 #include "gw_link.h"
 #include "gw_payloads.h"
@@ -1664,7 +1665,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 26
+#define GW_FW_VERSION 27
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1679,6 +1680,7 @@ static void rs_tick(uint32_t now) {
 #define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
 #define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
 #define LINK_SET_DIRGAIN 0x0E      // v24: [on, 8 gains uint16 per mille] sensitivity per direction (gw_dirgain.cc), RAM only
+#define LINK_TURN 0x0F             // v27: [total int32, counts a second uint32, hand counts uint32] a measured turn (gw_turn.cc); [] stops it
 
 // per-frame processing time (gw_frame_time), over a 1 s window; since v19 also how long after its tick each frame was
 // done (td_*), the SOF interrupt's time and the ticks merged (frames never processed), from tick.cc
@@ -1800,7 +1802,7 @@ void gw_link_status(uint8_t* s) {
     s[116] = sof_peak4;
     s[117] = (rs_settings[RS_ANGLE].confirmed ? 1 : 0) | (rs_settings[RS_POS].confirmed ? 2 : 0) |
              (rs_settings[RS_ANGLE].rewrite_on_wake ? 4 : 0) | (rs_settings[RS_POS].rewrite_on_wake ? 8 : 0) |
-             (uint8_t) (((ev_seq + gw_hostcap_seq()) & 0x0F) << 4);  // v21: changes to the recent actions (192-255), v23 also to the host capture (256-511); before the crc at 127
+             (uint8_t) (((ev_seq + gw_hostcap_seq() + gw_turn_seq()) & 0x0F) << 4);  // v21: changes to the recent actions (192-255), v23 also to the host capture (256-511); before the crc at 127
     s[91] = rs_raw_seq;
     s[92] = rs_raw_state;
     s[93] = (rs_raw_len > 17) ? 17 : rs_raw_len;
@@ -1836,6 +1838,7 @@ void gw_link_status(uint8_t* s) {
     gw_dirgain_status(s + 242);  // v24: 242 bit 0 applying, bit 1 got a table; 243 crc8 of the gains as received
     s[244] = gw_hostcap_upd();  // v26: the capture block's change counter and capture number (= its bytes 258 and 257)
     s[245] = gw_hostcap_id();
+    gw_turn_status(s + 246);  // v27: 246 state, 247 run number, 248-251 counts sent
     s[255] = gw_crc8(s + 192, 63);
     gw_hostcap_fill(s + 256);  // v23
 }
@@ -1942,6 +1945,15 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                     g[k] = get16(d + 1 + 2 * k);
                 }
                 gw_dirgain_set(d[0] != 0, g);
+            }
+            break;
+        case LINK_TURN:
+            if (len == 12) {
+                gw_turn_start((int32_t) ((uint32_t) d[0] | (uint32_t) d[1] << 8 | (uint32_t) d[2] << 16 | (uint32_t) d[3] << 24),
+                              (uint32_t) d[4] | (uint32_t) d[5] << 8 | (uint32_t) d[6] << 16 | (uint32_t) d[7] << 24,
+                              (uint32_t) d[8] | (uint32_t) d[9] << 8 | (uint32_t) d[10] << 16 | (uint32_t) d[11] << 24);
+            } else if (len == 0) {
+                gw_turn_stop();
             }
             break;
         case LINK_RADIO_STATE:
