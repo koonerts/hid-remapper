@@ -211,17 +211,20 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row" id="lvb" hidden style="margin-top:8px"><button class="p" id="lvset"></button><button id="lvagain">Measure again</button></div>
 </div>
 <div class="card" id="c3card"><div class="hd"><h2>cm/360 in game</h2></div>
-<p class="mut" style="margin:0 0 10px">How far the mouse moves for one full turn in game, through the XIM. The Feather turns the view by itself at a steady speed, so the distance is exact; you only say where the crosshair stopped, and each answer halves the range. In BF6: stand still (firing range), put the crosshair on a sharp vertical edge, let go of the mouse (touching it stops the turn), then Turn.</p>
+<p class="mut" style="margin:0 0 10px">How far the mouse moves for one full turn in game, through the XIM. BallSheet's Match BF6 can use the newest result.</p>
 <p class="mut" id="c3off" hidden></p>
-<div class="row c3f"><label>Guess, cm/360<input type="number" id="c3est" step="0.1" min="2" max="300"></label><label>Speed<select id="c3sp"><option value="5">5 cm/s</option><option value="10" selected>10 cm/s</option><option value="20">20 cm/s</option><option value="40">40 cm/s</option><option value="80">80 cm/s</option></select></label><label>Turns<select id="c3tn"><option>1</option><option>2</option><option>3</option></select></label></div>
-<div class="row" style="margin-top:10px"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button></div>
-<p id="c3now" style="margin:10px 0 6px"></p>
-<div class="row" id="c3ans" hidden><span>Where did the crosshair stop?</span><button onclick="c3Ans(-1)">Short of the edge</button><button class="p" onclick="c3Ans(0)">On it</button><button onclick="c3Ans(1)">Past it</button></div>
-<div id="c3cbox" hidden><h3 style="margin:16px 0 6px;font-size:15px">Or count your own turns</h3>
+<div id="c3cbox" hidden><h3 style="margin:4px 0 6px;font-size:15px">Count your own turns</h3>
 <p class="mut" style="margin:0 0 8px">Turn by hand in game at your own speed: put the crosshair on an edge, Start counting, turn whole turns back to that edge (lifting the mouse and small corrections are fine), Stop. The Feather counts what reaches the XIM, after your direction gains.</p>
 <div class="row c3f"><label>Full turns<select id="c3ctn"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label></div>
 <div class="row" style="margin-top:10px"><button class="p" id="c3cgo" onclick="c3Count()">Start counting</button><button id="c3csave" onclick="c3CSave()">Save</button></div>
 <p id="c3cnow" style="margin:10px 0 0"></p></div>
+<details id="c3turnbox" style="margin-top:14px"><summary><b>Check it at a fixed speed</b> <span class="mut">(optional)</span></summary>
+<p class="mut" style="margin:8px 0 10px">The Feather turns the view by itself at a steady speed you pick, starting from your result (or a guess), and you say where the crosshair stopped: short of the edge, on it or past it; each answer halves the range. At a few speeds this shows whether the XIM and BF6 bend fast turns. Stand still, crosshair on a sharp vertical edge, let go of the mouse (touching it stops the turn), then Turn.</p>
+<div class="row c3f"><label>Start from, cm/360<input type="number" id="c3est" step="0.1" min="2" max="300"></label><label>Speed<select id="c3sp"><option value="5">5 cm/s</option><option value="10" selected>10 cm/s</option><option value="20">20 cm/s</option><option value="40">40 cm/s</option><option value="80">80 cm/s</option></select></label><label>Turns<select id="c3tn"><option>1</option><option>2</option><option>3</option></select></label></div>
+<div class="row" style="margin-top:10px"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button></div>
+<p id="c3now" style="margin:10px 0 6px"></p>
+<div class="row" id="c3ans" hidden><span>Where did the crosshair stop?</span><button onclick="c3Ans(-1)">Short of the edge</button><button class="p" onclick="c3Ans(0)">On it</button><button onclick="c3Ans(1)">Past it</button></div>
+</details>
 <table class="c3t" id="c3list"></table></div>
 <details class="card wide" id="cbsaved" hidden><summary><div><h2>Calibration runs <span class="mut" id="cbsavedn"></span></h2><div class="mut" id="cbsrc"></div></div></summary><div id="cbsavedlist"></div></details>
 </div></section>
@@ -881,7 +884,7 @@ function c3Cpc(){const d=S&&S.stage!=null&&S.dpi&&S.dpi[S.stage];return d&&d[0]?
 function c3Reset(){c3.n=c3.lo=c3.hi=0;c3.ask=false;c3.msg='';c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=Number($('c3est').value),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
 if(!S.turn||!S.turn.sup||!cpc||c3.busy)return;if(sp!==c3.sp||tn!==c3.tn){c3.lo=c3.hi=0;c3.sp=sp;c3.tn=tn}
-if(!c3.n){if(!(e>=2&&e<=300)){toast('Type a guess first (cm/360)',true);return}c3.n=Math.round(e*cpc)}
+if(!c3.n){if(!(e>=2&&e<=300)){toast('Type a cm/360 to start from first',true);return}c3.n=Math.round(e*cpc)}
 const total=c3.n*tn,dur=total/(sp*cpc)*1000;if(dur>28000){toast('Too long for one turn (30 s at most): a faster speed or fewer turns',true);return}
 c3.run=(S.turn.run+1)&255;c3.busy=true;c3.ask=false;c3.at=Date.now();c3.dur=dur;c3.msg='Turning'+(tn>1?' '+tn+' times':'')+'… hands off the mouse.';c3Draw();
 const r=await post('/api/turn?n='+total+'&r='+Math.round(sp*cpc)+'&hand='+Math.round(cpc*0.2));if(!r||!r.ok){c3.busy=false;c3.msg='The QT Py refused: '+(r&&r.err||'no answer')+'.';c3Draw()}}
