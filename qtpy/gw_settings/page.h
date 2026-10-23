@@ -27,6 +27,7 @@ main{max-width:1080px;margin:0 auto;padding:4px 16px 72px}
 .cbm td.rc{text-align:center}.cbm .up{color:var(--acc)}.cbm .dn{color:var(--warn)}.cbm .wn{color:var(--warn)}.cbm .use{color:var(--ok);font-size:12px}
 .cbm tr.ft td{border-bottom:0;padding-top:8px}.cbm tr.ft button{padding:3px 8px;font-size:12.5px}
 .chipb{font-size:12px;padding:2px 10px;border-radius:99px;color:var(--mut)}
+.cols>.wide{grid-column:1/-1}
 details.cap{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0}details.cap>summary{font-size:13px}details.cap[open]>summary{margin-bottom:6px}
 h1{font-size:21px;font-weight:650;margin:4px 0 8px;letter-spacing:-.01em}
 h2{font-size:15px;font-weight:650;margin:0}
@@ -194,7 +195,6 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="note" id="cbmsg" hidden></p>
 <p class="mut" id="dgnote" style="margin:8px 0 0">Calibrate: flicks at the lengths you use in game (e.g. "6, 12, 18" cm), each round the 8 directions. Click the middle target, flick to the one that appears and click it, flick back and click the middle again. For long flicks the test lowers the DPI and puts it back afterwards. Keep Windows' pointer speed at 6 of 11 (the default) with "Enhance pointer precision" off.</p>
 <div id="cbres" hidden></div>
-<details id="cbsaved" hidden><summary><span>Saved runs</span> <span class="mut" id="cbsavedn"></span></summary><div id="cbsavedlist"></div></details>
 <div id="cbwrap"><canvas id="cbc" aria-label="Flick area"></canvas><div id="cbhint"></div></div>
 </div>
 <div class="card" id="lvl"><div class="hd"><h2>Level your swipes</h2></div>
@@ -204,6 +204,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p id="lvr" class="mut" style="margin:8px 0 0">Click the box to start.</p>
 <div class="row" id="lvb" hidden style="margin-top:8px"><button class="p" id="lvset"></button><button id="lvagain">Measure again</button></div>
 </div>
+<details class="card wide" id="cbsaved" hidden><summary><div><h2>Calibration runs <span class="mut" id="cbsavedn"></span></h2><div class="mut" id="cbsrc"></div></div></summary><div id="cbsavedlist"></div></details>
 </div></section>
 <section class="tab" id="t-setup" role="tabpanel" hidden><div class="cols">
 <div class="card" id="fchords"><div class="hd"><div><h2>Chords</h2><div class="mut">Hold one button, press another: what each pair does</div></div></div>
@@ -613,7 +614,7 @@ function cbDrawRuns(){const box=$('cbsaved');box.hidden=!cbRuns.length;if(!cbRun
 const pr=cbPoolRuns(),ps=pr.length?cbPooled(pr):null,cur=dgSaved(),use=dgSrcRuns(),sp=cbSpread(pr),ref=cbRuns[0];
 const cell=(v,r,k)=>{const p=(v-1)*100,a=Math.min(1,Math.abs(p)/8),q=Math.round(p),txt=q===0?'0':(q>0?'+':'\u2212')+Math.abs(q);
 return '<td class="rc" style="background:rgba('+(p<0?'240,182,90':'90,156,245')+','+(a*.38).toFixed(2)+')" title="'+(Math.abs(p)<.5?'on target':Math.abs(p).toFixed(1)+'% '+(p<0?'short':'over'))+' · '+r.n[k]+' flicks · gain then '+(r.g[k]/1000).toFixed(2)+'">'+txt+'</td>'};
-let h='<p class="mut" style="margin:0 0 8px">'+esc(dgSrcText())+'</p>';
+$('cbsrc').textContent=dgSrcText();let h='';
 h+='<div class="row" style="margin:0 0 8px"><span class="mut">Tick:</span><button class="chipb" onclick="cbPoolSet(\'speed\')">same speed as newest (±5)</button><button class="chipb" onclick="cbPoolSet(\'bs\')">all BallSheet</button>'+(use.length?'<button class="chipb" onclick="cbPoolSet(\'use\')">runs in use</button>':'')+'<button class="chipb" onclick="cbPoolSet(\'none\')">none</button></div>';
 h+='<div class="cbx"><table class="cbm"><thead><tr><th></th><th>Now</th><th>Pooled</th><th title="How much the ticked runs disagree in this direction">±</th>';
 cbRuns.forEach(r=>{const tot=r.n.reduce((a,b)=>a+b,0),on=pr.includes(r),why=(r.flags&1)?(r.speed?(r===ref?'newest run':Math.abs(r.speed-ref.speed)<=5?'speed within 5 of the newest':'speed '+Math.abs(r.speed-ref.speed)+' points from the newest'):'speed not recorded'):'browser run';
