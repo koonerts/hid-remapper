@@ -1665,7 +1665,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 27
+#define GW_FW_VERSION 28
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1680,7 +1680,7 @@ static void rs_tick(uint32_t now) {
 #define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
 #define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
 #define LINK_SET_DIRGAIN 0x0E      // v24: [on, 8 gains uint16 per mille] sensitivity per direction (gw_dirgain.cc), RAM only
-#define LINK_TURN 0x0F             // v27: [total int32, counts a second uint32, hand counts uint32] a measured turn (gw_turn.cc); [] stops it
+#define LINK_TURN 0x0F             // v27: [total int32, counts a second uint32, hand counts uint32] a measured turn (gw_turn.cc); [] stops it; v28: [1] counts the real X
 
 // per-frame processing time (gw_frame_time), over a 1 s window; since v19 also how long after its tick each frame was
 // done (td_*), the SOF interrupt's time and the ticks merged (frames never processed), from tick.cc
@@ -1954,6 +1954,8 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                               (uint32_t) d[8] | (uint32_t) d[9] << 8 | (uint32_t) d[10] << 16 | (uint32_t) d[11] << 24);
             } else if (len == 0) {
                 gw_turn_stop();
+            } else if ((len == 1) && (d[0] == 1)) {
+                gw_turn_count();  // v28: count mode
             }
             break;
         case LINK_RADIO_STATE:
