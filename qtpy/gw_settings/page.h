@@ -89,7 +89,8 @@ input[type=range]{flex:1;min-width:120px;accent-color:var(--acc)}
 .ms .arc{fill:none;stroke:var(--acc);stroke-width:1.5;stroke-opacity:.7}
 .ms .hit{fill:transparent;cursor:grab}
 .ms text{fill:var(--mut);font-size:11px}
-.ms.unk .sn,.ms.unk .arc{opacity:.3}
+.ms.unk .sn,.ms.unk .arc,.ms.unk .mv{opacity:.3}
+.ms .mv{fill:var(--acc);font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;stroke:var(--soft);stroke-width:3px;paint-order:stroke}
 /* segmented choice */
 .seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .seg button{border:0;border-radius:0;border-right:1px solid var(--line);padding:6px 11px;background:var(--card)}
@@ -165,12 +166,13 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <g id="msg"><rect class="gh" x="-13" y="-16" width="26" height="32" rx="5"/><line class="gh" x1="0" y1="-16" x2="0" y2="-42"/></g>
 <g id="msa"><line class="ax" x1="0" y1="-60" x2="0" y2="60"/><path class="arc" id="msarc"/></g>
 <g class="sn" id="mss"><rect x="-13" y="-16" width="26" height="32" rx="5"/><line x1="0" y1="-16" x2="0" y2="-42"/><path d="M0,-54 L-6.5,-41 L6.5,-41 Z"/><circle class="dot" r="3"/><circle class="hit" id="msh" cx="0" cy="-48" r="14"/></g>
+<text class="mv" id="msat" text-anchor="middle"></text><text class="mv" id="mspt"></text>
 </svg><div class="flds">
 <div class="fld"><div class="lbl"><span>Angle</span><b id="anglev">–</b></div>
-<div class="row"><button class="sq" onclick="step('angle',-1)" aria-label="Angle down">−</button><input type="range" id="angle" min="-30" max="30" step="1" autocomplete="off" aria-label="Sensor angle"><button class="sq" onclick="step('angle',1)" aria-label="Angle up">+</button><button onclick="home('angle')">Reset to <span id="ahome">–</span>°</button></div></div>
+<div class="row"><button class="sq" onclick="step('angle',-1)" aria-label="Angle down">−</button><input type="range" id="angle" min="-30" max="30" step="1" autocomplete="off" aria-label="Sensor angle"><button class="sq" onclick="step('angle',1)" aria-label="Angle up">+</button><button class="sq" id="ahomeb" onclick="home('angle')" aria-label="Reset">↺</button></div></div>
 <div class="fld"><div class="lbl"><span>Position</span><b id="posv">–</b></div>
-<div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" autocomplete="off" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button onclick="home('pos')">Reset to <span id="phome">–</span></button></div></div></div></div>
-<p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where the reset chords put it. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
+<div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" autocomplete="off" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button class="sq" id="phomeb" onclick="home('pos')" aria-label="Reset">↺</button></div></div></div></div>
+<p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where the reset chords (and ↺) put it. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
 
 <div class="card"><div class="hd"><h2>More mouse settings</h2></div>
 <p class="note" id="optnote" hidden></p>
@@ -319,6 +321,11 @@ function drawSensor(){const a=Number($('angle').value),p=Number($('pos').value),
 $('mss').setAttribute('transform','translate(100 '+y+') rotate('+a*MS.dir+')');$('msa').setAttribute('transform','translate(100 '+y+')');
 $('msarc').setAttribute('d',a?'M0,'+(-R)+' A'+R+' '+R+' 0 0 '+(t>0?1:0)+' '+(R*Math.sin(t)).toFixed(1)+','+(-R*Math.cos(t)).toFixed(1):'');
 const tu=S&&S.tune;$('msg').style.display=tu?'':'none';if(tu)$('msg').setAttribute('transform','translate(100 '+msY(tu.pos_home)+') rotate('+tu.angle_home*MS.dir+')');
+// the values on the drawing too: the angle past the arrow's tip, the position beside the sensor
+$('msat').setAttribute('x',(100+68*Math.sin(t)).toFixed(1));$('msat').setAttribute('y',(y-68*Math.cos(t)+4).toFixed(1));$('msat').textContent=a+'°';
+$('mspt').setAttribute('x',126);$('mspt').setAttribute('y',(y+4).toFixed(1));$('mspt').textContent='pos '+p;
+// ↺ carries no number (it read as the value): the reset value is in its tooltip, and it greys out when already there
+for(const[id,v,h,u]of[['ahomeb',a,tu&&tu.angle_home,'°'],['phomeb',p,tu&&tu.pos_home,'']]){const b=$(id);b.disabled=h==null||v===h;b.title=h==null?'':(v===h?'Already at ':'Reset to ')+h+u+' (where the reset chord puts it)';b.setAttribute('aria-label',b.title||'Reset')}
 $('ms').classList.toggle('unk',!S||(S.angle==null&&!edit.angle)||(S.pos==null&&!edit.pos));$('ms').setAttribute('aria-label','Sensor at position '+p+', angle '+a+'°');sensOk()}
 function sensOk(){const o=S&&S.sens,w=[];if(o)for(const[k,n]of[['angle','Angle'],['pos','Position']]){if(S[k]==null)continue;if(o[k+'_wait'])w.push(n+' was sent while the mouse was asleep; it goes out again when the mouse wakes.');else if(!o[k+'_ok'])w.push(n+' not confirmed by the mouse yet; it may differ.')}$('sensok').hidden=!w.length;$('sensok').textContent=w.join(' ')}
 let msDrag=null,msOff=0;
@@ -761,7 +768,6 @@ if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</spa
 else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
-if(S.tune){$('ahome').textContent=S.tune.angle_home;$('phome').textContent=S.tune.pos_home}
 drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();foldsApply();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw+(S.page&&S.page.fs?' · page uploaded '+whenText(S.page.t*1000):'');drawBar();tabApply()}
