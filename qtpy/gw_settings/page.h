@@ -26,7 +26,7 @@ main{max-width:1080px;margin:0 auto;padding:4px 16px 72px}
 .cbm th{font-weight:600;color:var(--mut);vertical-align:bottom}.cbm th.rh{text-align:center}.cbm th.rh.on label{color:var(--fg)}
 .cbm td.rc{text-align:center}.cbm .up{color:var(--acc)}.cbm .dn{color:var(--warn)}.cbm .wn{color:var(--warn)}.cbm .use{color:var(--ok);font-size:12px}
 .cbm tr.ft td{border-bottom:0;padding-top:8px}.cbm tr.ft button{padding:3px 8px;font-size:12.5px}
-.chipb{font-size:12px;padding:2px 10px;border-radius:99px;color:var(--mut)}
+.chipb{font-size:12px;padding:2px 10px;border-radius:99px;color:var(--mut)}.chipb.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
 .cols>.wide{grid-column:1/-1}
 details.cap{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0}details.cap>summary{font-size:13px}details.cap[open]>summary{margin-bottom:6px}
 h1{font-size:21px;font-weight:650;margin:4px 0 8px;letter-spacing:-.01em}
@@ -593,13 +593,26 @@ else if(m)x='from the run at '+cbRunLabel(+m[2]);else if(s==='page-run')x='from 
 else if(s==='flat')x='all 1.00';else if(s==='hand')x='set by hand';else x='source not recorded (saved before QT Py firmware 39)';
 if(hand&&s!=='hand')x+=', then edited by hand';return 'Gains in use: '+x+(d.src_t?' · saved '+whenText(d.src_t*1000):'')}
 function cbPoolRuns(){if(!cbRuns.length)return[];if(cbPoolSel)return cbRuns.filter(r=>cbPoolSel.includes(r.t));const use=dgSrcRuns();
-if(use.length&&/^pool:/.test((S&&S.dg&&S.dg.src)||'')){const u=cbRuns.filter(r=>use.includes(r.t));if(u.length)return u}return cbRuns.filter(r=>cbComparable(r,cbRuns[0]))}function cbPooled(runs){const cur=dgSaved(),lh=[0,0,0,0,0,0,0,0],w=[0,0,0,0,0,0,0,0];
+if(use.length&&/^pool:/.test((S&&S.dg&&S.dg.src)||'')){const u=cbRuns.filter(r=>use.includes(r.t));if(u.length)return u}return cbFitPool()}
+// a run's pattern: per direction, the gain it needed (gain used / reach) relative to that run's average, in log space;
+// runs measured with different gains or at different overall levels compare directly
+function cbPat(r){const l=r.med.map((m,k)=>r.n[k]>=3&&m>0&&r.g[k]>0?Math.log(r.g[k]/m):null),v=l.filter(x=>x!==null),mu=v.reduce((a,b)=>a+b,0)/(v.length||1);return l.map(x=>x===null?null:x-mu)}
+// how far a run's pattern is from the mean of other runs' (RMS over directions, %); null without others
+function cbFit(r,others){const o=others.filter(x=>x!==r);if(!o.length)return null;const p=cbPat(r),ps=o.map(cbPat);let s=0,n=0;
+for(let k=0;k<8;k++){const v=ps.map(q=>q[k]).filter(x=>x!==null);if(p[k]===null||!v.length)continue;const m=v.reduce((a,b)=>a+b,0)/v.length;s+=(p[k]-m)**2;n++}return n?(Math.exp(Math.sqrt(s/n))-1)*100:null}
+// default pool: the BallSheet runs that agree with each other (drop the worst while it is over 3.5% from the rest)
+const CB_FIT=3.5;
+function cbFitPool(){let rs=cbRuns.filter(r=>(r.flags&1)&&!(r.flags&2)&&r.n.reduce((a,b)=>a+b,0)>=16);
+while(rs.length>2){let w=null,wf=0;rs.forEach(r=>{const f=cbFit(r,rs);if(f!==null&&f>wf){wf=f;w=r}});if(wf<=CB_FIT)break;rs=rs.filter(r=>r!==w)}
+return rs.length?rs:cbRuns.filter(r=>cbComparable(r,cbRuns[0]))}
+let cbView='need';  // 'need': the needed change per direction (comparable across runs) | 'raw': reach as measured
+function cbPooled(runs){const cur=dgSaved(),lh=[0,0,0,0,0,0,0,0],w=[0,0,0,0,0,0,0,0];
 runs.forEach(r=>{for(let k=0;k<8;k++)if(r.n[k]>=3&&r.med[k]>0&&r.g[k]>0){lh[k]+=r.n[k]*Math.log(r.med[k]/r.g[k]);w[k]+=r.n[k]}});
 const ok=w.map(x=>x>0),m=ok.filter(Boolean).length;if(!m)return cur.slice();
 const ideal=lh.map((s,k)=>ok[k]?Math.exp(-s/w[k]):cur[k]),lg=a=>a.reduce((s,v,k)=>ok[k]?s+Math.log(v):s,0),sc=Math.exp((lg(cur)-lg(ideal))/m);
 return ideal.map((v,k)=>ok[k]?dgClamp(Math.max(cur[k]*.8,Math.min(cur[k]*1.25,v*sc))):cur[k])}
 function cbPoolTick(t,on){if(!cbPoolSel)cbPoolSel=cbPoolRuns().map(r=>r.t);cbPoolSel=on?cbPoolSel.concat([t]):cbPoolSel.filter(x=>x!==t);cbDrawRuns()}
-function cbPoolSet(kind){const ref=cbRuns[0],use=dgSrcRuns();cbPoolSel=cbRuns.filter(r=>kind==='speed'?cbComparable(r,ref):kind==='bs'?(r.flags&1)&&!(r.flags&2):kind==='use'?use.includes(r.t):false).map(r=>r.t);cbDrawRuns()}
+function cbPoolSet(kind){const ref=cbRuns[0],use=dgSrcRuns(),fit=kind==='fit'?cbFitPool():[];cbPoolSel=cbRuns.filter(r=>kind==='speed'?cbComparable(r,ref):kind==='bs'?(r.flags&1)&&!(r.flags&2):kind==='use'?use.includes(r.t):kind==='fit'?fit.includes(r):false).map(r=>r.t);cbDrawRuns()}
 function cbUsePooled(){const rs=cbPoolRuns();if(!rs.length)return;dgEdit=cbPooled(rs);dgEditSrc='pool:'+rs.map(r=>r.t).join(',');dgKey='';drawDG();toast('Pooled from '+rs.length+' run'+(rs.length>1?'s':'')+': press Save to keep it')}
 // how much the ticked runs disagree per direction: each run's gain-corrected ideal, its overall level taken out, sample SD in %
 function cbSpread(runs){if(runs.length<2)return null;const lr=runs.map(r=>{const l=r.med.map((m,k)=>r.n[k]>=3&&m>0&&r.g[k]>0?Math.log(r.g[k]/m):null),v=l.filter(x=>x!==null),mean=v.reduce((a,b)=>a+b,0)/(v.length||1);return l.map(x=>x===null?null:x-mean)});
@@ -612,13 +625,16 @@ function cbLoadRuns(){cbRunsAt=Date.now();fetchJ(tq('/api/calib')).then(j=>{cbRu
 // how much the ticked runs disagree, then a column per run with where its flicks stopped (- short, + over)
 function cbDrawRuns(){const box=$('cbsaved');box.hidden=!cbRuns.length;if(!cbRuns.length)return;$('cbsavedn').textContent='('+cbRuns.length+')';
 const pr=cbPoolRuns(),ps=pr.length?cbPooled(pr):null,cur=dgSaved(),use=dgSrcRuns(),sp=cbSpread(pr),ref=cbRuns[0];
-const cell=(v,r,k)=>{const p=(v-1)*100,a=Math.min(1,Math.abs(p)/8),q=Math.round(p),txt=q===0?'0':(q>0?'+':'\u2212')+Math.abs(q);
+const pats=new Map(cbRuns.map(r=>[r,cbPat(r)]));
+const cell=(v,r,k)=>{if(cbView==='need'){const x=pats.get(r)[k],p=(Math.exp(x)-1)*100,a=Math.min(1,Math.abs(p)/8),q=Math.round(p),txt=q===0?'0':(q>0?'+':'\u2212')+Math.abs(q);
+return '<td class="rc" style="background:rgba('+(p>0?'240,182,90':'90,156,245')+','+(a*.38).toFixed(2)+')" title="'+(Math.abs(p)<.5?'about average':'needed '+Math.abs(p).toFixed(1)+'% '+(p>0?'more':'less')+' gain than this run\'s average')+' · measured: '+(Math.abs((v-1)*100)<.5?'on target':Math.abs((v-1)*100).toFixed(1)+'% '+(v<1?'short':'over'))+' with gain '+(r.g[k]/1000).toFixed(2)+' · '+r.n[k]+' flicks">'+txt+'</td>'}
+const p=(v-1)*100,a=Math.min(1,Math.abs(p)/8),q=Math.round(p),txt=q===0?'0':(q>0?'+':'\u2212')+Math.abs(q);
 return '<td class="rc" style="background:rgba('+(p<0?'240,182,90':'90,156,245')+','+(a*.38).toFixed(2)+')" title="'+(Math.abs(p)<.5?'on target':Math.abs(p).toFixed(1)+'% '+(p<0?'short':'over'))+' · '+r.n[k]+' flicks · gain then '+(r.g[k]/1000).toFixed(2)+'">'+txt+'</td>'};
 $('cbsrc').textContent=dgSrcText();let h='';
-h+='<div class="row" style="margin:0 0 8px"><span class="mut">Tick:</span><button class="chipb" onclick="cbPoolSet(\'speed\')">same speed as newest (±5)</button><button class="chipb" onclick="cbPoolSet(\'bs\')">all BallSheet</button>'+(use.length?'<button class="chipb" onclick="cbPoolSet(\'use\')">runs in use</button>':'')+'<button class="chipb" onclick="cbPoolSet(\'none\')">none</button></div>';
+h+='<div class="row" style="margin:0 0 8px"><span class="mut">Tick:</span><button class="chipb" onclick="cbPoolSet(\'speed\')">same speed as newest (±5)</button><button class="chipb" onclick="cbPoolSet(\'bs\')">all BallSheet</button>'+(use.length?'<button class="chipb" onclick="cbPoolSet(\'use\')">runs in use</button>':'')+'<button class="chipb" onclick="cbPoolSet(\'fit\')">runs that agree</button><button class="chipb" onclick="cbPoolSet(\'none\')">none</button><span class="mut" style="margin-left:8px">Show:</span><button class="chipb'+(cbView==='need'?' on':'')+'" onclick="cbView=\'need\';cbDrawRuns()">needed change</button><button class="chipb'+(cbView==='raw'?' on':'')+'" onclick="cbView=\'raw\';cbDrawRuns()">as measured</button></div>';
 h+='<div class="cbx"><table class="cbm"><thead><tr><th></th><th>Now</th><th>Pooled</th><th title="How much the ticked runs disagree in this direction">±</th>';
-cbRuns.forEach(r=>{const tot=r.n.reduce((a,b)=>a+b,0),on=pr.includes(r),why=(r.flags&1)?(r.speed?(r===ref?'newest run':Math.abs(r.speed-ref.speed)<=5?'speed within 5 of the newest':'speed '+Math.abs(r.speed-ref.speed)+' points from the newest'):'speed not recorded'):'browser run';
-h+='<th class="rh'+(on?' on':'')+'" title="'+esc(why)+'"><label><input type="checkbox"'+(on?' checked':'')+' onchange="cbPoolTick('+r.t+',this.checked)"> '+esc(cbShort(r.t))+'</label><div class="mut">'+((r.flags&1)?'BallSheet'+(r.speed?' '+r.speed+'%':''):'page')+' · '+tot+'</div>'+(use.includes(r.t)?'<div class="use">in use</div>':'')+'</th>'});
+cbRuns.forEach(r=>{const tot=r.n.reduce((a,b)=>a+b,0),on=pr.includes(r),fit=cbFit(r,pr),why=(fit===null?'no other ticked run to compare with':'pattern '+fit.toFixed(1)+'% (RMS) from the other ticked runs'+(fit>CB_FIT?': an outlier':''))+((r.flags&1)?'':' · browser run (coarser timing)');
+h+='<th class="rh'+(on?' on':'')+'" title="'+esc(why)+'"><label><input type="checkbox"'+(on?' checked':'')+' onchange="cbPoolTick('+r.t+',this.checked)"> '+esc(cbShort(r.t))+'</label><div class="mut">'+((r.flags&1)?'BallSheet'+(r.speed?' '+r.speed+'%':''):'page')+' · '+tot+'</div>'+(fit!==null?'<div class="'+(fit>CB_FIT?'wn':'mut')+'">fit '+fit.toFixed(1)+'%</div>':'')+(use.includes(r.t)?'<div class="use">in use</div>':'')+'</th>'});
 h+='</tr></thead><tbody>';
 for(let k=0;k<8;k++){const d=ps?ps[k]-cur[k]:0;
 h+='<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+cur[k].toFixed(2)+'</td><td>'+(ps?ps[k].toFixed(2)+(Math.abs(d)>=.005?' <span class="'+(d>0?'up':'dn')+'">'+(d>0?'+':'\u2212')+Math.abs(d).toFixed(2)+'</span>':''):'–')+'</td><td class="'+(sp&&sp[k]>3?'wn':'mut')+'">'+(sp&&sp[k]!=null?sp[k].toFixed(1)+'%':'–')+'</td>';
@@ -627,7 +643,7 @@ h+='<tr class="ft"><td colspan="4"></td>';
 cbRuns.forEach((r,i)=>{h+='<td><button onclick="cbUseRun('+i+')" title="Load this run\'s own suggestion into the editor">Use</button> <button onclick="cbDel('+r.t+')" title="Delete this run">'+(cbDelArm===r.t?'Delete?':'\u00d7')+'</button></td>'});
 h+='</tr></tbody></table></div>';
 h+='<div class="row" style="margin-top:10px"><button class="p" onclick="cbUsePooled()"'+(ps?'':' disabled')+'>Use pooled suggestion'+(pr.length?' ('+pr.length+' run'+(pr.length>1?'s':'')+')':'')+'</button><span class="mut">then Save above</span></div>';
-h+='<p class="mut">Each run column: where its flicks stopped in that direction, as a % of the distance (\u2212 short, + over; colour by size; hover for flicks and the gain it was measured with). Runs are compared after taking out the gains they used, so runs with different gains still pool. Ticked by default: the runs the gains in use came from, otherwise the BallSheet runs within 5 speed points of the newest (hover a run for why). A run that is short or over everywhere cancels out, so mixing speeds only matters if a speed changes how you flick in some directions. \u00b1 over 3% (amber) means that direction needs more flicks.</p>';
+h+='<p class="mut">'+(cbView==='need'?'Each run column, in the needed-change view: how much more (+, it fell short) or less (\u2212, it overshot) gain each direction needed in that run, relative to the run\'s own average, so runs measured with different gains or speeds compare directly. Runs that belong together show the same pattern down their columns.':'Each run column, as measured: where its flicks stopped, as a % of the distance (\u2212 short, + over), with the gains that run used, so columns measured with different gains don\'t compare directly: use the needed-change view to compare.')+' Fit (under each run): how far its pattern is from the other ticked runs; over '+CB_FIT+'% (amber) is an outlier to untick. Ticked by default: the runs the gains in use came from, otherwise the BallSheet runs that agree with each other. \u00b1 over 3% (amber) means that direction needs more flicks.</p>';
 $('cbsavedlist').innerHTML=h}
 function cbUseRun(i){const r=cbRuns[i];if(!r)return;dgEdit=cbSug(r);dgEditSrc='run:'+r.t;dgKey='';drawDG();toast('Loaded into the editor: press Save to keep it')}setTimeout(cbLoadRuns,2000);setInterval(()=>{if(!cb&&document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
 function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgEditSrc='page-run';dgKey='';drawDG();toast('Press Save to keep it')}
