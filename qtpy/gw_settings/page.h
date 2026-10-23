@@ -2,7 +2,7 @@
 // The settings page, served at / (one file, no external resources). fw35: served gzipped from page_gz.h: run
 // page_gz.ps1 after editing this file (the build fails until then).
 static constexpr char PAGE_HTML[] = R"HTML(<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="gw-rest" content="">
 <title>Warg settings</title><link rel="icon" id="fav" href="data:,">
 <style>
 :root{--bg:#f3f4f6;--card:#fff;--fg:#17191c;--mut:#646b75;--line:#dcdfe4;--soft:#eef0f3;--acc:#1f6fe0;--on:#fff;--ok:#1a8a4a;--bad:#c23b2e;--warn:#9a5a00;--warnbg:#fff4de}
@@ -38,6 +38,7 @@ p{margin:8px 0 0}
 .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:26px}
 .chip{font-size:12.5px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--soft);color:var(--mut)}
+button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 .chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}
 button{font:inherit;padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 button:disabled{opacity:.45;cursor:default}
@@ -766,6 +767,7 @@ $('sbar').innerHTML=b.join('')}
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
 else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
+if(pgNew)st.insertAdjacentHTML('beforeend','<button class="chip" onclick="pgGo()">New page version: reload</button>');
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();foldsApply();
@@ -779,7 +781,25 @@ async function toIp(j){if(ipTried||touched)return false;ipTried=true;const ip=j&
 if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;
 const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch('http://'+ip+'/api/status',{mode:'no-cors',cache:'no-store',signal:c.signal})}catch(e){return false}finally{clearTimeout(tm)}
 if(touched)return false;location.replace('http://'+ip+'/');return true}
-function poll(){fetchJ(tq('/api/status')).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,document.hidden?5000:1000))}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
+// A new page on the QT Py (an upload, or new firmware): a style-only change is swapped in place; anything else
+// reloads this page by itself once nothing is being edited (tab and fold-outs live on the QT Py, the scroll position
+// comes back), otherwise a chip in the status bar offers it. page_gz.ps1 stamps <meta name="gw-rest"> with a hash of
+// everything but the style, so equal stamps mean only the style changed.
+let pgKey=null,pgNew=false,pgFetching=false;
+function pgKeyOf(j){return j.qt_fw+':'+(j.page&&j.page.fs?j.page.t+':'+j.page.len:'built-in')}
+function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
+(a&&a!==document.body&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=='range'&&a.type!=='checkbox'&&a.type!=='color'))}
+// back to where it was: the cards below fill in over a few seconds, so keep trying until the page is that tall (or you scroll)
+function pgScroll(want){const t0=Date.now();let stop=false;['wheel','pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,()=>{stop=true},{once:true,passive:true}));
+const go=()=>{if(stop)return;scrollTo(0,want);if(Math.abs(scrollY-want)>2&&Date.now()-t0<4000)setTimeout(go,100)};setTimeout(go,0)}  // a timer, not requestAnimationFrame: that never runs in a hidden tab
+function pgGo(){try{sessionStorage.setItem('gwScroll',String(scrollY))}catch(e){}location.reload()}
+async function pgCheck(j){const k=pgKeyOf(j);
+if(pgKey===null){pgKey=k;try{const y=sessionStorage.getItem('gwScroll');if(y!==null){sessionStorage.removeItem('gwScroll');pgScroll(Number(y))}}catch(e){}return}
+if(k===pgKey||pgFetching)return;if(pgNew){if(!pgBusy())pgGo();return}
+pgFetching=true;try{const t=await(await fetch('/',{cache:'no-store'})).text(),m=t.match(/<meta name="gw-rest" content="([0-9a-f]+)">/),mine=document.querySelector('meta[name=gw-rest]'),s=t.match(/<style>([\s\S]*?)<\/style>/);
+if(m&&s&&mine&&mine.content===m[1]){document.querySelector('style').textContent=s[1];pgKey=k;toast('Page style updated');return}
+pgNew=true;if(!pgBusy())pgGo();else render()}catch(e){}finally{pgFetching=false}}
+function poll(){fetchJ(tq('/api/status')).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}pgCheck(j)}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,document.hidden?5000:1000))}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
 buildStages();bindSlider('angle');bindSlider('pos');
 $('ms').addEventListener('pointerdown',e=>{if(!S||e.target===$('ms'))return;msDrag=e.target.id==='msh'?'angle':'pos';msOff=0;if(msDrag==='pos'&&$('mss').contains(e.target))msOff=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse()).y-msY(Number($('pos').value));$('ms').setPointerCapture(e.pointerId);e.preventDefault();msMove(e)});
 $('ms').addEventListener('pointermove',msMove);['pointerup','pointercancel'].forEach(t=>$('ms').addEventListener(t,()=>{msDrag=null}));
