@@ -217,6 +217,11 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row" style="margin-top:10px"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button></div>
 <p id="c3now" style="margin:10px 0 6px"></p>
 <div class="row" id="c3ans" hidden><span>Where did the crosshair stop?</span><button onclick="c3Ans(-1)">Short of the edge</button><button class="p" onclick="c3Ans(0)">On it</button><button onclick="c3Ans(1)">Past it</button></div>
+<div id="c3cbox" hidden><h3 style="margin:16px 0 6px;font-size:15px">Or count your own turns</h3>
+<p class="mut" style="margin:0 0 8px">Turn by hand in game at your own speed: put the crosshair on an edge, Start counting, turn whole turns back to that edge (lifting the mouse and small corrections are fine), Stop. The Feather counts what reaches the XIM, after your direction gains.</p>
+<div class="row c3f"><label>Full turns<select id="c3ctn"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label></div>
+<div class="row" style="margin-top:10px"><button class="p" id="c3cgo" onclick="c3Count()">Start counting</button><button id="c3csave" onclick="c3CSave()">Save</button></div>
+<p id="c3cnow" style="margin:10px 0 0"></p></div>
 <table class="c3t" id="c3list"></table></div>
 <details class="card wide" id="cbsaved" hidden><summary><div><h2>Calibration runs <span class="mut" id="cbsavedn"></span></h2><div class="mut" id="cbsrc"></div></div></summary><div id="cbsavedlist"></div></details>
 </div></section>
@@ -798,7 +803,7 @@ if(touched)return false;location.replace('http://'+ip+'/');return true}
 // everything but the style, so equal stamps mean only the style changed.
 let pgKey=null,pgNew=false,pgFetching=false;
 function pgKeyOf(j){return j.qt_fw+':'+(j.page&&j.page.fs?j.page.t+':'+j.page.len:'built-in')}
-function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.busy||c3.n||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
+function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.busy||c3.n||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
 (a&&a!==document.body&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=='range'&&a.type!=='checkbox'&&a.type!=='color'))}
 // back to where it was: the cards below fill in over a few seconds, so keep trying until the page is that tall (or you scroll)
 function pgScroll(want){const t0=Date.now();let stop=false;['wheel','pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,()=>{stop=true},{once:true,passive:true}));
@@ -867,7 +872,11 @@ $('lvagain').onclick=()=>lvBegin();
 // fw43: cm/360 in game, through the XIM. The Feather turns the view by itself at a steady speed (v27 gw_turn), so the
 // mouse travel is exact; you say whether the crosshair stopped short of the edge, on it or past it, and each answer
 // halves the range. No small nudges: the XIM turns short bursts unreliably. Results are kept on the QT Py (c360).
-let c3={n:0,lo:0,hi:0,sp:0,tn:1,busy:false,run:-1,at:0,dur:0,ask:false,msg:'',lk:''};
+let c3={n:0,lo:0,hi:0,sp:0,tn:1,busy:false,run:-1,at:0,dur:0,ask:false,msg:'',lk:'',csaved:-1};
+// fw44 (Feather v28): count mode, you turn by hand and the Feather counts the X that reaches the XIM; live every 0.2 s
+function c3Count(){const t=S.turn;if(!t)return;if(t.state===6){post('/api/turn?stop=1');return}post('/api/turn?count=1').then(r=>{if(!(r&&r.ok))toast('Not started: '+(r&&r.err||'no answer'),true)})}
+function c3CSave(){const t=S.turn,cpc=c3Cpc(),tn=Number($('c3ctn').value);if(!t||t.state!==7||!cpc||!t.sent)return;const cm=Math.abs(t.sent)/cpc/tn;
+post('/api/c360?cm='+Math.round(cm*100)+'&sp=0&dpi='+Math.round(cpc*2.54)).then(r=>{if(r&&r.ok){c3.csaved=t.run;toast('Saved: '+cm.toFixed(2)+' cm/360 (by hand)');c3Draw()}else toast('Not saved: '+(r&&r.err||'no answer'),true)})}
 function c3Cpc(){const d=S&&S.stage!=null&&S.dpi&&S.dpi[S.stage];return d&&d[0]?d[0]/2.54:0}
 function c3Reset(){c3.n=c3.lo=c3.hi=0;c3.ask=false;c3.msg='';c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=Number($('c3est').value),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
@@ -885,11 +894,14 @@ function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&
 if(c3.busy&&t&&t.run===c3.run&&t.state!==1){c3.busy=false;c3.ask=t.state===2;c3.msg=t.state===3?'Stopped: the mouse moved. Let go of it during a turn, line up again, then Turn.':t.state===4?'Stopped.':t.state===5?'Stopped after 30 s.':''}
 if(c3.busy&&Date.now()-c3.at>c3.dur+8000){c3.busy=false;c3.msg='No word from the Feather about the turn: try again.'}
 $('c3off').hidden=ok;$('c3off').textContent=!(t&&t.sup)?'Needs Feather firmware v27 or newer.':'The DPI isn\'t known yet: Read from mouse.';
-$('c3go').disabled=!ok||c3.busy;$('c3stop').disabled=!c3.busy;$('c3reset').disabled=c3.busy||!c3.n;$('c3ans').hidden=!c3.ask||c3.busy;
+$('c3go').disabled=!ok||c3.busy||t.state===6;$('c3stop').disabled=!c3.busy;$('c3reset').disabled=c3.busy||!c3.n;$('c3ans').hidden=!c3.ask||c3.busy;
 const cm=c3.n&&cpc?c3.n/cpc:0,rg=c3.lo||c3.hi?' · between '+(c3.lo?(c3.lo/cpc).toFixed(2):'?')+' and '+(c3.hi?(c3.hi/cpc).toFixed(2):'?')+' cm':'';
 $('c3now').textContent=(c3.msg?c3.msg+' ':'')+(cm?'This try: '+cm.toFixed(2)+' cm/360'+rg:'');$('c3go').textContent=cm?'Turn ('+cm.toFixed(2)+' cm)':'Turn';
+const cnt=!!(t&&(t.state===6||t.state===7)),tn2=Number($('c3ctn').value),ccm=cnt&&cpc?Math.abs(t.sent)/cpc:0;$('c3cbox').hidden=!(t&&t.count);
+$('c3cgo').textContent=t&&t.state===6?'Stop':'Start counting';$('c3cgo').disabled=!ok||c3.busy;$('c3csave').disabled=!(t&&t.state===7&&t.sent&&c3.csaved!==t.run);
+$('c3cnow').textContent=cnt&&(t.state===6||t.sent)?(t.state===6?'Counting: ':'Counted: ')+ccm.toFixed(2)+' cm'+(tn2>1?' for '+tn2+' turns':'')+' = '+(ccm/tn2).toFixed(2)+' cm/360'+(t.state===6?' (updates as you turn)':''):'';
 const L=S.c360||[],k=JSON.stringify(L);if(!$('c3est').value&&L.length&&document.activeElement!==$('c3est'))$('c3est').value=(L[0][1]/100).toFixed(2);
-if(k!==c3.lk){c3.lk=k;$('c3list').innerHTML=L.length?'<tr><th>When</th><th>cm/360</th><th>Speed</th><th>DPI</th><th></th></tr>'+L.map(r=>'<tr><td>'+esc(whenText(r[0]*1000))+'</td><td><b>'+(r[1]/100).toFixed(2)+'</b></td><td>'+r[2]/10+' cm/s</td><td>'+r[3]+'</td><td><button onclick="c3Del('+r[0]+')" aria-label="Remove">✕</button></td></tr>').join(''):''}}
+if(k!==c3.lk){c3.lk=k;$('c3list').innerHTML=L.length?'<tr><th>When</th><th>cm/360</th><th>Speed</th><th>DPI</th><th></th></tr>'+L.map(r=>'<tr><td>'+esc(whenText(r[0]*1000))+'</td><td><b>'+(r[1]/100).toFixed(2)+'</b></td><td>'+(r[2]?r[2]/10+' cm/s':'by hand')+'</td><td>'+r[3]+'</td><td><button onclick="c3Del('+r[0]+')" aria-label="Remove">✕</button></td></tr>').join(''):''}}
 function drawLevel(){const sn=!!(S.opt&&(S.opt.snap===true||S.opt.snap===1));$('lvsnap').hidden=!sn}
 new ResizeObserver(()=>lvDraw()).observe(LV);
 // fold-outs open as they were left (kept on the QT Py: the page's address changes, and it's shared by your devices)

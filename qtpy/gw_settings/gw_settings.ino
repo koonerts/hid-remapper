@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 43      // this firmware's number, shown in /api/status
+#define QT_FW 44      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -1332,7 +1332,7 @@ static void h_status() {
         bool sup = turn_supported() && ev_ok;
         int32_t sent = sup ? (int32_t) ((uint32_t) evb[56] | (uint32_t) evb[57] << 8 | (uint32_t) evb[58] << 16 | (uint32_t) evb[59] << 24) : 0;
         j += ",\"turn\":{\"sup\":" + String(sup ? "true" : "false") + ",\"state\":" + String(sup ? evb[54] : 0) + ",\"run\":" + String(sup ? evb[55] : 0) +
-             ",\"sent\":" + String((long) sent) + "}";
+             ",\"sent\":" + String((long) sent) + ",\"count\":" + String(sup && (st[56] >= 28) ? "true" : "false") + "}";
         j += ",\"c360\":[";
         for (uint8_t k = 0; k < c360_n; k++) {
             j += String(k ? "," : "") + "[" + String(c360[k].t) + "," + String(c360[k].cm100) + "," + String(c360[k].sp10) + "," + String(c360[k].dpi) + "]";
@@ -2102,6 +2102,13 @@ static void h_turn() {
     }
     if (server.hasArg("stop")) {
         return ok_json(queue_cmd(C_TURN, nullptr, 0), "the Feather's queue is full");
+    }
+    if (server.hasArg("count")) {  // fw44 (Feather v28): count the real X going to the host until ?stop=1
+        if (st[56] < 28) {
+            return ok_json(false, "needs Feather v28");
+        }
+        uint8_t one = 1;
+        return ok_json(queue_cmd(C_TURN, &one, 1), "the Feather's queue is full");
     }
     long n = server.arg("n").toInt(), r = server.arg("r").toInt(), hand = server.arg("hand").toInt();
     if ((n == 0) || (labs(n) > 20000000L) || (r < 10) || (r > 20000000L) || (hand < 0)) {
