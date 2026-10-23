@@ -12,7 +12,7 @@
 
 #include "gw_turn.h"
 
-#define GW_TURN_MAX_US 30000000ull
+#define GW_TURN_MAX_US 120000000ull  // v29: 2 min (was 30 s: a 360 at 10 cm/s and ~265 cm/360 already took 27 s)
 #define GW_TURN_FRAME_MAX 30000  // counts added in one frame at most (a 16-bit report holds 32767)
 #define GW_TURN_COUNT_MAX_US 180000000ull
 #define GW_TURN_BUMP_US 200000
