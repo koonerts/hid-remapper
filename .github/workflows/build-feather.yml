@@ -1,7 +1,7 @@
 name: build-feather
 on:
   push:
-    branches: [vuk-sensor]
+    branches: [gw]
     paths:
       - 'firmware/**'
       - '.github/workflows/build-feather.yml'

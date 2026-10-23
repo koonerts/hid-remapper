@@ -5,7 +5,7 @@ name: build-feather-alt
 # file is pushed or when started by hand; each runner type uploads its own artifact.
 on:
   push:
-    branches: [vuk-sensor]
+    branches: [gw]
     paths:
       - '.github/workflows/build-feather-alt.yml'
   workflow_dispatch:
