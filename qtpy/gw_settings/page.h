@@ -219,8 +219,9 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row" style="margin-top:10px"><button class="p" id="c3cgo" onclick="c3Count()">Start counting</button><button id="c3csave" onclick="c3CSave()">Save</button></div>
 <p id="c3cnow" style="margin:10px 0 0"></p></div>
 <details id="c3turnbox" style="margin-top:14px"><summary><b>Check it at a fixed speed</b> <span class="mut">(optional)</span></summary>
-<p class="mut" style="margin:8px 0 10px">The Feather turns the view by itself at a steady speed you pick, starting from your result (or a guess), and you say where the crosshair stopped: short of the edge, on it or past it; each answer halves the range. At a few speeds this shows whether the XIM and BF6 bend fast turns. Stand still, crosshair on a sharp vertical edge, let go of the mouse (touching it stops the turn), then Turn.</p>
-<div class="row c3f"><label>Start from, cm/360<input type="number" id="c3est" step="0.1" min="2" max="300"></label><label>Speed<select id="c3sp"><option value="5">5 cm/s</option><option value="10" selected>10 cm/s</option><option value="20">20 cm/s</option><option value="40">40 cm/s</option><option value="80">80 cm/s</option></select></label><label>Turns<select id="c3tn"><option>1</option><option>2</option><option>3</option></select></label></div>
+<p class="mut" style="margin:8px 0 10px">The Feather turns the view by itself at a steady speed you pick, starting from your newest result, and you say where the crosshair stopped: short of the edge, on it or past it; each answer halves the range. At a few speeds this shows whether the XIM and BF6 bend fast turns. Stand still, crosshair on a sharp vertical edge, let go of the mouse (touching it stops the turn), then Turn.</p>
+<p id="c3from" style="margin:0 0 8px"></p>
+<div class="row c3f"><label>Speed<select id="c3sp"><option value="5">5 cm/s</option><option value="10" selected>10 cm/s</option><option value="20">20 cm/s</option><option value="40">40 cm/s</option><option value="80">80 cm/s</option></select></label><label>Turns<select id="c3tn"><option>1</option><option>2</option><option>3</option></select></label></div>
 <div class="row" style="margin-top:10px"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button></div>
 <p id="c3now" style="margin:10px 0 6px"></p>
 <div class="row" id="c3ans" hidden><span>Where did the crosshair stop?</span><button onclick="c3Ans(-1)">Short of the edge</button><button class="p" onclick="c3Ans(0)">On it</button><button onclick="c3Ans(1)">Past it</button></div>
@@ -881,29 +882,31 @@ function c3Count(){const t=S.turn;if(!t)return;if(t.state===6){post('/api/turn?s
 function c3CSave(){const t=S.turn,cpc=c3Cpc(),tn=Number($('c3ctn').value);if(!t||t.state!==7||!cpc||!t.sent)return;const cm=Math.abs(t.sent)/cpc/tn;
 post('/api/c360?cm='+Math.round(cm*100)+'&sp=0&dpi='+Math.round(cpc*2.54)).then(r=>{if(r&&r.ok){c3.csaved=t.run;toast('Saved: '+cm.toFixed(2)+' cm/360 (by hand)');c3Draw()}else toast('Not saved: '+(r&&r.err||'no answer'),true)})}
 function c3Cpc(){const d=S&&S.stage!=null&&S.dpi&&S.dpi[S.stage];return d&&d[0]?d[0]/2.54:0}
+function c3From(){const L=S&&S.c360||[];return L.length?L[0][1]/100:0}  // the check starts from the newest result
 function c3Reset(){c3.n=c3.lo=c3.hi=0;c3.ask=false;c3.msg='';c3Draw()}
-async function c3Turn(){const cpc=c3Cpc(),e=Number($('c3est').value),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
+async function c3Turn(){const cpc=c3Cpc(),e=c3From(),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
 if(!S.turn||!S.turn.sup||!cpc||c3.busy)return;if(sp!==c3.sp||tn!==c3.tn){c3.lo=c3.hi=0;c3.sp=sp;c3.tn=tn}
-if(!c3.n){if(!(e>=2&&e<=300)){toast('Type a cm/360 to start from first',true);return}c3.n=Math.round(e*cpc)}
+if(!c3.n){if(!(e>=2&&e<=300)){toast('Count your own turns first: the check starts from that result',true);return}c3.n=Math.round(e*cpc)}
 const total=c3.n*tn,dur=total/(sp*cpc)*1000;if(dur>28000){toast('Too long for one turn (30 s at most): a faster speed or fewer turns',true);return}
 c3.run=(S.turn.run+1)&255;c3.busy=true;c3.ask=false;c3.at=Date.now();c3.dur=dur;c3.msg='Turning'+(tn>1?' '+tn+' times':'')+'… hands off the mouse.';c3Draw();
 const r=await post('/api/turn?n='+total+'&r='+Math.round(sp*cpc)+'&hand='+Math.round(cpc*0.2));if(!r||!r.ok){c3.busy=false;c3.msg='The QT Py refused: '+(r&&r.err||'no answer')+'.';c3Draw()}}
 function c3Stop(){post('/api/turn?stop=1')}
 function c3Ans(a){const cpc=c3Cpc();if(!c3.n||!cpc)return;
-if(a===0){const cm=c3.n/cpc,sp=c3.sp;post('/api/c360?cm='+Math.round(cm*100)+'&sp='+Math.round(sp*10)+'&dpi='+Math.round(cpc*2.54)).then(r=>{if(r&&r.ok){toast('Saved: '+cm.toFixed(2)+' cm/360 at '+sp+' cm/s');$('c3est').value=cm.toFixed(2);c3Reset()}else toast('Not saved: '+(r&&r.err||'no answer'),true)});return}
+if(a===0){const cm=c3.n/cpc,sp=c3.sp;post('/api/c360?cm='+Math.round(cm*100)+'&sp='+Math.round(sp*10)+'&dpi='+Math.round(cpc*2.54)).then(r=>{if(r&&r.ok){toast('Saved: '+cm.toFixed(2)+' cm/360 at '+sp+' cm/s');c3Reset()}else toast('Not saved: '+(r&&r.err||'no answer'),true)});return}
 if(a<0)c3.lo=c3.n;else c3.hi=c3.n;c3.n=Math.round(c3.lo&&c3.hi?(c3.lo+c3.hi)/2:c3.n*(a<0?1.06:0.94));c3.ask=false;c3.msg='Line the crosshair up on the edge again, let go, then Turn.';c3Draw()}
 function c3Del(t){post('/api/c360?del='+t).then(r=>{if(!(r&&r.ok))toast('Not removed',true)})}
 function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&&t.sup&&cpc);
 if(c3.busy&&t&&t.run===c3.run&&t.state!==1){c3.busy=false;c3.ask=t.state===2;c3.msg=t.state===3?'Stopped: the mouse moved. Let go of it during a turn, line up again, then Turn.':t.state===4?'Stopped.':t.state===5?'Stopped after 30 s.':''}
 if(c3.busy&&Date.now()-c3.at>c3.dur+8000){c3.busy=false;c3.msg='No word from the Feather about the turn: try again.'}
 $('c3off').hidden=ok;$('c3off').textContent=!(t&&t.sup)?'Needs Feather firmware v27 or newer.':'The DPI isn\'t known yet: Read from mouse.';
-$('c3go').disabled=!ok||c3.busy||t.state===6;$('c3stop').disabled=!c3.busy;$('c3reset').disabled=c3.busy||!c3.n;$('c3ans').hidden=!c3.ask||c3.busy;
+$('c3go').disabled=!ok||c3.busy||t.state===6||!c3From();$('c3stop').disabled=!c3.busy;$('c3reset').disabled=c3.busy||!c3.n;$('c3ans').hidden=!c3.ask||c3.busy;
 const cm=c3.n&&cpc?c3.n/cpc:0,rg=c3.lo||c3.hi?' · between '+(c3.lo?(c3.lo/cpc).toFixed(2):'?')+' and '+(c3.hi?(c3.hi/cpc).toFixed(2):'?')+' cm':'';
 $('c3now').textContent=(c3.msg?c3.msg+' ':'')+(cm?'This try: '+cm.toFixed(2)+' cm/360'+rg:'');$('c3go').textContent=cm?'Turn ('+cm.toFixed(2)+' cm)':'Turn';
 const cnt=!!(t&&(t.state===6||t.state===7)),tn2=Number($('c3ctn').value),ccm=cnt&&cpc?Math.abs(t.sent)/cpc:0;$('c3cbox').hidden=!(t&&t.count);
-$('c3cgo').textContent=t&&t.state===6?'Stop':'Start counting';$('c3cgo').disabled=!ok||c3.busy;$('c3csave').disabled=!(t&&t.state===7&&t.sent&&c3.csaved!==t.run);
+$('c3cgo').textContent=t&&t.state===6?'Stop':'Start counting';$('c3cgo').disabled=!ok||c3.busy;const cL=S.c360||[],cdup=cnt&&cpc&&cL.length&&cL[0][2]===0&&cL[0][1]===Math.round(Math.abs(t.sent)/cpc/tn2*100);  // already the newest saved result
+$('c3csave').disabled=!(t&&t.state===7&&t.sent&&c3.csaved!==t.run&&!cdup);
 $('c3cnow').textContent=cnt&&(t.state===6||t.sent)?(t.state===6?'Counting: ':'Counted: ')+ccm.toFixed(2)+' cm'+(tn2>1?' for '+tn2+' turns':'')+' = '+(ccm/tn2).toFixed(2)+' cm/360'+(t.state===6?' (updates as you turn)':''):'';
-const L=S.c360||[],k=JSON.stringify(L);if(!$('c3est').value&&L.length&&document.activeElement!==$('c3est'))$('c3est').value=(L[0][1]/100).toFixed(2);
+const L=S.c360||[],k=JSON.stringify(L);$('c3from').textContent=L.length?'Starts from your newest result, '+(L[0][1]/100).toFixed(2)+' cm/360.':'Count your own turns first: this starts from that result.';
 if(k!==c3.lk){c3.lk=k;$('c3list').innerHTML=L.length?'<tr><th>When</th><th>cm/360</th><th>Speed</th><th>DPI</th><th></th></tr>'+L.map(r=>'<tr><td>'+esc(whenText(r[0]*1000))+'</td><td><b>'+(r[1]/100).toFixed(2)+'</b></td><td>'+(r[2]?r[2]/10+' cm/s':'by hand')+'</td><td>'+r[3]+'</td><td><button onclick="c3Del('+r[0]+')" aria-label="Remove">✕</button></td></tr>').join(''):''}}
 function drawLevel(){const sn=!!(S.opt&&(S.opt.snap===true||S.opt.snap===1));$('lvsnap').hidden=!sn}
 new ResizeObserver(()=>lvDraw()).observe(LV);
