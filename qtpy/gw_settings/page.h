@@ -19,6 +19,14 @@ main{max-width:1080px;margin:0 auto;padding:4px 16px 72px}
 .tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;padding:8px 14px;color:var(--mut);font-weight:600;white-space:nowrap}
 .tabs button.on{color:var(--fg);border-bottom-color:var(--acc)}
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,430px),1fr));gap:0 16px;align-items:start}
+/* QT Py fw39: saved calibration runs as one table */
+.cbx{overflow-x:auto}.cbm{border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+.cbm th,.cbm td{padding:4px 7px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+.cbm th:first-child,.cbm td:first-child{text-align:left;position:sticky;left:0;background:var(--card)}
+.cbm th{font-weight:600;color:var(--mut);vertical-align:bottom}.cbm th.rh{text-align:center}.cbm th.rh.on label{color:var(--fg)}
+.cbm td.rc{text-align:center}.cbm .up{color:var(--acc)}.cbm .dn{color:var(--warn)}.cbm .wn{color:var(--warn)}.cbm .use{color:var(--ok);font-size:12px}
+.cbm tr.ft td{border-bottom:0;padding-top:8px}.cbm tr.ft button{padding:3px 8px;font-size:12.5px}
+.chipb{font-size:12px;padding:2px 10px;border-radius:99px;color:var(--mut)}
 details.cap{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0}details.cap>summary{font-size:13px}details.cap[open]>summary{margin-bottom:6px}
 h1{font-size:21px;font-weight:650;margin:4px 0 8px;letter-spacing:-.01em}
 h2{font-size:15px;font-weight:650;margin:0}
@@ -404,14 +412,18 @@ const DGA=['→','↘','↓','↙','←','↖','↑','↗'],DGN=['right','down-r
 let dgEdit=null,dgDrag=-1,dgKey='',dgBuilt=false,cbLast=null;
 function dgR(g){return 30+(g-.5)/1.5*120}
 function dgSaved(){return S&&S.dg?S.dg.g.map(v=>v/1000):[1,1,1,1,1,1,1,1]}
+// QT Py fw39: where the gains being edited came from, sent with Save: pool:<run times>, run:<time>, page-run (this
+// page's last run), flat, hand; ";hand" once edited by hand after loading a suggestion
+let dgEditSrc='';
+function dgSrcHand(){if(!/(^|;)hand$/.test(dgEditSrc))dgEditSrc=dgEditSrc?dgEditSrc+';hand':'hand'}
 function dgCur(){return dgEdit||dgSaved()}
 function dgClamp(g){return Math.round(Math.max(.5,Math.min(2,g))*100)/100}
 function dgPts(gs){return gs.map((g,k)=>{const a=k*Math.PI/4,r=dgR(g);return (r*Math.cos(a)).toFixed(1)+','+(r*Math.sin(a)).toFixed(1)}).join(' ')}
 function dgBuild(){dgBuilt=true;$('dgvals').innerHTML=DGA.map((a,k)=>'<span title="'+DGN[k]+'">'+a+' '+DGN[k]+'</span><input type="number" id="dgv'+k+'" min="0.5" max="2" step="0.01" aria-label="Sensitivity '+DGN[k]+'">').join('');
-for(let k=0;k<8;k++)$('dgv'+k).onchange=e=>{const v=parseFloat(e.target.value);if(!(v>0))return;dgEdit=dgCur().slice();dgEdit[k]=dgClamp(v);dgKey='';drawDG()};
+for(let k=0;k<8;k++)$('dgv'+k).onchange=e=>{const v=parseFloat(e.target.value);if(!(v>0))return;dgEdit=dgCur().slice();dgEdit[k]=dgClamp(v);dgSrcHand();dgKey='';drawDG()};
 const sv=$('dgsvg');sv.addEventListener('pointerdown',e=>{const k=e.target.dataset&&e.target.dataset.k;if(k==null)return;dgDrag=+k;sv.setPointerCapture(e.pointerId);e.preventDefault()});
 sv.addEventListener('pointermove',e=>{if(dgDrag<0)return;const q=new DOMPoint(e.clientX,e.clientY).matrixTransform(sv.getScreenCTM().inverse()),a=dgDrag*Math.PI/4,d=q.x*Math.cos(a)+q.y*Math.sin(a);
-dgEdit=dgCur().slice();dgEdit[dgDrag]=dgClamp(.5+(d-30)/120*1.5);dgKey='';drawDG()});
+dgEdit=dgCur().slice();dgEdit[dgDrag]=dgClamp(.5+(d-30)/120*1.5);dgSrcHand();dgKey='';drawDG()});
 ['pointerup','pointercancel'].forEach(t=>sv.addEventListener(t,()=>{dgDrag=-1}))}
 function drawDG(){const c=$('dgc');if(!S||!S.dg){c.hidden=true;return}c.hidden=false;if(!dgBuilt)dgBuild();const d=S.dg;
 $('dgst').textContent=!d.sup?'needs Feather v24':d.on?'applying on this host':d.want?(d.g.every(v=>v===1000)?'on here, all 1.00':'sending…'):'off on this host';
@@ -427,10 +439,10 @@ $('dgsvg').innerHTML=s;
 for(let k=0;k<8;k++){const i=$('dgv'+k);if(document.activeElement!==i)i.value=gs[k].toFixed(2)}
 const hs=S.hosts||[];$('dghosts').innerHTML=hs.length?hs.map(x=>{const on=d.hosts.includes(x[0]);return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'">'+esc(hostName(x))+'</button>'}).join(''):'<span class="mut">no host recognised yet</span>';
 $('dghosts').querySelectorAll('button').forEach(b=>b.onclick=()=>{const cur=S.dg.hosts,on=cur.includes(b.dataset.sig),h=on?cur.filter(x=>x!==b.dataset.sig):cur.concat([b.dataset.sig]);S.dg.hosts=h;dgKey='';drawDG();dgPost(dgSaved(),h)})}  // fw33: from the hosts at tap time (two quick taps lost the first)
-function dgPost(gs,hosts){const g=gs.map(g=>Math.round(g*1000));return post('/api/dirgain?g='+g.join(',')+'&hosts='+hosts.join(',')).then(r=>{say(r,'Saved');if(r.ok&&S&&S.dg){S.dg.g=g;S.dg.hosts=hosts.slice()}dgKey='';return r})}  // fw35: what was saved is the state until the next poll (a quick second change used the old one)
-function dgSave(){if(!dgEdit||!S||!S.dg)return;dgPost(dgEdit,S.dg.hosts).then(r=>{if(r.ok)dgEdit=null})}
-function dgRevert(){dgEdit=null;dgKey='';drawDG()}
-function dgFlat(){dgEdit=[1,1,1,1,1,1,1,1];dgKey='';drawDG()}
+function dgPost(gs,hosts,src){const g=gs.map(g=>Math.round(g*1000));return post('/api/dirgain?g='+g.join(',')+'&hosts='+hosts.join(',')+(src!=null?'&src='+encodeURIComponent(src):'')).then(r=>{say(r,'Saved');if(r.ok&&S&&S.dg){S.dg.g=g;S.dg.hosts=hosts.slice();if(src!=null){S.dg.src=src;S.dg.src_t=Math.floor(Date.now()/1000)}}dgKey='';if(r.ok&&src!=null)cbDrawRuns();return r})}  // fw35: what was saved is the state until the next poll (a quick second change used the old one)
+function dgSave(){if(!dgEdit||!S||!S.dg)return;dgPost(dgEdit,S.dg.hosts,dgEditSrc||'hand').then(r=>{if(r.ok){dgEdit=null;dgEditSrc=''}})}
+function dgRevert(){dgEdit=null;dgEditSrc='';dgKey='';drawDG()}
+function dgFlat(){dgEdit=[1,1,1,1,1,1,1,1];dgEditSrc='flat';dgKey='';drawDG()}
 
 // ---- flick calibration: full screen with the pointer locked. A home target in the middle and an outer one at a fixed
 // distance in each of the 8 directions (shuffled, once per round): click home, flick to the outer target and click it,
@@ -569,26 +581,55 @@ return r.g.map((g,k)=>{const gg=g/1000;return ok[k]?dgClamp(gg*Math.max(.8,Math.
 // the overall sensitivity stays (geometric mean of the gains in use). Comparable by default: same tool (BallSheet or this
 // page), not coarse, 16+ flicks, and for BallSheet a known speed within 5 points of the newest run's. Tick boxes override.
 function cbComparable(r,ref){if(!r||!ref||(r.flags&2)||(r.flags&1)!==(ref.flags&1)||r.n.reduce((a,b)=>a+b,0)<16)return false;return !(r.flags&1)||(r.speed>0&&ref.speed>0&&Math.abs(r.speed-ref.speed)<=5)}
-let cbPoolSel=null;  // run times ticked for pooling; null = the comparable ones
-function cbPoolRuns(){if(!cbRuns.length)return[];if(cbPoolSel)return cbRuns.filter(r=>cbPoolSel.includes(r.t));return cbRuns.filter(r=>cbComparable(r,cbRuns[0]))}
-function cbPooled(runs){const cur=dgSaved(),lh=[0,0,0,0,0,0,0,0],w=[0,0,0,0,0,0,0,0];
+let cbPoolSel=null;  // run times ticked for pooling; null = default: the runs the gains in use were pooled from, else the comparable ones
+// QT Py fw39: the runs the gains in use came from (dg.src "pool:t,t" / "run:t"), and a text saying so
+function dgSrcRuns(){const s=(S&&S.dg&&S.dg.src||'').replace(/;hand$/,''),m=s.match(/^(pool|run):(.*)$/);return m?m[2].split(',').map(Number).filter(Boolean):[]}
+function cbShort(t){const d=new Date(t*1000),tm=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return d.toDateString()===new Date().toDateString()?tm:d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+tm}
+function cbRunLabel(t){const r=cbRuns.find(r=>r.t===t);return cbShort(t)+(r?(r.speed?' '+r.speed+'%':''):' (deleted)')}
+function dgSrcText(){const d=S&&S.dg;if(!d)return '';const src=d.src||'',hand=/;hand$/.test(src),s=src.replace(/;hand$/,''),m=s.match(/^(pool|run):(.*)$/);let x;
+if(m&&m[1]==='pool'){const ts=m[2].split(',').map(Number).filter(Boolean);x='pooled from '+ts.length+' run'+(ts.length>1?'s':'')+' ('+ts.map(cbRunLabel).join(', ')+')'}
+else if(m)x='from the run at '+cbRunLabel(+m[2]);else if(s==='page-run')x='from a run on this page';else if(s==='bs-run')x='from a BallSheet run that wasn\'t saved';
+else if(s==='flat')x='all 1.00';else if(s==='hand')x='set by hand';else x='source not recorded (saved before QT Py firmware 39)';
+if(hand&&s!=='hand')x+=', then edited by hand';return 'Gains in use: '+x+(d.src_t?' · saved '+whenText(d.src_t*1000):'')}
+function cbPoolRuns(){if(!cbRuns.length)return[];if(cbPoolSel)return cbRuns.filter(r=>cbPoolSel.includes(r.t));const use=dgSrcRuns();
+if(use.length&&/^pool:/.test((S&&S.dg&&S.dg.src)||'')){const u=cbRuns.filter(r=>use.includes(r.t));if(u.length)return u}return cbRuns.filter(r=>cbComparable(r,cbRuns[0]))}function cbPooled(runs){const cur=dgSaved(),lh=[0,0,0,0,0,0,0,0],w=[0,0,0,0,0,0,0,0];
 runs.forEach(r=>{for(let k=0;k<8;k++)if(r.n[k]>=3&&r.med[k]>0&&r.g[k]>0){lh[k]+=r.n[k]*Math.log(r.med[k]/r.g[k]);w[k]+=r.n[k]}});
 const ok=w.map(x=>x>0),m=ok.filter(Boolean).length;if(!m)return cur.slice();
 const ideal=lh.map((s,k)=>ok[k]?Math.exp(-s/w[k]):cur[k]),lg=a=>a.reduce((s,v,k)=>ok[k]?s+Math.log(v):s,0),sc=Math.exp((lg(cur)-lg(ideal))/m);
 return ideal.map((v,k)=>ok[k]?dgClamp(Math.max(cur[k]*.8,Math.min(cur[k]*1.25,v*sc))):cur[k])}
 function cbPoolTick(t,on){if(!cbPoolSel)cbPoolSel=cbPoolRuns().map(r=>r.t);cbPoolSel=on?cbPoolSel.concat([t]):cbPoolSel.filter(x=>x!==t);cbDrawRuns()}
-function cbUsePooled(){const rs=cbPoolRuns();if(!rs.length)return;dgEdit=cbPooled(rs);dgKey='';drawDG();toast('Pooled from '+rs.length+' run'+(rs.length>1?'s':'')+': press Save to keep it')}
+function cbPoolSet(kind){const ref=cbRuns[0],use=dgSrcRuns();cbPoolSel=cbRuns.filter(r=>kind==='speed'?cbComparable(r,ref):kind==='bs'?(r.flags&1)&&!(r.flags&2):kind==='use'?use.includes(r.t):false).map(r=>r.t);cbDrawRuns()}
+function cbUsePooled(){const rs=cbPoolRuns();if(!rs.length)return;dgEdit=cbPooled(rs);dgEditSrc='pool:'+rs.map(r=>r.t).join(',');dgKey='';drawDG();toast('Pooled from '+rs.length+' run'+(rs.length>1?'s':'')+': press Save to keep it')}
+// how much the ticked runs disagree per direction: each run's gain-corrected ideal, its overall level taken out, sample SD in %
+function cbSpread(runs){if(runs.length<2)return null;const lr=runs.map(r=>{const l=r.med.map((m,k)=>r.n[k]>=3&&m>0&&r.g[k]>0?Math.log(r.g[k]/m):null),v=l.filter(x=>x!==null),mean=v.reduce((a,b)=>a+b,0)/(v.length||1);return l.map(x=>x===null?null:x-mean)});
+return [0,1,2,3,4,5,6,7].map(k=>{const v=lr.map(l=>l[k]).filter(x=>x!==null);if(v.length<2)return null;const m=v.reduce((a,b)=>a+b,0)/v.length;return (Math.exp(Math.sqrt(v.reduce((a,b)=>a+(b-m)*(b-m),0)/(v.length-1)))-1)*100})}
+let cbDelArm=0,cbDelAt=0;
+function cbDel(t){if(cbDelArm!==t||Date.now()-cbDelAt>4000){cbDelArm=t;cbDelAt=Date.now();cbDrawRuns();setTimeout(()=>{if(cbDelArm===t){cbDelArm=0;cbDrawRuns()}},4100);return}
+cbDelArm=0;post('/api/calibdel?run='+t).then(r=>{say(r,'Run deleted');if(cbPoolSel)cbPoolSel=cbPoolSel.filter(x=>x!==t);cbLoadRuns()})}
 function cbLoadRuns(){cbRunsAt=Date.now();fetchJ(tq('/api/calib')).then(j=>{cbRuns=j.runs||[];if(!cb)cbDrawRuns()}).catch(()=>{})}
+// QT Py fw39: the saved runs as ONE table: a row per direction; the gains in use, the pooled suggestion (and its change),
+// how much the ticked runs disagree, then a column per run with where its flicks stopped (- short, + over)
 function cbDrawRuns(){const box=$('cbsaved');box.hidden=!cbRuns.length;if(!cbRuns.length)return;$('cbsavedn').textContent='('+cbRuns.length+')';
-const pct=v=>Math.round(v*100),rd=v=>pct(Math.abs(v-1))===0?'on target':v<1?pct(1-v)+'% short':pct(v-1)+'% over';
-const pr=cbPoolRuns(),ps=pr.length?cbPooled(pr):null,inPool=r=>pr.includes(r);
-$('cbsavedlist').innerHTML=(ps?'<h3 class="sub">Pooled from '+pr.length+' run'+(pr.length>1?'s':'')+'</h3><p class="mut">'+DGA.map((a,k)=>a+' '+ps[k].toFixed(2)).join(' · ')+'</p><div class="row" style="margin-bottom:10px"><button class="p" onclick="cbUsePooled()">Use pooled suggestion</button></div>':'<p class="mut">No comparable runs to pool: tick some below.</p>')+cbRuns.map((r,i)=>{const sug=cbSug(r),tot=r.n.reduce((a,b)=>a+b,0);
-return '<h3 class="sub">'+(r.t?whenText(r.t*1000):'time unknown')+' · '+(r.flags&1?'BallSheet (raw input'+(r.speed?', '+r.speed+'% speed':'')+')':'this page')+'</h3><p class="mut">'+tot+' flicks measured, '+r.skipped+' skipped. <label><input type="checkbox"'+(inPool(r)?' checked':'')+' onchange="cbPoolTick('+r.t+',this.checked)"> in the pooled suggestion</label></p>'+
-'<table class="cbt"><tr><th>Direction</th><th>Flicks</th><th>Reach</th><th>Gain then</th><th>Suggested</th></tr>'+r.n.map((n,k)=>'<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+n+'</td><td>'+(n>=3&&r.med[k]?rd(r.med[k]/1000):'–')+'</td><td>'+(r.g[k]/1000).toFixed(2)+'</td><td>'+sug[k].toFixed(2)+'</td></tr>').join('')+'</table>'+
-'<div class="row" style="margin-top:6px"><button onclick="cbUseRun('+i+')">Use this run alone</button></div>'}).join('')}
-function cbUseRun(i){const r=cbRuns[i];if(!r)return;dgEdit=cbSug(r);dgKey='';drawDG();toast('Loaded into the editor: press Save to keep it')}
-setTimeout(cbLoadRuns,2000);setInterval(()=>{if(!cb&&document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
-function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgKey='';drawDG();toast('Press Save to keep it')}
+const pr=cbPoolRuns(),ps=pr.length?cbPooled(pr):null,cur=dgSaved(),use=dgSrcRuns(),sp=cbSpread(pr),ref=cbRuns[0];
+const cell=(v,r,k)=>{const p=(v-1)*100,a=Math.min(1,Math.abs(p)/8),q=Math.round(p),txt=q===0?'0':(q>0?'+':'\u2212')+Math.abs(q);
+return '<td class="rc" style="background:rgba('+(p<0?'240,182,90':'90,156,245')+','+(a*.38).toFixed(2)+')" title="'+(Math.abs(p)<.5?'on target':Math.abs(p).toFixed(1)+'% '+(p<0?'short':'over'))+' · '+r.n[k]+' flicks · gain then '+(r.g[k]/1000).toFixed(2)+'">'+txt+'</td>'};
+let h='<p class="mut" style="margin:0 0 8px">'+esc(dgSrcText())+'</p>';
+h+='<div class="row" style="margin:0 0 8px"><span class="mut">Tick:</span><button class="chipb" onclick="cbPoolSet(\'speed\')">same speed as newest (±5)</button><button class="chipb" onclick="cbPoolSet(\'bs\')">all BallSheet</button>'+(use.length?'<button class="chipb" onclick="cbPoolSet(\'use\')">runs in use</button>':'')+'<button class="chipb" onclick="cbPoolSet(\'none\')">none</button></div>';
+h+='<div class="cbx"><table class="cbm"><thead><tr><th></th><th>Now</th><th>Pooled</th><th title="How much the ticked runs disagree in this direction">±</th>';
+cbRuns.forEach(r=>{const tot=r.n.reduce((a,b)=>a+b,0),on=pr.includes(r),why=(r.flags&1)?(r.speed?(r===ref?'newest run':Math.abs(r.speed-ref.speed)<=5?'speed within 5 of the newest':'speed '+Math.abs(r.speed-ref.speed)+' points from the newest'):'speed not recorded'):'browser run';
+h+='<th class="rh'+(on?' on':'')+'" title="'+esc(why)+'"><label><input type="checkbox"'+(on?' checked':'')+' onchange="cbPoolTick('+r.t+',this.checked)"> '+esc(cbShort(r.t))+'</label><div class="mut">'+((r.flags&1)?'BallSheet'+(r.speed?' '+r.speed+'%':''):'page')+' · '+tot+'</div>'+(use.includes(r.t)?'<div class="use">in use</div>':'')+'</th>'});
+h+='</tr></thead><tbody>';
+for(let k=0;k<8;k++){const d=ps?ps[k]-cur[k]:0;
+h+='<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+cur[k].toFixed(2)+'</td><td>'+(ps?ps[k].toFixed(2)+(Math.abs(d)>=.005?' <span class="'+(d>0?'up':'dn')+'">'+(d>0?'+':'\u2212')+Math.abs(d).toFixed(2)+'</span>':''):'–')+'</td><td class="'+(sp&&sp[k]>3?'wn':'mut')+'">'+(sp&&sp[k]!=null?sp[k].toFixed(1)+'%':'–')+'</td>';
+cbRuns.forEach(r=>{h+=r.n[k]>=3&&r.med[k]?cell(r.med[k]/1000,r,k):'<td class="mut">–</td>'});h+='</tr>'}
+h+='<tr class="ft"><td colspan="4"></td>';
+cbRuns.forEach((r,i)=>{h+='<td><button onclick="cbUseRun('+i+')" title="Load this run\'s own suggestion into the editor">Use</button> <button onclick="cbDel('+r.t+')" title="Delete this run">'+(cbDelArm===r.t?'Delete?':'\u00d7')+'</button></td>'});
+h+='</tr></tbody></table></div>';
+h+='<div class="row" style="margin-top:10px"><button class="p" onclick="cbUsePooled()"'+(ps?'':' disabled')+'>Use pooled suggestion'+(pr.length?' ('+pr.length+' run'+(pr.length>1?'s':'')+')':'')+'</button><span class="mut">then Save above</span></div>';
+h+='<p class="mut">Each run column: where its flicks stopped in that direction, as a % of the distance (\u2212 short, + over; colour by size; hover for flicks and the gain it was measured with). Runs are compared after taking out the gains they used, so runs with different gains still pool. Ticked by default: the runs the gains in use came from, otherwise the BallSheet runs within 5 speed points of the newest (hover a run for why). A run that is short or over everywhere cancels out, so mixing speeds only matters if a speed changes how you flick in some directions. \u00b1 over 3% (amber) means that direction needs more flicks.</p>';
+$('cbsavedlist').innerHTML=h}
+function cbUseRun(i){const r=cbRuns[i];if(!r)return;dgEdit=cbSug(r);dgEditSrc='run:'+r.t;dgKey='';drawDG();toast('Loaded into the editor: press Save to keep it')}setTimeout(cbLoadRuns,2000);setInterval(()=>{if(!cb&&document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
+function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgEditSrc='page-run';dgKey='';drawDG();toast('Press Save to keep it')}
 function cbDiscard(){cbLast=null;$('cbres').hidden=true;dgKey='';drawDG()}
 $('cbc').addEventListener('pointermove',cbMove);$('cbc').addEventListener('pointerdown',cbDown);$('cbc').addEventListener('contextmenu',e=>e.preventDefault());document.addEventListener('contextmenu',e=>{if(Date.now()-cbEatMenu<1000)e.preventDefault()});
 document.addEventListener('fullscreenchange',()=>{if(!cb)return;if(document.fullscreenElement)cbGeoReset();else if(cb.fs)cbStop(cb.data.length>=8)});addEventListener('resize',cbGeoReset);

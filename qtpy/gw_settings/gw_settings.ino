@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 38      // this firmware's number, shown in /api/status
+#define QT_FW 40      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -206,6 +206,10 @@ struct __attribute__((packed)) DirGainCfg {
     uint32_t sig[HPROF_MAX];
 };
 static DirGainCfg dg = { { 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000 }, 0, { 0 } };
+// fw39: where the gains in use came from, as the sender says ("pool:<run times>", "run:<time>", "flat", "hand", ...;
+// ";hand" appended when edited after loading a suggestion), and when they were saved. NVS "dgsrc" / "dgsrct".
+static String dg_src;
+static uint32_t dg_src_t = 0;
 static uint32_t dg_sent_at = 0;
 static bool dg_reread = false;
 static uint16_t dg_sends = 0;  // since boot, for /api/status
@@ -1174,6 +1178,9 @@ static void osd_push(const String& s) {
 
 static String osd_stage_text(int s, const char* host = nullptr) {  // "DPI 10000 (stage 2)", the kanata OSD's style
     uint16_t x = u16(23 + 4 * s), y = u16(25 + 4 * s);
+    if (!(st[3] & 128) || !x) {  // fw40: the DPI table isn't read yet (right after power-on): "DPI stage 1 (FLOW)", not "DPI 0"
+        return "DPI stage " + String(s + 1) + (host ? String(" (") + host + ")" : String(""));
+    }
     return "DPI " + String(x) + ((y && y != x) ? "/" + String(y) : String("")) + " (stage " + String(s + 1) + (host ? String(", ") + host : String("")) + ")";
 }
 
@@ -1289,7 +1296,8 @@ static void h_status() {
             j += (k ? ",\"" : "\"") + String(h) + "\"";
         }
         bool sup = dg_supported() && ev_ok;
-        j += "],\"sup\":" + String(dg_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[50] & 1) ? "true" : "false") +
+        j += "],\"src\":\"" + dg_src + "\",\"src_t\":" + String(dg_src_t);  // fw39
+        j += ",\"sup\":" + String(dg_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[50] & 1) ? "true" : "false") +
              ",\"got\":" + String(sup && (evb[50] & 2) ? "true" : "false") + ",\"want\":" + String(dg_wanted() ? "true" : "false") +
              ",\"sends\":" + String(dg_sends) + "}";
     }
@@ -1894,6 +1902,22 @@ static void h_dirgain() {
         }
         at = comma + 1;
     }
+    // fw39: a host toggle sends the same gains without a source: keep the one they came from
+    bool same = !memcmp(dg.g, g, sizeof(g));
+    if (server.hasArg("src") || !same) {
+        String src = server.arg("src");
+        String clean;
+        for (unsigned i = 0; (i < src.length()) && (clean.length() < 120); i++) {
+            char c = src[i];
+            if (isalnum((unsigned char) c) || (c == ':') || (c == ',') || (c == ';') || (c == '-')) {
+                clean += c;
+            }
+        }
+        dg_src = clean;
+        dg_src_t = now_unix();
+        prefs.putString("dgsrc", dg_src);
+        prefs.putULong("dgsrct", dg_src_t);
+    }
     memcpy(dg.g, g, sizeof(g));
     dg.n = n;
     memset(dg.sig, 0, sizeof(dg.sig));
@@ -1942,6 +1966,28 @@ static void h_calib_post() {
     c.speed = (sp < 0) ? 0 : (sp > 255) ? 255 : sp;
     prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
     ok_json(true);
+}
+
+// POST /api/calibdel?run=<its Unix time> (fw39): remove a saved run
+static void h_calibdel() {
+    touch();
+    if (!from_current_page()) {
+        return;
+    }
+    long run = server.arg("run").toInt();
+    for (uint8_t k = 0; k < calib_n; k++) {
+        if ((long) calib[k].t == run) {
+            memmove(calib + k, calib + k + 1, sizeof(CalibRec) * (calib_n - k - 1));
+            calib_n--;
+            if (calib_n) {
+                prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+            } else {
+                prefs.remove("calib2");  // putBytes of 0 bytes writes nothing
+            }
+            return ok_json(true);
+        }
+    }
+    ok_json(false, "no saved run at that time");
 }
 
 // POST /api/calibspeed?run=<its Unix time>&sp=<%> (fw36): the speed of a run saved before runs carried one (only when
@@ -2489,6 +2535,8 @@ void setup() {
         tdpi_active = true;
         tdpi_restore = true;
     }
+    dg_src = prefs.getString("dgsrc", "");  // fw39: where the gains came from
+    dg_src_t = prefs.getULong("dgsrct", 0);
     if (prefs.getBytes("dgain", &dg, sizeof(dg)) != sizeof(dg)) {                     // fw26: direction gains
         for (int k = 0; k < 8; k++) {
             dg.g[k] = 1000;
@@ -2528,6 +2576,7 @@ void setup() {
     server.on("/api/calib", HTTP_POST, h_calib_post);
     server.on("/api/calib", HTTP_GET, h_calib_get);
     server.on("/api/calibspeed", HTTP_POST, h_calibspeed);
+    server.on("/api/calibdel", HTTP_POST, h_calibdel);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);
