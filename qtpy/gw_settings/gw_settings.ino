@@ -34,7 +34,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 37      // this firmware's number, shown in /api/status
+#define QT_FW 38      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -123,6 +123,19 @@ struct __attribute__((packed)) EditLog {  // 32 bytes
 };
 static EditLog edit_log[EDIT_LOG];  // edit_log[0] is the newest
 static uint8_t edit_n = 0;
+// fw38: setting changes as short texts for a PC to show as an on-screen pill (GET /api/osd?since=N): the DPI stage,
+// sensor angle and position whenever the Feather reports a new value (chord, page, mouse button), and the automatic
+// stage on a host switch. A value only becoming known (power-on, a Feather restart, the mouse waking) isn't a change.
+#define OSD_KEEP 8
+struct OsdItem {
+    uint16_t seq;
+    uint32_t ms;
+    char text[48];
+};
+static OsdItem osdq[OSD_KEEP];  // osdq[0] newest
+static uint8_t osd_n = 0;
+static uint16_t osd_seq = 0;
+static int16_t osd_stage = -1, osd_angle = 0x7FFF, osd_pos = 0x7FFF;  // last known values (sentinels: not yet)
 // fw33: the queued command each edit went with (RAM, this boot): one the Feather never acknowledged marks its entry "not
 // applied" (dev bit 7) instead of leaving it in the history as made
 static uint16_t edit_seq[EDIT_LOG];
@@ -1148,6 +1161,65 @@ static void h_chords() {
     ok_json(true);
 }
 
+static void osd_push(const String& s) {
+    memmove(osdq + 1, osdq, sizeof(OsdItem) * (OSD_KEEP - 1));
+    osdq[0].seq = ++osd_seq;
+    osdq[0].ms = millis();
+    strncpy(osdq[0].text, s.c_str(), sizeof(osdq[0].text) - 1);
+    osdq[0].text[sizeof(osdq[0].text) - 1] = 0;
+    if (osd_n < OSD_KEEP) {
+        osd_n++;
+    }
+}
+
+static String osd_stage_text(int s) {
+    uint16_t x = u16(23 + 4 * s), y = u16(25 + 4 * s);
+    return "DPI " + String(s + 1) + " \xC2\xB7 " + String(x) + ((y && y != x) ? "/" + String(y) : String(""));
+}
+
+static void osd_tick() {
+    if (!st_ok) {
+        return;
+    }
+    uint8_t f = st[3];
+    // while the automatic stage is being set, its own "host → stage" line says it (once, when the mouse confirmed it)
+    bool auto_busy = (auto_want != 0xFF) && ((auto_state == 0) || (auto_state == 1) || (auto_state == 5) || (auto_state == 8));
+    if ((f & 8) && (st[4] <= 4)) {
+        if ((osd_stage >= 0) && (st[4] != osd_stage) && !auto_busy) {
+            osd_push(osd_stage_text(st[4]));
+        }
+        osd_stage = st[4];
+    }
+    if (f & 16) {
+        if ((osd_angle != 0x7FFF) && (s8(5) != osd_angle)) {
+            osd_push("Angle " + String(s8(5)) + "\xC2\xB0");
+        }
+        osd_angle = s8(5);
+    }
+    if (f & 32) {
+        if ((osd_pos != 0x7FFF) && (s8(6) != osd_pos)) {
+            osd_push("Position " + String(s8(6)));
+        }
+        osd_pos = s8(6);
+    }
+}
+
+// GET /api/osd?since=N (fw38): the changes after N, oldest first: {"boot","seq","items":[[seq, age ms, "text"],...]}.
+// Not counted as use (a PC polls it while the mouse is connected to it).
+static void h_osd() {
+    long since = server.arg("since").toInt();
+    String j = "{\"boot\":" + String((uint16_t) b_boots) + ",\"seq\":" + String(osd_seq) + ",\"items\":[";
+    bool first = true;
+    for (int k = osd_n - 1; k >= 0; k--) {
+        if ((long) osdq[k].seq > since) {
+            j += (first ? "[" : ",[") + String(osdq[k].seq) + "," + String(millis() - osdq[k].ms) + ",\"" + String(osdq[k].text) + "\"]";
+            first = false;
+        }
+    }
+    j += "]}";
+    server.send(200, "application/json", j);
+}
+
 // not counted as use: an open tab alone shouldn't keep the radio on while playing
 static void h_status() {
     clock_sync();
@@ -1602,6 +1674,8 @@ static void auto_tick() {
             if (auto_from != auto_want) {  // fw33: only a real change goes into the log (it holds 20)
                 HostProf* p = hprof_at(hprof_find(auto_sig));
                 log_edit_as(EK_AUTO_STAGE, String(p ? p->name : "") + "=" + String(auto_want), 7, 0);
+                osd_push(String(p && p->name[0] ? p->name : "Host") + " \xE2\x86\x92 " + osd_stage_text(auto_want));  // fw38
+                osd_stage = auto_want;  // shown once, as the host's
             }
             return;
         }
@@ -2444,6 +2518,7 @@ void setup() {
     Wire1.setTimeOut(50);
     server.on("/", HTTP_GET, h_page);
     server.on("/api/status", HTTP_GET, h_status);
+    server.on("/api/osd", HTTP_GET, h_osd);
     server.on("/api/hosts", HTTP_GET, h_hosts);
     server.on("/api/hostprof", HTTP_POST, h_hostprof);
     server.on("/api/dirgain", HTTP_POST, h_dirgain);
@@ -2485,6 +2560,7 @@ void loop() {
     radio_tick();
     hcap_tick();
     auto_tick();
+    osd_tick();
     dg_tick();
     tdpi_tick();
     if (ntp_want) {
