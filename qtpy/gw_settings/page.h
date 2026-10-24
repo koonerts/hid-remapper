@@ -904,11 +904,13 @@ for(let i=1;i<P.length;i++)if(sp<=P[i][0]){if(sp===P[i][0])return[P[i][1],'your 
 function c3From(){return c3At(Number($('c3sp').value))[0]}
 // the curve: fixed-speed results by speed (log axis), your by-hand count dashed
 function c3Plot(L){const svg=$('c3plot'),P=c3Pts(),H=L.find(r=>!r[2]),hc=H?H[1]/100:0;const ys=P.map(p=>p[1]).concat(H?[hc]:[]);if(!ys.length){svg.innerHTML='';return}
-let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(4,(hi-lo)*0.18);lo-=pad;hi+=pad;const X0=42,X1=350,Y0=16,Y1=134,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),ly=c=>Y1-(c-lo)/(hi-lo)*(Y1-Y0),f=n=>n.toFixed(1);
+let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(4,(hi-lo)*0.18);lo-=pad;hi+=pad;const X0=42,X1=344,Y0=16,Y1=128,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),ly=c=>Y1-(c-lo)/(hi-lo)*(Y1-Y0),f=n=>n.toFixed(1);
 let s='<text x="4" y="10">cm/360</text>';[5,10,20,40,80,160].forEach(v=>{s+='<line class="gl" x1="'+f(lx(v))+'" y1="'+Y0+'" x2="'+f(lx(v))+'" y2="'+Y1+'"/><text x="'+f(lx(v))+'" y="'+(Y1+14)+'" text-anchor="middle">'+v+'</text>'});
 s+='<text x="'+((X0+X1)/2)+'" y="'+(Y1+30)+'" text-anchor="middle">turning speed, cm/s</text>';[lo+pad,hi-pad].forEach(c=>{s+='<text x="'+(X0-6)+'" y="'+f(ly(c)+4)+'" text-anchor="end">'+c.toFixed(0)+'</text>'});
 if(H)s+='<line class="hl" x1="'+X0+'" y1="'+f(ly(hc))+'" x2="'+X1+'" y2="'+f(ly(hc))+'"/><text x="'+(X1-2)+'" y="'+f(ly(hc)-5)+'" text-anchor="end">by hand '+hc.toFixed(1)+'</text>';
-if(P.length>1)s+='<polyline class="cv" points="'+P.map(p=>f(lx(p[0]))+','+f(ly(p[1]))).join(' ')+'"/>';P.forEach(p=>{s+='<circle class="pt" cx="'+f(lx(p[0]))+'" cy="'+f(ly(p[1]))+'" r="4"/><text class="pl" x="'+f(lx(p[0]))+'" y="'+f(ly(p[1])-9)+'" text-anchor="middle">'+p[1].toFixed(1)+'</text>'});svg.innerHTML=s}
+if(P.length>1)s+='<polyline class="cv" points="'+P.map(p=>f(lx(p[0]))+','+f(ly(p[1]))).join(' ')+'"/>';// labels: above the point, or below it when the one before sits close by (alternating); kept inside the edges
+let lastX=-1e9,up=true;P.forEach(p=>{const x=lx(p[0]),y=ly(p[1]);up=x-lastX<34?!up:true;lastX=x;const ty=up?y-9:y+17,anc=x>X1-16?'end':x<X0+16?'start':'middle';
+s+='<circle class="pt" cx="'+f(x)+'" cy="'+f(y)+'" r="4"/><text class="pl" x="'+f(anc==='end'?x+4:anc==='start'?x-4:x)+'" y="'+f(ty)+'" text-anchor="'+anc+'">'+p[1].toFixed(1)+'</text>'});svg.innerHTML=s}
 function c3Reset(){if(c3.held||c3.segBusy)post('/api/turn?stop=1');c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=c3From(),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
 if(!S.turn||!S.turn.sup||!cpc||c3.phase)return;if(sp!==c3.sp){c3.n=0;c3.hist=[]}c3.sp=sp;c3.tn=tn;  // another speed starts again from your curve there
