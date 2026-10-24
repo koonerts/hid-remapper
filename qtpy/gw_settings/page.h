@@ -237,7 +237,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row c3b"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button><button id="c3avg" onclick="c3SaveAvg()" hidden>Save the average</button></div>
 <p class="c3st" id="c3now"></p>
 <div id="c3ans" hidden><div class="row c3b"><button class="sq" id="c3L" aria-label="Hold to turn left" title="Hold to turn left (or the left arrow key)">◀</button><button class="sq" id="c3R" aria-label="Hold to turn right" title="Hold to turn right (or the right arrow key)">▶</button><label class="mut" title="↑ / ↓ change it while turning or correcting">tap step <select id="c3step" onchange="this.blur()" style="width:auto"><option value="0.25" selected>0.25°</option><option value="0.5">0.5°</option><option value="1">1°</option><option value="2">2°</option></select></label></div><div class="row c3b"><button class="p" id="c3back" onclick="c3Back()">Back on the marker</button><button id="c3ex" onclick="c3Exact()">It stopped right on it: save</button></div></div>
-<details class="c3lg" id="c3logbox" open hidden><summary>Tries this session <span id="c3logsp"></span> <button type="button" onclick="event.preventDefault();c3LogCopy()">Copy</button></summary><table class="c3t" id="c3log"></table><p class="mut" style="margin:6px 0 0">Every turn and each hold and step after it. Holds run at the turn's speed; steps (@ their cm/s) are converted to it with your curve. Says = this try plus its correction (where it would have landed exactly); Next = the average of those so far at this speed.</p></details></section>
+<details class="c3lg" id="c3logbox" open hidden><summary>Tries this session <span id="c3logsp"></span> <button type="button" onclick="event.preventDefault();c3LogCopy()">Copy</button><button type="button" onclick="event.preventDefault();c3LogClear()" title="Remove this speed's tries and its running average">Clear</button></summary><table class="c3t" id="c3log"></table><p class="mut" style="margin:6px 0 0">Every turn and each hold and step after it. Holds run at the turn's speed; steps (@ their cm/s) are converted to it with your curve. Says = this try plus its correction (where it would have landed exactly); Next = the average of those so far at this speed.</p></details></section>
 </div>
 <div class="c3g" id="c3res" hidden><div><svg id="c3plot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed"></svg></div>
 <div><table class="c3t" id="c3list"></table><p class="mut" style="margin:6px 0 0">The newest result at each speed counts (older ones are grey); BallSheet reads cm/360 between them at your flick speed.</p></div></div>
@@ -836,7 +836,7 @@ if(touched)return false;location.replace('http://'+ip+'/');return true}
 // everything but the style, so equal stamps mean only the style changed.
 let pgKey=null,pgNew=false,pgFetching=false;
 function pgKeyOf(j){return j.qt_fw+':'+(j.page&&j.page.fs?j.page.t+':'+j.page.len:'built-in')}
-function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.phase||c3.n||c3.log.length||Object.values(c3.impBy).some(a=>a.length)||cvDirty()||cvHostsNew||(cvErr&&$('cvx').value)||(S&&S.turn&&S.turn.state===7&&S.turn.run!==c3.csaved)||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
+function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.phase||cvDirty()||cvHostsNew||(cvErr&&$('cvx').value)||(S&&S.turn&&S.turn.state===7&&S.turn.run!==c3.csaved)||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
 (a&&a!==document.body&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=='range'&&a.type!=='checkbox'&&a.type!=='color'))}
 // back to where it was: the cards below fill in over a few seconds, so keep trying until the page is that tall (or you scroll)
 function pgScroll(want){const t0=Date.now();let stop=false;['wheel','pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,()=>{stop=true},{once:true,passive:true}));
@@ -930,7 +930,7 @@ if(P.length>1)s+='<polyline class="cv" points="'+P.map(p=>f(lx(p[0]))+','+f(ly(p
 let lastX=-1e9,up=true;P.forEach(p=>{const x=lx(p[0]),y=ly(p[1]);up=x-lastX<34?!up:true;lastX=x;const ty=up?y-9:y+17,anc=x>X1-16?'end':x<X0+16?'start':'middle';
 s+='<circle class="pt" cx="'+f(x)+'" cy="'+f(y)+'" r="4"/><text class="pl" x="'+f(anc==='end'?x+4:anc==='start'?x-4:x)+'" y="'+f(ty)+'" text-anchor="'+anc+'">'+p[1].toFixed(1)+'</text>'});svg.innerHTML=s}
 function c3Reset(){if(c3.held||c3.segBusy){post('/api/turn?stop=1');c3.waitRun=c3.seg;c3.waitAt=Date.now()}  // audit 10-23: the next Turn waits for that run's end
-if(c3.cur){c3.cur.rule='start over';c3LogPush()}c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3.pend=0;c3.lost=null;if(c3.press){clearTimeout(c3.press.timer);c3.press=null}c3Draw()}
+if(c3.cur){c3.cur.rule='start over';c3LogPush()}c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3.pend=0;c3.lost=null;if(c3.press){clearTimeout(c3.press.timer);c3.press=null}c3Persist();c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=c3From(),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
 if(!S.turn||!S.turn.sup||!cpc||c3.phase||c3.waitRun>=0)return;if(sp!==c3.sp){c3.n=0;c3.hist=[]}c3.sp=sp;c3.tn=tn;  // another speed starts again from your curve there
 if(!c3.n){if(!(e>=2&&e<=300)){toast('Count your own turns first: the check starts from that result',true);return}c3.n=Math.round(e*cpc)}
@@ -973,7 +973,7 @@ function c3Avg(sp){const a=c3Imp(sp==null?c3SelSp():sp),n=a.length;if(!n)return 
 const sd=Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/(n-1)),tq=[0,0,12.7,4.3,3.18,2.78,2.57,2.45,2.36,2.31,2.26][n]||2.1;return{n,m,ci:tq*sd/Math.sqrt(n),sd}}
 function c3Back(){if(c3.phase!=='correct'||c3.held||c3.segBusy||c3.pend||c3.press||c3.lost)return;const cpc=c3Cpc(),nk=c3.n,dk=c3.corr/c3.tn,imp=nk+dk;c3Imp(c3.sp).push(imp);const A=c3Avg(c3.sp),nx=A.n>=2?A.m:imp,dc=c3.corr/cpc;
 if(c3.cur){c3.cur.corr=c3.corr;c3.cur.imp=imp;c3.cur.next=Math.max(1,Math.round(nx));c3.cur.rule=A.n>=2?'average of '+A.n:'this + correction';c3LogPush()}
-c3.n=Math.max(1,Math.round(nx));c3.corr=0;c3.phase='';c3.msg='Correction: '+(dc>=0?'+':'')+dc.toFixed(2)+' cm: this try says '+(imp/cpc).toFixed(2)+'. '+(A.n>=2?'Average of '+A.n+': '+(A.m/cpc).toFixed(2)+' ± '+(A.ci/cpc).toFixed(2)+' cm/360. ':'')+'Turn again from here (no need to line up)'+(A.n>=3?'; Save the average when the ± is small enough.':': a few tries make the average.');c3Draw()}
+c3.n=Math.max(1,Math.round(nx));c3Persist();c3.corr=0;c3.phase='';c3.msg='Correction: '+(dc>=0?'+':'')+dc.toFixed(2)+' cm: this try says '+(imp/cpc).toFixed(2)+'. '+(A.n>=2?'Average of '+A.n+': '+(A.m/cpc).toFixed(2)+' ± '+(A.ci/cpc).toFixed(2)+' cm/360. ':'')+'Turn again from here (no need to line up)'+(A.n>=3?'; Save the average when the ± is small enough.':': a few tries make the average.');c3Draw()}
 function c3SaveAvg(){const sp=c3SelSp(),A=c3Avg(sp),cpc=c3Cpc();if(!A||A.n<3||!cpc||c3.phase||c3.saving)return;const cm=A.m/cpc;c3.saving=true;
 post('/api/c360?cm='+Math.round(cm*100)+'&sp='+Math.round(sp*10)+'&dpi='+Math.round(cpc*2.54)).then(r=>{c3.saving=false;if(r&&r.ok){toast('Saved: '+cm.toFixed(2)+' cm/360 at '+sp+' cm/s, the average of '+A.n+' tries');c3.log.unshift({t:Date.now(),sp,tn:c3.tn,n:Math.round(A.m),segs:[],rule:'saved the average of '+A.n+' (± '+(A.ci/cpc).toFixed(2)+')'});c3.impBy[sp]=[];c3Reset()}else toast('Not saved: '+(r&&r.err||'no answer'),true)})}
 // saves this try, plus the correction made so far (10-23: a correction you trust needs no second turn)
@@ -1055,7 +1055,13 @@ $('cvfit').textContent=cvErr?cvErr:!n?(cvP?'Set where the curve ends (cm/s of ha
 cvPlot(n)}
 // this session's tries (audit 10-23, the user's ask): each turn, every hold and step after it as sent and as credited at
 // the session's speed, what the next try became and why. Page memory only (newest 40); Copy gives it as text.
-function c3LogPush(){const c=c3.cur;if(!c)return;c3.cur=null;c3.log.unshift(c);c3.log.length=Math.min(c3.log.length,40);c3LogDraw()}
+function c3LogPush(){const c=c3.cur;if(!c)return;c3.cur=null;c3.log.unshift(c);c3.log.length=Math.min(c3.log.length,60);c3Persist();c3LogDraw()}
+// 10-24: the tries log, the samples per speed and the try in progress are kept in this browser (localStorage), so a reload
+// or a QT Py update keeps them; per browser, not on the QT Py
+function c3Persist(){try{localStorage.setItem('gw_c3',JSON.stringify({log:c3.log,impBy:c3.impBy,n:c3.n,sp:c3.sp,tn:c3.tn}))}catch(e){}}
+function c3Restore(){try{const o=JSON.parse(localStorage.getItem('gw_c3')||'null');if(!o)return;c3.log=Array.isArray(o.log)?o.log:[];c3.impBy=o.impBy&&typeof o.impBy==='object'?o.impBy:{};
+if(o.sp>0&&o.n>0){c3.n=o.n;c3.sp=o.sp;c3.tn=o.tn||1;const s=$('c3sp');if([...s.options].some(x=>Number(x.value)===o.sp))s.value=String(o.sp)}}catch(e){}}
+function c3LogClear(){const sel=c3SelSp();c3.log=c3.log.filter(c=>c.sp!==sel);c3.impBy[sel]=[];if(c3.sp===sel&&!c3.phase){c3.n=0;c3.hist=[]}c3Persist();c3LogDraw();c3Draw()}
 function c3SegTxt(s,cpc){return(s.cr>=0?'+':'')+(s.cr/cpc).toFixed(2)+' '+s.k+(s.k==='step'?' @'+(+s.v).toFixed(1):'')+(s.late?' (late)':'')}
 function c3TryTxt(c,cpc){return new Date(c.t).toLocaleTimeString()+' | '+c.sp+' cm/s'+(c.tn>1?' x'+c.tn:'')+' | try '+(c.n/cpc).toFixed(2)+' | '+(c.segs.length?c.segs.map(s=>c3SegTxt(s,cpc)).join(', '):'no corrections')+
 (c.corr!=null?' | total '+(c.corr>=0?'+':'')+(c.corr/cpc).toFixed(2)+(c.imp?' | says '+(c.imp/cpc).toFixed(2):''):'')+(c.next?' | next '+(c.next/cpc).toFixed(2)+' ('+c.rule+')':c.rule?' | '+c.rule:'')}
@@ -1066,6 +1072,7 @@ function c3LogCopy(){const cpc=c3Cpc(),sel=c3SelSp(),L=(c3.cur?[c3.cur].concat(c
 // plain http on the LAN isn't a secure context, so navigator.clipboard is missing there: a hidden textarea and execCommand,
 // in the click itself
 function copyText(s){const a=document.createElement('textarea');a.value=s;a.setAttribute('readonly','');a.style.cssText='position:fixed;top:0;left:0;opacity:0';document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}a.remove();if(!ok&&navigator.clipboard){navigator.clipboard.writeText(s).catch(()=>{});ok=true}return ok}
+setTimeout(c3Restore,0);
 function c3Del(t){post('/api/c360?del='+t).then(r=>{if(!(r&&r.ok))toast('Not removed',true)})}
 function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&&t.sup&&cpc);setTimeout(c3LogDraw,0);
 if(c3.phase==='turn'&&t&&t.run===c3.run&&t.state!==1){if(t.state===2){c3.phase='correct';c3.corr=0;c3.held=0;c3.segBusy=false;c3.msg='';c3.pend=0;c3.lost=null;c3.cur={t:Date.now(),sp:c3.sp,tn:c3.tn,n:c3.n,segs:[]}}
