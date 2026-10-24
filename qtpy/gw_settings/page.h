@@ -1002,7 +1002,9 @@ const M=c3Pts(),k=JSON.stringify([cvP,v,deg,tau,M]);if(k===cvMemo[0])return cvMe
 function cvDirty(){const c=S&&S.cv,n=cvNow();if(!n||!c)return false;return !c.n||c.tau!==n.tau||JSON.stringify(c.sp)!==JSON.stringify(n.T.map(p=>p[0]))||JSON.stringify(c.g)!==JSON.stringify(n.T.map(p=>p[1]))}
 // a new curve starts on the hosts named XIM only: on this PC BallSheet's own speed curve would stack on it
 function cvHosts(){const c=S.cv;return c&&c.n?c.hosts:(cvHostsNew||(S.hosts||[]).filter(x=>/xim/i.test(hostName(x))).map(x=>x[0]))}
-function cvPost(T,tau,hosts,src){const dpi=Math.round(c3Cpc()*2.54)||(S.cv&&S.cv.dpi)||0;
+// the Feather's fallback DPI (used only while it can't read the mouse's): the stage of the first host it's on for, else the stage now
+function cvDpi(hosts){const x=(S.hosts||[]).find(h=>hosts.includes(h[0])&&h[1]>=1&&h[1]<=5),d=x&&S.dpi&&S.dpi[x[1]-1];return d&&d[0]?d[0]:Math.round(c3Cpc()*2.54)||(S.cv&&S.cv.dpi)||0}
+function cvPost(T,tau,hosts,src){const dpi=cvDpi(hosts);
 return post('/api/curve?sp='+T.map(p=>p[0]).join(',')+'&g='+T.map(p=>p[1]).join(',')+'&tau='+tau+'&dpi='+dpi+'&hosts='+hosts.join(',')+(src!=null?'&src='+encodeURIComponent(src):'')).then(r=>{say(r,'Saved');
 if(r&&r.ok&&S.cv){S.cv.n=T.length;S.cv.sp=T.map(p=>p[0]);S.cv.g=T.map(p=>p[1]);S.cv.tau=tau;S.cv.hosts=hosts.slice();if(src!=null)S.cv.src=src;cvHostsNew=null}cvKey='';cvDraw();return r})}
 function cvSave(){const n=cvNow();if(!n)return;const m=/XMBC:[A-Za-z0-9+/=]+:XMBC/.exec($('cvx').value);
