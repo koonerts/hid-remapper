@@ -228,7 +228,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row c3b"><button class="p" id="c3cgo" onclick="c3Count()">Start counting</button><button id="c3csave" onclick="c3CSave()">Save</button></div>
 <p class="c3st" id="c3cnow"></p></section>
 <section class="c3s"><h3>At a fixed speed</h3>
-<p class="mut">The Feather turns the view by itself, steadily. If it stops short or past, tap ▶ or ◀ (or the arrow keys) for a small step (taps run at 5 cm/s so the game sees them, converted to this speed with your curve), or hold to keep turning at this speed. Then press Back on the marker and the next turn adds that correction. Save when a turn stops right on the edge. Hands off the mouse: touching it stops a turn.</p>
+<p class="mut">The Feather turns the view by itself, steadily. If it stops short or past, tap ▶ or ◀, or press the arrow keys, for a small step (steps run at 5 cm/s so the game sees them, converted to this speed with your curve); hold ▶ or ◀ to keep turning at this speed. Then press Back on the marker and the next turn adds that correction. Save when a turn stops right on the edge. Hands off the mouse: touching it stops a turn.</p>
 <div class="row c3f"><label>Speed<select id="c3sp" onchange="c3Draw()"><option value="5">5 cm/s</option><option value="10" selected>10 cm/s</option><option value="15">15 cm/s</option><option value="20">20 cm/s</option><option value="25">25 cm/s</option><option value="30">30 cm/s</option><option value="35">35 cm/s</option><option value="40">40 cm/s</option><option value="50">50 cm/s</option><option value="60">60 cm/s</option><option value="80">80 cm/s</option><option value="120">120 cm/s</option><option value="160">160 cm/s</option></select></label><label>Turns<select id="c3tn"><option>1</option><option>2</option><option>3</option></select></label></div>
 <p class="mut" id="c3from" style="margin:10px 0 0"></p>
 <div class="row c3b"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button></div>
@@ -930,7 +930,8 @@ if(!c3.held)return;c3.held=0;c3.relQ=true;c3.at=Date.now();post('/api/turn?stop=
 // a tap (under 1/4 s): one step of the chosen size at the same speed, exact because the Feather sends a set count and
 // stops by itself (a hold's stop comes ~0.1-0.2 s late, which at 20 cm/s is several degrees); taps while one runs add up
 function c3Press(dir,on){if(c3.phase!=='correct')return;if(on){if(c3.press)return;const p={dir,hold:false};p.timer=setTimeout(()=>{p.hold=true;c3Hold(dir,true)},250);c3.press=p;return}
-const p=c3.press;if(!p)return;c3.press=null;clearTimeout(p.timer);if(p.hold){c3Hold(0,false);return}c3.pend+=p.dir*Math.max(1,Math.round(c3.n*Number($('c3step').value)/360));c3StepGo()}
+const p=c3.press;if(!p)return;c3.press=null;clearTimeout(p.timer);if(p.hold){c3Hold(0,false);return}c3Tap(p.dir)}
+function c3Tap(dir){if(c3.phase!=='correct')return;c3.pend+=dir*Math.max(1,Math.round(c3.n*Number($('c3step').value)/360));c3StepGo()}
 // steps run at 5 cm/s (or the session's speed if slower, or slower still so a step lasts 40 ms): a few-ms burst at
 // 40 cm/s falls between the game's frames and turns nothing. What a step turned is converted to the session's speed with
 // your curve (cm/360 there / cm/360 at the step's speed): this chain turns less per cm when slow.
@@ -949,14 +950,14 @@ function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&
 if(c3.phase==='turn'&&t&&t.run===c3.run&&t.state!==1){if(t.state===2){c3.phase='correct';c3.corr=0;c3.held=0;c3.segBusy=false;c3.msg=''}
 else{c3.phase='';c3.msg=t.state===3?'Stopped: the mouse moved. Let go of it during a turn, line up again, then Turn.':t.state===4?'Stopped.':t.state===5?'Stopped: the turn ran too long.':''}}
 if(c3.phase==='turn'&&Date.now()-c3.at>c3.dur+8000){c3.phase='';c3.msg='No word from the Feather about the turn: try again.'}
-if(c3.segBusy&&t&&t.run===c3.seg&&t.state!==1){c3.corr+=Math.round(t.sent*c3.segScale);c3.segBusy=false;if(t.state===3)toast('A step stopped: the mouse moved',true);if(c3.pend)setTimeout(c3StepGo,0)}  // a hold or step ended: add what it turned; queued taps next
+if(c3.segBusy&&t&&t.run===c3.seg&&t.state!==1){c3.corr+=Math.round(t.sent*c3.segScale);c3.segBusy=false;c3.held=0;  /* a hold that ended by itself (30° cap) is over: nothing waits on a release */ if(t.state===3)toast('A step stopped: the mouse moved',true);if(c3.pend)setTimeout(c3StepGo,0)}  // a hold or step ended: add what it turned; queued taps next
 if(c3.segBusy&&!c3.held&&Date.now()-c3.at>8000){c3.segBusy=false;c3.msg='No word from the Feather about the last hold: Start over to be sure.'}
 $('c3off').hidden=ok;$('c3off').textContent=!(t&&t.sup)?'Needs Feather firmware v27 or newer.':'The DPI isn\'t known yet: Read from mouse.';
 const mine=!!(t&&t.run===c3.crun&&(t.state===6||t.state===7));
 $('c3go').disabled=!ok||!!c3.phase||(t.state===6&&!mine)||!c3From();$('c3stop').disabled=c3.phase!=='turn';$('c3reset').disabled=c3.phase==='turn'||!c3.n;
 $('c3ans').hidden=c3.phase!=='correct';$('c3back').disabled=!!(c3.held||c3.segBusy||c3.pend);$('c3ex').disabled=!!(c3.held||c3.segBusy||c3.pend||c3.corr);['c3L','c3R'].forEach(id=>{$(id).disabled=false;$(id).classList.toggle('on',c3.held===(id==='c3L'?-1:1))});
 const cm=c3.n&&cpc?c3.n/cpc:0;
-$('c3now').textContent=c3.phase==='correct'?(c3.held?'Turning '+(c3.held<0?'left':'right')+'… ':c3.segBusy||c3.pend?'Stepping… ':'')+'Correction so far: '+(c3.corr>=0?'+':'')+(c3.corr/cpc).toFixed(2)+' cm. Tap ◀ ▶ (or the arrow keys) for a small step, hold to keep turning; when the crosshair is back on the edge, press Back on the marker. If the turn stopped right on it, save.':(c3.msg?c3.msg+' ':'')+(cm?'This try: '+cm.toFixed(2)+' cm/360':'');$('c3go').textContent=cm?'Turn ('+cm.toFixed(2)+' cm)':'Turn';
+$('c3now').textContent=c3.phase==='correct'?(c3.held?'Turning '+(c3.held<0?'left':'right')+'… ':c3.segBusy||c3.pend?'Stepping… ':'')+'Correction so far: '+(c3.corr>=0?'+':'')+(c3.corr/cpc).toFixed(2)+' cm. Tap ◀ ▶ or press the arrow keys for a small step, hold ◀ ▶ to keep turning; when the crosshair is back on the edge, press Back on the marker. If the turn stopped right on it, save.':(c3.msg?c3.msg+' ':'')+(cm?'This try: '+cm.toFixed(2)+' cm/360':'');$('c3go').textContent=cm?'Turn ('+cm.toFixed(2)+' cm)':'Turn';
 const cnt=!!(t&&(t.state===6||t.state===7)&&!mine),tn2=Number($('c3ctn').value),ccm=cnt&&cpc?Math.abs(t.sent)/cpc:0;$('c3cbox').hidden=!(t&&t.count);
 $('c3cgo').textContent=cnt&&t.state===6?'Stop':'Start counting';$('c3cgo').disabled=!ok||!!c3.phase;const cL=S.c360||[],cdup=cnt&&cpc&&cL.length&&cL[0][2]===0&&cL[0][1]===Math.round(Math.abs(t.sent)/cpc/tn2*100);  // already the newest saved result
 $('c3csave').disabled=!(cnt&&t.state===7&&t.sent&&c3.csaved!==t.run&&!cdup);
@@ -966,8 +967,7 @@ if(k!==c3.lk){c3.lk=k;$('c3res').hidden=!L.length;const seen={},R=L.slice().sort
 $('c3list').innerHTML=L.length?'<tr><th>Speed</th><th>cm/360</th><th>When</th><th></th></tr>'+R.map(r=>{const key=r[2]||'h',cur=!(key in seen);seen[key]=1;return '<tr'+(cur?'':' class="old"')+' title="'+r[3]+' DPI"><td>'+(r[2]?r[2]/10+' cm/s':'by hand')+'</td><td><b>'+(r[1]/100).toFixed(2)+'</b></td><td>'+esc(whenText(r[0]*1000))+'</td><td><button onclick="c3Del('+r[0]+')" aria-label="Remove">✕</button></td></tr>'}).join(''):'';c3Plot(L)}}
 [['c3L',-1],['c3R',1]].forEach(([id,d])=>{const b=$(id);b.addEventListener('pointerdown',e=>{if(b.disabled)return;b.setPointerCapture(e.pointerId);e.preventDefault();c3Press(d,true)});
 ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>c3Press(0,false)))});
-document.addEventListener('keydown',e=>{if(c3.phase!=='correct'||(e.key!=='ArrowLeft'&&e.key!=='ArrowRight'))return;const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return;e.preventDefault();if(!e.repeat)c3Press(e.key==='ArrowLeft'?-1:1,true)});
-document.addEventListener('keyup',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight')c3Press(0,false)});
+document.addEventListener('keydown',e=>{if(c3.phase!=='correct'||(e.key!=='ArrowLeft'&&e.key!=='ArrowRight'))return;const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return;e.preventDefault();if(!e.repeat)c3Tap(e.key==='ArrowLeft'?-1:1)});  // a key press is always exactly one step, never a hold: keyboards (kanata, analog keys) can deliver a tap as several events or release it late
 function drawLevel(){const sn=!!(S.opt&&(S.opt.snap===true||S.opt.snap===1));$('lvsnap').hidden=!sn}
 new ResizeObserver(()=>lvDraw()).observe(LV);
 // fold-outs open as they were left (kept on the QT Py: the page's address changes, and it's shared by your devices)
