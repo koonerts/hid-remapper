@@ -932,7 +932,7 @@ let c3CidPick=null;try{const v=localStorage.getItem('gw_c3cid');if(v!=null&&v!==
 function c3Cid(){const a=S&&S.cv&&S.cv.id||0;if(c3CidPick!=null)return c3CidPick;const L=(S&&S.c360||[]).filter(r=>(r[4]||0)===c3Ctx());return a&&!L.some(r=>(r[5]||0)===a)&&L.some(r=>!(r[5]||0))?0:a}  // the running curve's results; while it has none yet, the ones from before curve ids
 function c3CidSet(){const v=Number($('c3cid').value),a=S&&S.cv&&S.cv.id||0;c3CidPick=v===a?null:v;try{localStorage.setItem('gw_c3cid',c3CidPick==null?'':String(v))}catch(e){}if(!c3.phase){c3.n=0;c3.hist=[]}c3.lk='';cvKey='';c3Draw();cvDraw()}
 function c3CidOpts(){const s=$('c3cid');if(!s)return;const a=S&&S.cv&&S.cv.id||0,L=(cvLib&&cvLib.curves)||[],cur=c3Cid();
-s.innerHTML=L.map(c=>'<option value="'+c.id+'">'+esc(c.name)+(c.id===a?' (running)':'')+'</option>').join('')+'<option value="0">before curve ids</option>';s.value=String(cur);
+const html=L.map(c=>'<option value="'+c.id+'">'+esc(c.name)+(c.id===a?' (running)':'')+'</option>').join('')+'<option value="0">before curve ids</option>';if(s.dataset.h!==html){s.innerHTML=html;s.dataset.h=html}if(s.value!==String(cur))s.value=String(cur);
 const n=$('c3cidnote'),v=Number(s.value);n.hidden=v===a;n.textContent=v===0?'Showing results from before curve ids (measured under various curves). New results are saved under the running curve.':'Showing another curve\'s results; the Feather runs '+((L.find(c=>c.id===a)||{}).name||'another curve')+', so new results are saved under that one.'}
 function c3CtxSet(){try{localStorage.setItem('gw_c3ctx',$('c3ctx').value)}catch(e){}if(!c3.phase){c3.n=0;c3.hist=[]}c3.lk='';cvKey='';c3Draw();cvDraw()}
 function c3Pts(){const L=c3L(),by={},d0=L.length?L[0][3]:0;L.forEach(r=>{if(r[2]>0&&r[3]===d0&&!(r[2] in by))by[r[2]]=r});return Object.values(by).sort((a,b)=>a[2]-b[2]).map(r=>[r[2]/10,r[1]/100])}
@@ -1137,7 +1137,7 @@ setTimeout(c3Restore,0);
 // and the older values as small chips (each removable), instead of a row each
 function c3Short(ms){const d=new Date(ms),n=new Date(),tm=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return d.toDateString()===n.toDateString()?tm:d.toLocaleDateString([],{month:'short',day:'numeric'})+', '+tm}
 function c3List(L){const by={},keys=[];L.forEach(r=>{const key=r[2]||0;if(!(key in by)){by[key]=[];keys.push(key)}by[key].push(r)});keys.sort((a,b)=>(a||1e9)-(b||1e9));
-const lc=cvLib&&cvLib.curves.find(x=>x.id===c3Cid()),c=lc?{n:lc.n,sp:lc.sp,g:lc.g,src:';S='+lc.s10/10}:S.cv,Sx=c&&c.n>=2?Number(cvSrcParse(c.src).S)||0:0,T=c&&c.n>=2?c.sp.map((s,k)=>[s,c.g[k]]):null;
+const lc=cvLib&&cvLib.curves.find(x=>x.id===c3Cid()),c=lc?{n:lc.n,sp:lc.sp,g:lc.g,src:';S='+lc.s10/10}:null,Sx=c&&c.n>=2?Number(cvSrcParse(c.src).S)||0:0,T=c&&c.n>=2?c.sp.map((s,k)=>[s,c.g[k]]):null;
 $('c3list').innerHTML=keys.length?'<tr><th>cm/s</th><th>cm/360</th><th title="The newest result against what the saved speed curve predicts there">vs curve</th><th>Saved</th><th>Older</th><th></th></tr>'+keys.map(key=>{const R=by[key].sort((a,b)=>b[0]-a[0]),r=R[0],cm=r[1]/100;
 let dv='';if(key&&Sx&&T){const p=(cm/(Sx/cvGain(T,key/10))-1)*100;dv='<span class="dv'+(Math.abs(p)>3?' off':'')+'">'+(p>=0?'+':'')+p.toFixed(1)+'%</span>'}
 return '<tr><td>'+(key?key/10:'by hand')+'</td><td><b>'+cm.toFixed(2)+'</b></td><td>'+dv+'</td><td title="'+esc(whenText(r[0]*1000))+' · '+(r[3]||'?')+' DPI">'+esc(c3Short(r[0]*1000))+'</td><td class="ol">'+
@@ -1164,6 +1164,7 @@ $('c3cgo').textContent=cnt&&t.state===6?'Stop':'Start counting';$('c3cgo').disab
 $('c3csave').disabled=!(cnt&&t.state===7&&t.sent&&c3.csaved!==t.run&&!cdup);
 $('c3cnow').textContent=cnt&&(t.state===6||t.sent)?(t.state===6?'Counting: ':'Counted: ')+ccm.toFixed(2)+' cm'+(tn2>1?' for '+tn2+' turns':'')+' = '+(ccm/tn2).toFixed(2)+' cm/360'+(t.state===6?' (updates as you turn)':''):'';
 const L=c3L(),k=JSON.stringify([L,c3Ctx(),c3Cid(),S.cv&&S.cv.src,S.cv&&S.cv.n,cvLib&&cvLib.active]),fr=c3At(Number($('c3sp').value));$('c3from').hidden=!!c3.n;$('c3from').textContent=fr[0]?'Starts from '+fr[0].toFixed(2)+' cm/360, '+fr[1]+'.':'Count your own turns first: this starts from that result.';
+c3CidOpts();
 if(k!==c3.lk){c3.lk=k;$('c3res').hidden=$('c3resA').hidden=!L.length;c3List(L);c3Plot(L)}}
 [['c3L',-1],['c3R',1]].forEach(([id,d])=>{const b=$(id);b.addEventListener('pointerdown',e=>{if(b.disabled)return;b.setPointerCapture(e.pointerId);e.preventDefault();c3Press(d,true)});
 ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>c3Press(0,false)))});
