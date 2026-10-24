@@ -245,9 +245,9 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="note" id="cvoff" hidden></p>
 <div class="c3g">
 <section class="c3s"><h3>From the XIM</h3>
-<p class="mut">In XIM Manager's curve editor, copy the curve and paste it here. Fit it to your fixed-speed results above (taken with that curve on the XIM), save, then set the XIM's curve to linear at the same sensitivity.</p>
+<p class="mut">In XIM Manager's curve editor, copy the curve and paste it here. Fit it to your fixed-speed results above (taken with that curve on the XIM), save, then set the XIM's curve to linear and leave its sensitivity as it was (the curve is 1.0 at speed, so nothing needs a bump).</p>
 <div class="row c3f"><label class="cvx">XIM curve<input type="text" id="cvx" placeholder="XMBC:…:XMBC" spellcheck="false" autocomplete="off" oninput="cvImport()"></label></div>
-<div class="row c3f"><label>100% is<input type="number" id="cvv" min="5" max="500" step="0.5" oninput="cvKey='';cvDraw()" style="width:6em"> cm/s</label><label>Between the points<select id="cvdeg" onchange="cvKey='';cvDraw()"><option value="3">curved, 2 control points</option><option value="2">curved, 1 control point</option><option value="1">straight lines</option></select></label><label>Smoothing<input type="number" id="cvtau" min="1" max="200" value="8" oninput="cvKey='';cvDraw()" style="width:5em"> ms</label></div>
+<div class="row c3f"><label title="The hand speed where the XIM curve's input axis ends (its 100%): faster movements keep the last point's ratio. Not a sensitivity: keep the XIM's sensitivity as it was.">Curve ends at<input type="number" id="cvv" min="5" max="500" step="0.5" oninput="cvKey='';cvDraw()" style="width:6em"> cm/s hand speed</label><label>Between the points<select id="cvdeg" onchange="cvKey='';cvDraw()"><option value="3">curved, 2 control points</option><option value="2">curved, 1 control point</option><option value="1">straight lines</option></select></label><label>Smoothing<input type="number" id="cvtau" min="1" max="200" value="8" oninput="cvKey='';cvDraw()" style="width:5em"> ms</label></div>
 <div class="row c3b"><button id="cvfitb" onclick="cvFitNow()">Fit to my results</button></div>
 <p class="mut" id="cvfit" style="margin:10px 0 0"></p>
 <div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="cvhosts"></div></div>
@@ -1032,7 +1032,7 @@ if(key===cvKey)return;cvKey=key;
 $('cvhosts').innerHTML=hs.length?hs.map(x=>{const on=cur.includes(x[0]);return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'">'+esc(hostName(x))+'</button>'}).join(''):'<span class="mut">no host recognised yet</span>';
 $('cvhosts').querySelectorAll('button').forEach(b=>b.onclick=()=>cvHostTap(b.dataset.sig));
 const nm={3:'curved, 2 control points',2:'curved, 1 control point',1:'straight lines'};
-$('cvfit').textContent=cvErr?cvErr:!n?(cvP?'Set 100% (cm/s) and the smoothing.':''):(n.sc?'Matches your '+n.M.length+' fixed-speed results within '+(n.sc.rms*100).toFixed(1)+'% (rms). With the XIM linear at its sensitivity now: '+n.sc.S.toFixed(1)+' cm/360. ':'No fixed-speed results to fit to: 100% is a guess. ')+
+$('cvfit').textContent=cvErr?cvErr:!n?(cvP?'Set where the curve ends (cm/s of hand speed) and the smoothing.':''):(n.sc?'Matches your '+n.M.length+' fixed-speed results within '+(n.sc.rms*100).toFixed(1)+'% (rms). With the XIM linear at its sensitivity now: '+n.sc.S.toFixed(1)+' cm/360. ':'No fixed-speed results to fit to: 100% is a guess. ')+
 (cvFits&&cvFits.length>1?'Other readings: '+cvFits.slice(1).map(f=>nm[f.deg]+' '+(f.rms*100).toFixed(1)+'% at '+f.v100+' cm/s').join(', ')+'. ':'')+n.T.length+' points to the Feather, from '+(n.T[0][1]/10).toFixed(1)+'% at '+(n.T[0][0]/10)+' cm/s to '+(n.T[n.T.length-1][1]/10).toFixed(1)+'% at '+(n.T[n.T.length-1][0]/10)+' cm/s.';
 cvPlot(n)}
 function c3Del(t){post('/api/c360?del='+t).then(r=>{if(!(r&&r.ok))toast('Not removed',true)})}
