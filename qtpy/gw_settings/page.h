@@ -1000,7 +1000,8 @@ let cvMemo=['',null];  // cvNow runs on every poll: the table only when an input
 function cvNow(){if(!cvP)return null;const v=Number($('cvv').value),deg=Number($('cvdeg').value),tau=Math.round(Number($('cvtau').value));if(!(v>=5&&v<=500)||!(tau>=1&&tau<=200))return null;
 const M=c3Pts(),k=JSON.stringify([cvP,v,deg,tau,M]);if(k===cvMemo[0])return cvMemo[1];const T=cvTable(cvP,v,deg),r={T,v,deg,tau,M,sc:M.length?cvScore(cvP,M,v,deg):null};cvMemo=[k,r];return r}
 function cvDirty(){const c=S&&S.cv,n=cvNow();if(!n||!c)return false;return !c.n||c.tau!==n.tau||JSON.stringify(c.sp)!==JSON.stringify(n.T.map(p=>p[0]))||JSON.stringify(c.g)!==JSON.stringify(n.T.map(p=>p[1]))}
-function cvHosts(){const c=S.cv;return c&&c.n?c.hosts:(cvHostsNew||(S.dg&&S.dg.hosts)||[])}
+// a new curve starts on the hosts named XIM only: on this PC BallSheet's own speed curve would stack on it
+function cvHosts(){const c=S.cv;return c&&c.n?c.hosts:(cvHostsNew||(S.hosts||[]).filter(x=>/xim/i.test(hostName(x))).map(x=>x[0]))}
 function cvPost(T,tau,hosts,src){const dpi=Math.round(c3Cpc()*2.54)||(S.cv&&S.cv.dpi)||0;
 return post('/api/curve?sp='+T.map(p=>p[0]).join(',')+'&g='+T.map(p=>p[1]).join(',')+'&tau='+tau+'&dpi='+dpi+'&hosts='+hosts.join(',')+(src!=null?'&src='+encodeURIComponent(src):'')).then(r=>{say(r,'Saved');
 if(r&&r.ok&&S.cv){S.cv.n=T.length;S.cv.sp=T.map(p=>p[0]);S.cv.g=T.map(p=>p[1]);S.cv.tau=tau;S.cv.hosts=hosts.slice();if(src!=null)S.cv.src=src;cvHostsNew=null}cvKey='';cvDraw();return r})}
