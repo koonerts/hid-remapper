@@ -22,5 +22,7 @@ void gw_probe_interface(const uint8_t* desc_itf, uint16_t max_len);
 // QT Py settings link (gw_link.h): the status block it reads, and a command frame it wrote
 void gw_link_status(uint8_t* status);
 bool gw_link_apply(const uint8_t* frame, uint8_t len, uint32_t now);
+// v30: the X DPI of the stage in use (0 = not known), for the speed curve (gw_curve.h)
+uint16_t gw_mouse_dpi(void);
 
 #endif

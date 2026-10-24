@@ -12,6 +12,7 @@
 #include "gw_chords.h"
 #include "gw_dirgain.h"
 #include "gw_turn.h"
+#include "gw_curve.h"
 #include "gw_hostcap.h"
 #include "gw_link.h"
 #include "gw_payloads.h"
@@ -909,6 +910,10 @@ static uint16_t rs_dpi_x[RS_DPI_STAGES];
 static uint16_t rs_dpi_y[RS_DPI_STAGES];
 static uint8_t rs_dpi_known = 0;
 
+uint16_t gw_mouse_dpi(void) {  // v30: the X DPI of the stage in use, 0 = not known
+    return ((rs_cur_stage >= 0) && (rs_cur_stage < RS_DPI_STAGES) && (rs_dpi_known & (1 << rs_cur_stage))) ? rs_dpi_x[rs_cur_stage] : 0;
+}
+
 static void led_palette_reset() {
     memcpy(led.palette, gw_palette_default, sizeof(led.palette));
     led.palette_done = false;
@@ -1665,7 +1670,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 29
+#define GW_FW_VERSION 30
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1680,6 +1685,7 @@ static void rs_tick(uint32_t now) {
 #define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
 #define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
 #define LINK_SET_DIRGAIN 0x0E      // v24: [on, 8 gains uint16 per mille] sensitivity per direction (gw_dirgain.cc), RAM only
+#define LINK_SET_CURVE 0x10        // v30: [on, tau ms, dpi fallback uint16, n x (speed 0.1 cm/s uint16, gain per mille uint16)] the speed curve (gw_curve.cc), RAM only
 #define LINK_TURN 0x0F             // v27: [total int32, counts a second uint32, hand counts uint32] a measured turn (gw_turn.cc); [] stops it; v28: [1] counts the real X
 
 // per-frame processing time (gw_frame_time), over a 1 s window; since v19 also how long after its tick each frame was
@@ -1839,6 +1845,7 @@ void gw_link_status(uint8_t* s) {
     s[244] = gw_hostcap_upd();  // v26: the capture block's change counter and capture number (= its bytes 258 and 257)
     s[245] = gw_hostcap_id();
     gw_turn_status(s + 246);  // v27: 246 state, 247 run number, 248-251 counts sent
+    gw_curve_status(s + 252);  // v30: 252 bit 0 applying, bit 1 got a table; 253 crc8 of the curve as received
     s[255] = gw_crc8(s + 192, 63);
     gw_hostcap_fill(s + 256);  // v23
 }
@@ -1946,6 +1953,9 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                 }
                 gw_dirgain_set(d[0] != 0, g);
             }
+            break;
+        case LINK_SET_CURVE:
+            gw_curve_link(d, len);
             break;
         case LINK_TURN:
             if (len == 12) {

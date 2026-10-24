@@ -20,6 +20,8 @@
 #include "gw_chords.h"
 #include "gw_dirgain.h"
 #include "gw_turn.h"
+#include "gw_curve.h"
+#include "gw_mouse.h"
 
 #define MAX_REPORT_SIZE 64
 
@@ -1118,6 +1120,7 @@ void process_mapping(bool auto_repeat) {
     uint32_t gw_chords_us = (uint32_t) (get_time() - now);  // the chord filter alone (v25: not the gains too)
     gw_dirgain_filter(gw_xy_in[0], gw_xy_in[1]);  // v24: the frame's X/Y, before any mapping reads them
     gw_turn_filter(gw_xy_in[0], gw_xy_in[1], now);  // v27: the cm/360 card's steady turn, after the gains
+    gw_curve_filter(gw_xy_in[0], gw_xy_in[1], now, gw_mouse_dpi());  // v30: the speed curve, on hand and turn alike
 
     for (auto& tap_hold : tap_hold_usages) {
         if ((*tap_hold.input_state != 0) && (*(tap_hold.input_state + PREV_STATE_OFFSET) == 0)) {

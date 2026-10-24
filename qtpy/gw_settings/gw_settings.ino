@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 45      // this firmware's number, shown in /api/status
+#define QT_FW 46      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -59,7 +59,8 @@
 #define C_RAW 0x0C         // Feather v14+: [16 bytes of report 8: a read (08) or the status query (04)]
 #define C_SET_CHORDS 0x0D  // Feather v15+: [part, total, rules] (gw_chords.h)
 #define C_SET_DIRGAIN 0x0E  // Feather v24+: [on, 8 gains uint16 per mille] sensitivity per direction (RAM only there)
-#define C_TURN 0x0F         // Feather v27+: [total int32, counts a second uint32, hand counts uint32] a measured turn; [] stops it
+#define C_SET_CURVE 0x10    // Feather v30+: [on, tau ms, dpi fallback uint16, n x (speed 0.1 cm/s uint16, gain per mille uint16)] the speed curve
+#define C_TURN 0x0F        // Feather v27+: [total int32, counts a second uint32, hand counts uint32] a measured turn; [] stops it
 
 // chord table limits and action count (gw_chords.h)
 #define CH_MAX 12
@@ -112,7 +113,8 @@ static uint32_t last_http = 0;
 #define EK_HOST_STAGE 11  // fw24: a host's stage chosen on the page ("name=stage 0-5")
 #define EK_DIRGAIN 12     // fw26: the direction gains or their hosts saved ("N hosts")
 #define EK_REFUSED 14     // fw32: a change refused from an out-of-date page (no "t": before fw22); text = the endpoint
-#define EK_TEMP_DPI 13    // fw28: the calibration's temporary DPI ("N") or the table put back ("restored", dev 7)
+#define EK_CURVE 15       // fw46: the speed curve or its hosts saved ("N hosts"), or removed ("off")
+#define EK_TEMP_DPI 13   // fw28: the calibration's temporary DPI ("N") or the table put back ("restored", dev 7)
 struct __attribute__((packed)) EditLog {  // 32 bytes
     uint32_t t;     // Unix time (s): the browser's clock sent with the request, else NTP, else 0 = unknown
     uint32_t ms;    // millis() then: ages within the same boot when the time is unknown
@@ -229,6 +231,25 @@ static uint32_t dgt_keep_at = 0;
 static uint32_t dg_sent_at = 0;
 static bool dg_reread = false;
 static uint16_t dg_sends = 0;  // since boot, for /api/status
+// fw46: the speed curve (Feather v30, gw_curve.cc): the XIM's ballistic curve done on the Feather, so the XIM can stay
+// linear. Points of hand speed (0.1 cm/s, rising) and gain (per mille), the speed's smoothing, the DPI when saved (the
+// Feather's fallback until it knows the mouse's), and the hosts it applies on. NVS "curve"; where it came from (the
+// page's import: the XIM's string, its 100% speed, shape and fit) in "cvsrc". Kept right on the Feather like the gains.
+#define CV_N 10
+struct __attribute__((packed)) CurveCfg {
+    uint8_t n;  // 0 = none
+    uint8_t tau;
+    uint16_t dpi;
+    uint16_t sp[CV_N];
+    uint16_t g[CV_N];
+    uint8_t hn;
+    uint32_t sig[HPROF_MAX];
+};
+static CurveCfg cv = { 0, 8, 0, { 0 }, { 0 }, 0, { 0 } };
+static String cv_src;
+static uint32_t cv_sent_at = 0;
+static bool cv_reread = false;
+static uint16_t cv_sends = 0;
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
 // fw36: + the cursor speed the run used (BallSheet's %, 0 = not known: the page's runs, and runs from before fw36), so
 // the page and BallSheet can pool runs made at a similar speed (NVS "calib2"; "calib" is moved over once)
@@ -1327,6 +1348,26 @@ static void h_status() {
              ",\"got\":" + String(sup && (evb[50] & 2) ? "true" : "false") + ",\"want\":" + String(dg_wanted() ? "true" : "false") +
              ",\"sends\":" + String(dg_sends) + ",\"temp\":" + String(dgt_on ? "true" : "false") + ",\"applied\":" + String(dg_applied() ? "true" : "false") + "}";  // fw42
     }
+    {  // fw46: the speed curve, its hosts, and the Feather's copy (sup = Feather v30+, on = applying now)
+        j += ",\"cv\":{\"n\":" + String(cv.n) + ",\"tau\":" + String(cv.tau) + ",\"dpi\":" + String(cv.dpi) + ",\"sp\":[";
+        for (uint8_t k = 0; k < cv.n; k++) {
+            j += (k ? "," : "") + String(cv.sp[k]);
+        }
+        j += "],\"g\":[";
+        for (uint8_t k = 0; k < cv.n; k++) {
+            j += (k ? "," : "") + String(cv.g[k]);
+        }
+        j += "],\"hosts\":[";
+        char h[12];
+        for (uint8_t k = 0; k < cv.hn; k++) {
+            snprintf(h, sizeof(h), "%08lx", (unsigned long) cv.sig[k]);
+            j += (k ? ",\"" : "\"") + String(h) + "\"";
+        }
+        bool sup = cv_supported() && ev_ok;
+        j += "],\"src\":\"" + cv_src + "\",\"sup\":" + String(cv_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[60] & 1) ? "true" : "false") +
+             ",\"got\":" + String(sup && (evb[60] & 2) ? "true" : "false") + ",\"want\":" + String(cv_wanted() ? "true" : "false") +
+             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + "}";
+    }
     j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
     {  // fw43: the measured turn (Feather v27: status 246-251, read with the 192-255 block when a turn starts or ends)
         bool sup = turn_supported() && ev_ok;
@@ -2121,6 +2162,159 @@ static void h_turn() {
     ok_json(queue_cmd(C_TURN, d, 12), "the Feather's queue is full");
 }
 
+// ---- fw46: the speed curve
+static bool cv_supported() {
+    return st_ok && st_ext && (st[56] >= 30);
+}
+
+static bool cv_wanted() {  // on for the host connected now
+    for (uint8_t k = 0; auto_sig && (cv.n >= 2) && (k < cv.hn); k++) {
+        if (cv.sig[k] == auto_sig) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint8_t cv_payload(uint8_t* d) {  // what C_SET_CURVE carries (no points = off)
+    d[0] = cv_wanted() ? 1 : 0;
+    d[1] = cv.tau;
+    d[2] = cv.dpi & 0xFF;
+    d[3] = cv.dpi >> 8;
+    for (uint8_t k = 0; k < cv.n; k++) {
+        d[4 + 4 * k] = cv.sp[k] & 0xFF;
+        d[5 + 4 * k] = cv.sp[k] >> 8;
+        d[6 + 4 * k] = cv.g[k] & 0xFF;
+        d[7 + 4 * k] = cv.g[k] >> 8;
+    }
+    return 4 + 4 * cv.n;
+}
+
+static bool cv_applied() {  // the Feather holds the curve it should (status 252 applying/got, 253 crc after the "on" byte)
+    if (!ev_ok || !(evb[60] & 2)) {
+        return false;
+    }
+    uint8_t d[4 + 4 * CV_N];
+    uint8_t len = cv_payload(d);
+    return (evb[61] == crc8(d + 1, len - 1)) && (((evb[60] & 1) != 0) == (d[0] != 0));
+}
+
+// as dg_tick: 252-253 come with the 192-255 block, so after sending, read it once more ourselves
+static void cv_tick() {
+    if (!link_up || !cv_supported() || (cq_n > 0)) {
+        return;
+    }
+    if (!auto_sig && (millis() < 6000)) {
+        return;  // the host isn't known yet at power-on
+    }
+    if (cv_reread) {
+        if (millis() - cv_sent_at >= 300) {
+            cv_reread = false;
+            read_chords();
+        }
+        return;
+    }
+    if (!ev_ok || cv_applied() || (millis() - cv_sent_at < 1500)) {
+        return;
+    }
+    uint8_t d[4 + 4 * CV_N];
+    uint8_t len = cv_payload(d);
+    if (queue_cmd(C_SET_CURVE, d, len)) {
+        cv_sent_at = millis();
+        cv_reread = true;
+        cv_sends++;
+    }
+}
+
+// POST /api/curve?sp=s0,...&g=g0,...&tau=ms&dpi=n&hosts=sig,sig&src=text: the speed curve (2-10 points, speeds in
+// 0.1 cm/s rising, gains 250-4000 per mille); sp empty = remove it. hosts empty = off everywhere.
+static bool csv_n(const String& s, long lo, long hi, long* out, uint8_t* n) {
+    *n = 0;
+    int at = 0;
+    while (at < (int) s.length()) {
+        int comma = s.indexOf(',', at);
+        long v = ((comma < 0) ? s.substring(at) : s.substring(at, comma)).toInt();
+        if ((v < lo) || (v > hi) || (*n >= CV_N)) {
+            return false;
+        }
+        out[(*n)++] = v;
+        if (comma < 0) {
+            break;
+        }
+        at = comma + 1;
+    }
+    return true;
+}
+
+static void h_curve() {
+    touch();
+    if (!from_current_page()) {
+        return;
+    }
+    long sp[CV_N], g[CV_N];
+    uint8_t n = 0, ng = 0;
+    if (!csv_n(server.arg("sp"), 1, 65535, sp, &n) || !csv_n(server.arg("g"), 250, 4000, g, &ng) || (n != ng) || (n == 1)) {
+        return ok_json(false, "need 2-10 speeds (0.1 cm/s) and as many gains (250-4000 per mille)");
+    }
+    for (uint8_t k = 1; k < n; k++) {
+        if (sp[k] <= sp[k - 1]) {
+            return ok_json(false, "speeds must rise");
+        }
+    }
+    long tau = server.hasArg("tau") ? server.arg("tau").toInt() : 8, dpi = server.arg("dpi").toInt();
+    if ((tau < 1) || (tau > 200) || (dpi < 0) || (dpi > 65535)) {
+        return ok_json(false, "tau 1-200 ms, dpi 0-65535");
+    }
+    uint32_t sig[HPROF_MAX];
+    uint8_t hn = 0;
+    String h = server.arg("hosts");
+    int at = 0;
+    while (at < (int) h.length()) {
+        int comma = h.indexOf(',', at);
+        String one = (comma < 0) ? h.substring(at) : h.substring(at, comma);
+        uint32_t v = strtoul(one.c_str(), nullptr, 16);
+        if (v && (hn < HPROF_MAX)) {
+            sig[hn++] = v;
+        }
+        if (comma < 0) {
+            break;
+        }
+        at = comma + 1;
+    }
+    cv.n = n;
+    cv.tau = tau;
+    cv.dpi = dpi;
+    memset(cv.sp, 0, sizeof(cv.sp));
+    memset(cv.g, 0, sizeof(cv.g));
+    for (uint8_t k = 0; k < n; k++) {
+        cv.sp[k] = sp[k];
+        cv.g[k] = g[k];
+    }
+    cv.hn = hn;
+    memset(cv.sig, 0, sizeof(cv.sig));
+    memcpy(cv.sig, sig, sizeof(uint32_t) * hn);
+    if (server.hasArg("src") || !n) {
+        String src = n ? server.arg("src") : String();
+        String clean;
+        for (unsigned i = 0; (i < src.length()) && (clean.length() < 240); i++) {
+            char c = src[i];
+            if (isalnum((unsigned char) c) || (c && strchr(":;,.=+/-", c))) {
+                clean += c;
+            }
+        }
+        cv_src = clean;
+        prefs.putString("cvsrc", cv_src);
+    }
+    if (n) {
+        prefs.putBytes("curve", &cv, sizeof(cv));
+    } else {
+        prefs.remove("curve");
+    }
+    log_edit(EK_CURVE, n ? String(hn) + (hn == 1 ? " host" : " hosts") : String("off"));
+    cv_sent_at = 0;  // send now
+    ok_json(true);
+}
+
 // POST /api/c360?cm=<cm/360 x 100>&sp=<cm/s x 10>&dpi=<n> keeps a result (newest first); ?del=<its Unix time> removes one
 static void h_c360() {
     touch();
@@ -2791,6 +2985,11 @@ void setup() {
     }
     fs_ok = FFat.begin(false);  // fw41: an uploaded page (no format here: an unformatted partition waits for the first upload)
     page_fs_load();
+    cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
+    if (prefs.getBytes("curve", &cv, sizeof(cv)) != sizeof(cv) || (cv.n > CV_N)) {
+        cv.n = 0;
+        cv.hn = 0;
+    }
     dg_src = prefs.getString("dgsrc", "");  // fw39: where the gains came from
     dg_src_t = prefs.getULong("dgsrct", 0);
     if (prefs.getBytes("dgain", &dg, sizeof(dg)) != sizeof(dg)) {                     // fw26: direction gains
@@ -2836,6 +3035,7 @@ void setup() {
     server.on("/api/dgtemp", HTTP_POST, h_dgtemp);
     server.on("/api/turn", HTTP_POST, h_turn);  // fw43
     server.on("/api/c360", HTTP_POST, h_c360);  // fw43
+    server.on("/api/curve", HTTP_POST, h_curve);  // fw46
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
@@ -2871,6 +3071,7 @@ void loop() {
     auto_tick();
     osd_tick();
     dg_tick();
+    cv_tick();
     tdpi_tick();
     if (ntp_want) {
         ntp_want = false;

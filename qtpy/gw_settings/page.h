@@ -50,6 +50,9 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 #c3plot{width:100%;height:auto;display:block}#c3plot text{fill:var(--mut);font-size:11px}#c3plot .gl{stroke:var(--line)}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
+#cvplot{width:100%;height:auto;display:block}#cvplot text{fill:var(--mut);font-size:11px}#cvplot .gl{stroke:var(--line)}
+#cvplot .cv{fill:none;stroke:var(--acc);stroke-width:2}#cvplot .pt{fill:var(--fg)}#cvplot .hl{stroke:var(--mut);stroke-dasharray:5 4}
+label.cvx{flex:1 1 100%}label.cvx input{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .c3s button.sq{font-size:15px}.c3s button.sq.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
 .chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}
 button{font:inherit;padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
@@ -223,12 +226,12 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="note" id="c3off" hidden></p>
 <div class="c3g">
 <section class="c3s" id="c3cbox" hidden><h3>Count your own turns</h3>
-<p class="mut">Crosshair on a sharp vertical edge, Start counting, turn whole turns by hand back to that edge (lifting the mouse and small corrections are fine), Stop, Save. The Feather counts what reaches the XIM, after your direction gains: your own mix of speeds.</p>
+<p class="mut">Crosshair on a sharp vertical edge, Start counting, turn whole turns by hand back to that edge (lifting the mouse and small corrections are fine), Stop, Save. The Feather counts your hand's movement (after your direction gains, before the speed curve): your own mix of speeds.</p>
 <div class="row c3f"><label>Full turns<select id="c3ctn" onchange="c3Draw()"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label></div>
 <div class="row c3b"><button class="p" id="c3cgo" onclick="c3Count()">Start counting</button><button id="c3csave" onclick="c3CSave()">Save</button></div>
 <p class="c3st" id="c3cnow"></p></section>
 <section class="c3s"><h3>At a fixed speed</h3>
-<p class="mut">The Feather turns the view by itself, steadily. If it stops short or past, tap ▶ or ◀, or press the arrow keys, for a small step (steps run at 5 cm/s so the game sees them, converted to this speed with your curve); hold ▶ or ◀ to keep turning at this speed. Then press Back on the marker and the next turn adds that correction. Save when a turn stops right on the edge. Hands off the mouse: touching it stops a turn.</p>
+<p class="mut">The Feather turns the view by itself, steadily (through the speed curve, like your hand). If it stops short or past, tap ▶ or ◀, or press the arrow keys, for a small step (steps run at 5 cm/s so the game sees them, converted to this speed with your curve); hold ▶ or ◀ to keep turning at this speed. Then press Back on the marker and the next turn adds that correction. Save when a turn stops right on the edge. Hands off the mouse: touching it stops a turn.</p>
 <div class="row c3f"><label>Speed<select id="c3sp" onchange="c3Draw()"><option value="5">5 cm/s</option><option value="10" selected>10 cm/s</option><option value="15">15 cm/s</option><option value="20">20 cm/s</option><option value="25">25 cm/s</option><option value="30">30 cm/s</option><option value="35">35 cm/s</option><option value="40">40 cm/s</option><option value="50">50 cm/s</option><option value="60">60 cm/s</option><option value="80">80 cm/s</option><option value="120">120 cm/s</option><option value="160">160 cm/s</option></select></label><label>Turns<select id="c3tn"><option>1</option><option>2</option><option>3</option></select></label></div>
 <p class="mut" id="c3from" style="margin:10px 0 0"></p>
 <div class="row c3b"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button></div>
@@ -238,6 +241,20 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="c3g" id="c3res" hidden><div><svg id="c3plot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed"></svg></div>
 <div><table class="c3t" id="c3list"></table><p class="mut" style="margin:6px 0 0">The newest result at each speed counts (older ones are grey); BallSheet reads cm/360 between them at your flick speed.</p></div></div>
 </div>
+<div class="card wide" id="cvcard"><div class="hd"><div><h2>Speed curve</h2><div class="mut">Your XIM curve, done on the Feather instead: the XIM stays linear, so the same hand movement always turns the same.</div></div></div>
+<p class="note" id="cvoff" hidden></p>
+<div class="c3g">
+<section class="c3s"><h3>From the XIM</h3>
+<p class="mut">In XIM Manager's curve editor, copy the curve and paste it here. Fit it to your fixed-speed results above (taken with that curve on the XIM), save, then set the XIM's curve to linear at the same sensitivity.</p>
+<div class="row c3f"><label class="cvx">XIM curve<input type="text" id="cvx" placeholder="XMBC:…:XMBC" spellcheck="false" autocomplete="off" oninput="cvImport()"></label></div>
+<div class="row c3f"><label>100% is<input type="number" id="cvv" min="5" max="500" step="0.5" oninput="cvKey='';cvDraw()" style="width:6em"> cm/s</label><label>Between the points<select id="cvdeg" onchange="cvKey='';cvDraw()"><option value="3">curved, 2 control points</option><option value="2">curved, 1 control point</option><option value="1">straight lines</option></select></label><label>Smoothing<input type="number" id="cvtau" min="1" max="200" value="8" oninput="cvKey='';cvDraw()" style="width:5em"> ms</label></div>
+<div class="row c3b"><button id="cvfitb" onclick="cvFitNow()">Fit to my results</button></div>
+<p class="mut" id="cvfit" style="margin:10px 0 0"></p>
+<div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="cvhosts"></div></div>
+<div class="row c3b"><button class="p" id="cvsave" onclick="cvSave()">Save</button><button id="cvdel" onclick="cvDel()">Remove</button></div>
+<p class="c3st" id="cvnow"></p></section>
+<div><svg id="cvplot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed with the curve"></svg><p class="mut" style="margin:6px 0 0" id="cvleg"></p></div>
+</div></div>
 <details class="card wide" id="cbsaved" hidden><summary><div><h2>Calibration runs <span class="mut" id="cbsavedn"></span></h2><div class="mut" id="cbsrc"></div></div></summary><div id="cbsavedlist"></div></details>
 </div></section>
 <section class="tab" id="t-setup" role="tabpanel" hidden><div class="cols">
@@ -801,7 +818,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 if(pgNew)st.insertAdjacentHTML('beforeend','<button class="chip" onclick="pgGo()">New page version: reload</button>');
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
-drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();c3Draw();foldsApply();
+drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();c3Draw();cvDraw();foldsApply();
 const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw+(S.page&&S.page.fs?' · page uploaded '+whenText(S.page.t*1000):'');drawBar();tabApply()}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
@@ -818,7 +835,7 @@ if(touched)return false;location.replace('http://'+ip+'/');return true}
 // everything but the style, so equal stamps mean only the style changed.
 let pgKey=null,pgNew=false,pgFetching=false;
 function pgKeyOf(j){return j.qt_fw+':'+(j.page&&j.page.fs?j.page.t+':'+j.page.len:'built-in')}
-function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.phase||c3.n||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
+function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.phase||c3.n||cvDirty()||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
 (a&&a!==document.body&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=='range'&&a.type!=='checkbox'&&a.type!=='color'))}
 // back to where it was: the cards below fill in over a few seconds, so keep trying until the page is that tall (or you scroll)
 function pgScroll(want){const t0=Date.now();let stop=false;['wheel','pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,()=>{stop=true},{once:true,passive:true}));
@@ -945,6 +962,76 @@ if(h.length){const p=h[h.length-1];if(p[1]*dk<0)nx=nk-dk*(nk-p[0])/(dk-p[1])}h.p
 c3.n=Math.max(1,Math.round(nx));c3.corr=0;c3.phase='';c3.msg='Correction: '+(dc>=0?'+':'')+dc.toFixed(2)+' cm. Turn again from here (no need to line up); when a turn stops right on the marker, save it.';c3Draw()}
 function c3Exact(){const cpc=c3Cpc();if(!c3.n||!cpc||c3.held||c3.segBusy||c3.corr)return;const cm=c3.n/cpc,sp=c3.sp;
 post('/api/c360?cm='+Math.round(cm*100)+'&sp='+Math.round(sp*10)+'&dpi='+Math.round(cpc*2.54)).then(r=>{if(r&&r.ok){toast('Saved: '+cm.toFixed(2)+' cm/360 at '+sp+' cm/s');c3.phase='';c3Reset()}else toast('Not saved: '+(r&&r.err||'no answer'),true)})}
+// ---- QT Py fw46: the speed curve (Feather v30, gw_curve.cc)
+// The XIM's ballistic curve from its Copy string (XMBC:<base64>:XMBC): a 4-byte big-endian length, then zlib; inside,
+// the QString "XMBC" (4-byte length + UTF-16), a 4-byte stamp, a 4-byte lead and 20 (x, y) u16-LE points scaled
+// 0-10000 (ffff = unused). (0,0) is implied. The XIM editor's points are handles with control points between them: read
+// as cubic Béziers (2 control points per stretch), quadratic (1) or straight lines, whichever fits your results best.
+async function cvDecode(s){const m=/XMBC:([A-Za-z0-9+/=]+):XMBC/.exec(s||'');if(!m)throw Error('paste the whole XMBC:…:XMBC string');
+const b=Uint8Array.from(atob(m[1]),c=>c.charCodeAt(0)),d=new Uint8Array(await new Response(new Blob([b.slice(4)]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+if(d.length<102||d[5]!==88||d[7]!==77)throw Error('not an XIM ballistic curve');const P=[[0,0]];
+for(let k=0;k<20;k++){const o=20+4*k,x=d[o]|d[o+1]<<8,y=d[o+2]|d[o+3]<<8;if(x===65535)break;if(x||y)P.push([x/1e4,y/1e4])}
+if(P.length<2)throw Error('the curve has no points');return P}
+function cvDegs(P){return[3,2,1].filter(d=>(P.length-1)%d===0)}
+// output/input at input X (0-1; held past the last point); deg 3/2 = Bézier stretches, 1 = straight lines
+function cvRatio(P,X,deg){const z=P[P.length-1];if(X>=z[0])return z[1]/z[0];X=Math.max(X,1e-4);
+for(let i=0;i+deg<P.length;i+=deg){const S=P.slice(i,i+deg+1);if(X>S[deg][0])continue;
+const B=(t,k)=>deg===1?S[0][k]+(S[1][k]-S[0][k])*t:deg===2?(1-t)*(1-t)*S[0][k]+2*t*(1-t)*S[1][k]+t*t*S[2][k]:(1-t)**3*S[0][k]+3*t*(1-t)**2*S[1][k]+3*t*t*(1-t)*S[2][k]+t**3*S[3][k];
+let lo=0,hi=1;for(let n=0;n<50;n++){const m=(lo+hi)/2;if(B(m,0)<X)lo=m;else hi=m}return B((lo+hi)/2,1)/X}return z[1]/z[0]}
+// the linear cm/360 S and the misfit (rms of the log error) of cm/360 = S / ratio(v / v100) against [cm/s, cm/360] results
+function cvScore(P,M,v100,deg){const ls=M.map(m=>Math.log(m[1]*cvRatio(P,m[0]/v100,deg))),mu=ls.reduce((a,b)=>a+b,0)/ls.length;
+return{v100,deg,S:Math.exp(mu),rms:Math.sqrt(ls.reduce((a,b)=>a+(b-mu)*(b-mu),0)/ls.length)}}
+function cvFit(P,M,deg){let best=null;for(let v=10;v<=400;v+=0.5){const s=cvScore(P,M,v,deg);if(!best||s.rms<best.rms-1e-12)best=s}return best}
+// the Feather's table: up to 10 [speed 0.1 cm/s, gain per mille] points, each where straight lines between the others miss most
+function cvTable(P,v100,deg){const lo=0.5,hi=Math.max(1,v100*P[P.length-1][0]),G=[];for(let i=0;i<=300;i++){const v=lo*Math.pow(hi/lo,i/300);G.push([v,cvRatio(P,v/v100,deg)])}
+const pick=[0,G.length-1],at=v=>{const s=pick.slice().sort((a,b)=>a-b);for(let k=1;k<s.length;k++)if(v<=G[s[k]][0]){const a=G[s[k-1]],e=G[s[k]];return a[1]+(e[1]-a[1])*(v-a[0])/(e[0]-a[0])}return G[s[s.length-1]][1]};
+while(pick.length<10){let w=-1,we=0;G.forEach((g,i)=>{const e=Math.abs(at(g[0])-g[1]);if(e>we){we=e;w=i}});if(we<4e-4)break;pick.push(w)}
+return pick.sort((a,b)=>a-b).map(i=>[Math.round(G[i][0]*10),Math.min(4000,Math.max(250,Math.round(G[i][1]*1000)))]).filter((p,i,a)=>!i||p[0]>a[i-1][0])}
+// the gain the Feather works out from a table at v cm/s (gw_curve.cc's gain_at)
+function cvGain(T,v){if(v<=T[0][0]/10)return T[0][1]/1000;for(let k=1;k<T.length;k++)if(v<T[k][0]/10){const a=T[k-1],e=T[k];return(a[1]+(e[1]-a[1])*(v-a[0]/10)/((e[0]-a[0])/10))/1000}return T[T.length-1][1]/1000}
+let cvP=null,cvErr='',cvKey='',cvLoaded=false,cvHostsNew=null,cvFits=null;
+function cvSrcParse(s){const o={};(s||'').split(';').forEach((p,i)=>{if(!i)o.x=p;else{const e=p.indexOf('=');if(e>0)o[p.slice(0,e)]=p.slice(e+1)}});return o}
+async function cvImport(){const s=$('cvx').value.trim();cvP=null;cvErr='';cvFits=null;if(s){try{cvP=await cvDecode(s)}catch(e){cvErr=e.message}}
+if(cvP){const ok=cvDegs(cvP);[...$('cvdeg').options].forEach(o=>o.disabled=!ok.includes(+o.value));if(!ok.includes(+$('cvdeg').value))$('cvdeg').value=ok[0];if(!$('cvv').value)cvFitNow(true)}cvKey='';cvDraw()}
+function cvFitNow(quiet){if(!cvP)return;const M=c3Pts();if(M.length<3){if(!$('cvv').value)$('cvv').value=72;if(!quiet)toast('Needs 3 fixed-speed results (cm/360 in game)',true);cvKey='';cvDraw();return}
+cvFits=cvDegs(cvP).map(d=>cvFit(cvP,M,d)).sort((a,b)=>a.rms-b.rms);$('cvv').value=cvFits[0].v100;$('cvdeg').value=cvFits[0].deg;cvKey='';cvDraw()}
+// what the inputs make: the table, and how it matches the results
+let cvMemo=['',null];  // cvNow runs on every poll: the table only when an input or the results change
+function cvNow(){if(!cvP)return null;const v=Number($('cvv').value),deg=Number($('cvdeg').value),tau=Math.round(Number($('cvtau').value));if(!(v>=5&&v<=500)||!(tau>=1&&tau<=200))return null;
+const M=c3Pts(),k=JSON.stringify([cvP,v,deg,tau,M]);if(k===cvMemo[0])return cvMemo[1];const T=cvTable(cvP,v,deg),r={T,v,deg,tau,M,sc:M.length?cvScore(cvP,M,v,deg):null};cvMemo=[k,r];return r}
+function cvDirty(){const c=S&&S.cv,n=cvNow();if(!n||!c)return false;return !c.n||c.tau!==n.tau||JSON.stringify(c.sp)!==JSON.stringify(n.T.map(p=>p[0]))||JSON.stringify(c.g)!==JSON.stringify(n.T.map(p=>p[1]))}
+function cvHosts(){const c=S.cv;return c&&c.n?c.hosts:(cvHostsNew||(S.dg&&S.dg.hosts)||[])}
+function cvPost(T,tau,hosts,src){const dpi=Math.round(c3Cpc()*2.54)||(S.cv&&S.cv.dpi)||0;
+return post('/api/curve?sp='+T.map(p=>p[0]).join(',')+'&g='+T.map(p=>p[1]).join(',')+'&tau='+tau+'&dpi='+dpi+'&hosts='+hosts.join(',')+(src!=null?'&src='+encodeURIComponent(src):'')).then(r=>{say(r,'Saved');
+if(r&&r.ok&&S.cv){S.cv.n=T.length;S.cv.sp=T.map(p=>p[0]);S.cv.g=T.map(p=>p[1]);S.cv.tau=tau;S.cv.hosts=hosts.slice();if(src!=null)S.cv.src=src;cvHostsNew=null}cvKey='';cvDraw();return r})}
+function cvSave(){const n=cvNow();if(!n)return;const m=/XMBC:[A-Za-z0-9+/=]+:XMBC/.exec($('cvx').value);
+cvPost(n.T,n.tau,cvHosts(),(m?m[0]:'')+';v='+n.v+';d='+n.deg+(n.sc?';S='+n.sc.S.toFixed(1):''))}
+function cvDel(){post('/api/curve?sp=&g=&hosts=').then(r=>{say(r,'Removed');if(r&&r.ok&&S.cv){S.cv.n=0;S.cv.sp=[];S.cv.g=[];S.cv.hosts=[];S.cv.src=''}cvKey='';cvDraw()})}
+function cvHostTap(sig){const c=S.cv,cur=cvHosts(),h=cur.includes(sig)?cur.filter(x=>x!==sig):cur.concat([sig]);
+if(c&&c.n)cvPost(c.sp.map((s,k)=>[s,c.g[k]]),c.tau,h);else{cvHostsNew=h;cvKey='';cvDraw()}}
+// cm/360 by speed with the curve (the saved one, or what the inputs make), your results as dots, the XIM linear alone dashed
+function cvPlot(n){const svg=$('cvplot'),c=S.cv,T=n?n.T:c&&c.n?c.sp.map((s,k)=>[s,c.g[k]]):null;if(!T){svg.innerHTML='';$('cvleg').textContent='';return}
+const M=c3Pts(),Sx=n&&n.sc?n.sc.S:Number(cvSrcParse(c&&c.src).S)||0,X0=42,X1=344,Y0=16,Y1=128,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),f=x=>x.toFixed(1);
+const V=[];for(let i=0;i<=80;i++)V.push(5*Math.pow(32,i/80));const y=v=>Sx?Sx/cvGain(T,v):cvGain(T,v)*100,ys=V.map(y).concat(Sx?M.map(m=>m[1]).concat([Sx]):[]);
+let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(Sx?4:3,(hi-lo)*0.18);lo-=pad;hi+=pad;const ly=c=>Y1-(c-lo)/(hi-lo)*(Y1-Y0);
+let s='<text x="4" y="10">'+(Sx?'cm/360':'% of linear')+'</text>';[5,10,20,40,80,160].forEach(v=>{s+='<line class="gl" x1="'+f(lx(v))+'" y1="'+Y0+'" x2="'+f(lx(v))+'" y2="'+Y1+'"/><text x="'+f(lx(v))+'" y="'+(Y1+14)+'" text-anchor="middle">'+v+'</text>'});
+s+='<text x="'+((X0+X1)/2)+'" y="'+(Y1+30)+'" text-anchor="middle">hand speed, cm/s</text>';[lo+pad,hi-pad].forEach(c=>{s+='<text x="'+(X0-6)+'" y="'+f(ly(c)+4)+'" text-anchor="end">'+c.toFixed(0)+'</text>'});
+if(Sx)s+='<line class="hl" x1="'+X0+'" y1="'+f(ly(Sx))+'" x2="'+X1+'" y2="'+f(ly(Sx))+'"/><text x="'+(X1-2)+'" y="'+f(ly(Sx)-5)+'" text-anchor="end">XIM linear '+Sx.toFixed(1)+'</text>';
+s+='<polyline class="cv" points="'+V.map(v=>f(lx(v))+','+f(ly(y(v)))).join(' ')+'"/>';if(Sx)M.forEach(m=>{s+='<circle class="pt" cx="'+f(lx(m[0]))+'" cy="'+f(ly(m[1]))+'" r="3.5"><title>'+m[0]+' cm/s: '+m[1].toFixed(1)+'</title></circle>'});svg.innerHTML=s;
+$('cvleg').textContent=Sx?'Line: cm/360 with the curve on the Feather and the XIM linear at '+Sx.toFixed(1)+'. Dots: your newest fixed-speed results.':'The curve as a share of the XIM\'s linear sensitivity (cm/360 needs fixed-speed results).'}
+function cvDraw(){if(!S||!$('cvcard'))return;const c=S.cv;
+if(!cvLoaded&&c){cvLoaded=true;if(c.src&&!$('cvx').value){const o=cvSrcParse(c.src);$('cvx').value=o.x||'';if(o.v)$('cvv').value=o.v;if(o.d)$('cvdeg').value=o.d;$('cvtau').value=c.tau||8;if(o.x){cvImport();return}}}
+$('cvoff').hidden=!!(c&&c.sup);$('cvoff').textContent=c?'The Feather needs firmware v30 for this'+(S.fw?' (it has v'+S.fw+')':'')+'; you can prepare and save the curve meanwhile.':'The QT Py needs firmware 46 for this.';if(!c)return;
+const n=cvNow(),dirty=cvDirty(),hs=S.hosts||[],cur=cvHosts(),key=JSON.stringify([n&&n.T,n&&n.sc&&n.sc.rms,c,hs,cur,cvErr,cvFits,dirty,S.c360]);
+$('cvsave').disabled=!n||!dirty&&!!c.n;$('cvdel').disabled=!c.n;$('cvfitb').disabled=!cvP;
+$('cvnow').textContent=!c.n?(n?'Not saved yet.':'No curve saved.'):dirty?'Changed: Save sends it to the Feather.':c.want?(c.applied&&c.on?'On: the Feather applies it now. The XIM\'s own curve should be linear.':'Sending to the Feather…'):'Saved; off on the host connected now'+(c.hosts.length?'.':' (on for no host).');
+if(key===cvKey)return;cvKey=key;
+$('cvhosts').innerHTML=hs.length?hs.map(x=>{const on=cur.includes(x[0]);return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'">'+esc(hostName(x))+'</button>'}).join(''):'<span class="mut">no host recognised yet</span>';
+$('cvhosts').querySelectorAll('button').forEach(b=>b.onclick=()=>cvHostTap(b.dataset.sig));
+const nm={3:'curved, 2 control points',2:'curved, 1 control point',1:'straight lines'};
+$('cvfit').textContent=cvErr?cvErr:!n?(cvP?'Set 100% (cm/s) and the smoothing.':''):(n.sc?'Matches your '+n.M.length+' fixed-speed results within '+(n.sc.rms*100).toFixed(1)+'% (rms). With the XIM linear at its sensitivity now: '+n.sc.S.toFixed(1)+' cm/360. ':'No fixed-speed results to fit to: 100% is a guess. ')+
+(cvFits&&cvFits.length>1?'Other readings: '+cvFits.slice(1).map(f=>nm[f.deg]+' '+(f.rms*100).toFixed(1)+'% at '+f.v100+' cm/s').join(', ')+'. ':'')+n.T.length+' points to the Feather, from '+(n.T[0][1]/10).toFixed(1)+'% at '+(n.T[0][0]/10)+' cm/s to '+(n.T[n.T.length-1][1]/10).toFixed(1)+'% at '+(n.T[n.T.length-1][0]/10)+' cm/s.';
+cvPlot(n)}
 function c3Del(t){post('/api/c360?del='+t).then(r=>{if(!(r&&r.ok))toast('Not removed',true)})}
 function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&&t.sup&&cpc);
 if(c3.phase==='turn'&&t&&t.run===c3.run&&t.state!==1){if(t.state===2){c3.phase='correct';c3.corr=0;c3.held=0;c3.segBusy=false;c3.msg=''}
