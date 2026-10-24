@@ -260,7 +260,7 @@ static uint32_t cvt_keep_at = 0;
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
 // fw36: + the cursor speed the run used (BallSheet's %, 0 = not known: the page's runs, and runs from before fw36), so
 // the page and BallSheet can pool runs made at a similar speed (NVS "calib2"; "calib" is moved over once)
-#define CALIB_KEEP 6
+#define CALIB_KEEP 20  // 10-24: was 6 (pooling, now often within one curve setting, wants more)
 #define CALIB_V1_SIZE 46
 struct __attribute__((packed)) CalibRec {  // 47 bytes
     uint32_t t;         // Unix time
