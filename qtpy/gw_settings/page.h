@@ -1041,7 +1041,7 @@ if(!cvLoaded&&c){cvLoaded=true;if(c.src&&!$('cvx').value){const o=cvSrcParse(c.s
 $('cvoff').hidden=!!(c&&c.sup);$('cvoff').textContent=c?'The Feather needs firmware v30 for this'+(S.fw?' (it has v'+S.fw+')':'')+'; you can prepare and save the curve meanwhile.':'The QT Py needs firmware 46 for this.';if(!c)return;
 const n=cvNow(),dirty=cvDirty(),hs=S.hosts||[],cur=cvHosts(),key=JSON.stringify([n&&n.T,n&&n.sc&&n.sc.rms,c,hs,cur,cvErr,cvFits,dirty,S.c360]);
 $('cvsave').disabled=!n||!dirty&&!!c.n;$('cvdel').disabled=!c.n;$('cvfitb').disabled=!cvP;
-$('cvnow').textContent=!c.n?(n?'Not saved yet.':'No curve saved.'):dirty?'Changed: Save sends it to the Feather.':c.want?(c.applied&&c.on?'On: the Feather applies it now. The XIM\'s own curve should be linear.':'Sending to the Feather…'):'Saved; off on the host connected now'+(c.hosts.length?'.':' (on for no host).');
+$('cvnow').textContent=!c.n?(n?'Not saved yet.':'No curve saved.'):dirty?'Changed: Save sends it to the Feather.':c.temp?'Off for now: BallSheet is running with the curve off (it comes back by itself 12 s after BallSheet stops).':c.want?(c.applied&&c.on?'On: the Feather applies it now. The XIM\'s own curve should be linear.':'Sending to the Feather…'):'Saved; off on the host connected now'+(c.hosts.length?'.':' (on for no host).');
 if(key===cvKey)return;cvKey=key;
 $('cvhosts').innerHTML=hs.length?hs.map(x=>{const on=cur.includes(x[0]);return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'">'+esc(hostName(x))+'</button>'}).join(''):'<span class="mut">no host recognised yet</span>';
 $('cvhosts').querySelectorAll('button').forEach(b=>b.onclick=()=>cvHostTap(b.dataset.sig));

@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 47      // this firmware's number, shown in /api/status
+#define QT_FW 48      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -253,6 +253,10 @@ static uint32_t cv_sent_at = 0;
 static bool cv_reread = false;
 static uint16_t cv_sends = 0;
 static bool cv_force = false;  // fw47: as dg_force
+// fw48: BallSheet can run with the curve off (its reach-by-speed check compares runs with and without): off on the host
+// connected now until restore=1 or 12 s after the last keep-alive, never saved
+static bool cvt_off = false;
+static uint32_t cvt_keep_at = 0;
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
 // fw36: + the cursor speed the run used (BallSheet's %, 0 = not known: the page's runs, and runs from before fw36), so
 // the page and BallSheet can pool runs made at a similar speed (NVS "calib2"; "calib" is moved over once)
@@ -1369,7 +1373,7 @@ static void h_status() {
         bool sup = cv_supported() && ev_ok;
         j += "],\"src\":\"" + cv_src + "\",\"sup\":" + String(cv_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[60] & 1) ? "true" : "false") +
              ",\"got\":" + String(sup && (evb[60] & 2) ? "true" : "false") + ",\"want\":" + String(cv_wanted() ? "true" : "false") +
-             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + "}";
+             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + "}";  // fw48: temp = a BallSheet curve-off run
     }
     j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
     {  // fw43: the measured turn (Feather v27: status 246-251, read with the 192-255 block when a turn starts or ends)
@@ -2179,6 +2183,9 @@ static bool cv_supported() {
 }
 
 static bool cv_wanted() {  // on for the host connected now
+    if (cvt_off) {
+        return false;  // fw48: BallSheet's curve-off run
+    }
     for (uint8_t k = 0; auto_sig && (cv.n >= 2) && (k < cv.hn); k++) {
         if (cv.sig[k] == auto_sig) {
             return true;
@@ -2225,6 +2232,11 @@ static bool cv_applied() {  // the Feather holds the curve it should (status 252
 
 // as dg_tick: 252-253 come with the 192-255 block, so after sending, read it once more ourselves
 static void cv_tick() {
+    if (cvt_off && (millis() - cvt_keep_at > 12000)) {
+        cvt_off = false;  // fw48: BallSheet stopped checking in (before any other check: it must end even with the Feather away)
+        cv_force = true;
+        cv_sent_at = 0;
+    }
     if (!link_up || !cv_supported() || (cq_n > 0)) {
         return;
     }
@@ -2249,6 +2261,31 @@ static void cv_tick() {
         cv_reread = true;
         cv_sends++;
     }
+}
+
+// POST /api/cvtemp?off=1 | keep=1 | restore=1 (fw48): BallSheet's curve-off runs, see cvt_off
+static void h_cvtemp() {
+    touch();
+    if (server.hasArg("restore")) {
+        if (cvt_off) {
+            cvt_off = false;
+            cv_force = true;
+            cv_sent_at = 0;
+        }
+        return ok_json(true);
+    }
+    if (server.hasArg("keep")) {
+        cvt_keep_at = millis();
+        return ok_json(cvt_off);
+    }
+    if (!from_current_page()) {
+        return;
+    }
+    cvt_off = true;
+    cvt_keep_at = millis();
+    cv_force = true;
+    cv_sent_at = 0;  // send now
+    ok_json(true);
 }
 
 // POST /api/curve?sp=s0,...&g=g0,...&tau=ms&dpi=n&hosts=sig,sig&src=text: the speed curve (2-10 points, speeds in
@@ -3086,6 +3123,7 @@ void setup() {
     server.on("/api/turn", HTTP_POST, h_turn);  // fw43
     server.on("/api/c360", HTTP_POST, h_c360);  // fw43
     server.on("/api/curve", HTTP_POST, h_curve);  // fw46
+    server.on("/api/cvtemp", HTTP_POST, h_cvtemp);  // fw48
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
