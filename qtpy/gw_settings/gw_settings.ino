@@ -279,7 +279,8 @@ struct __attribute__((packed)) C360Rec {  // 12 bytes
     uint32_t t;      // Unix time
     uint16_t cm100;  // cm/360 x 100
     uint16_t sp10;   // the turn's speed, cm/s x 10
-    uint32_t dpi;    // the DPI it was measured at
+    uint32_t dpi;    // the DPI it was measured at (low 24 bits); fw48: bits 24-31 = what it was measured as (the page's
+                     // context list: 0 ADS 4.5x, the only one before, 1 hip, ...), so hip and ADS results never mix
 };
 static C360Rec c360[C360_KEEP];
 static uint8_t c360_n = 0;
@@ -1383,7 +1384,7 @@ static void h_status() {
              ",\"sent\":" + String((long) sent) + ",\"count\":" + String(sup && (st[56] >= 28) ? "true" : "false") + "}";
         j += ",\"c360\":[";
         for (uint8_t k = 0; k < c360_n; k++) {
-            j += String(k ? "," : "") + "[" + String(c360[k].t) + "," + String(c360[k].cm100) + "," + String(c360[k].sp10) + "," + String(c360[k].dpi) + "]";
+            j += String(k ? "," : "") + "[" + String(c360[k].t) + "," + String(c360[k].cm100) + "," + String(c360[k].sp10) + "," + String(c360[k].dpi & 0xFFFFFF) + "," + String(c360[k].dpi >> 24) + "]";  // fw48: [.., dpi, context]
         }
         j += "]";
     }
@@ -2400,7 +2401,7 @@ static void h_c360() {
         }
         return ok_json(false, "no result at that time");
     }
-    long cm = server.arg("cm").toInt(), sp = server.arg("sp").toInt(), dpi = server.arg("dpi").toInt();
+    long cm = server.arg("cm").toInt(), sp = server.arg("sp").toInt(), dpi = server.arg("dpi").toInt(), ctx = server.arg("ctx").toInt();  // fw48: ctx 0-255
     if ((cm < 100) || (cm > 60000) || (sp < 0) || (sp > 65535) || (dpi < 50) || (dpi > 100000)) {
         return ok_json(false, "need cm (x100), sp (cm/s x10) and dpi");
     }
@@ -2409,7 +2410,7 @@ static void h_c360() {
         for (int k = c360_n - 1; k > 0; k--) {
             bool newer = false;
             for (int i = 0; (i < k) && !newer; i++) {
-                newer = (c360[i].sp10 == c360[k].sp10);
+                newer = (c360[i].sp10 == c360[k].sp10) && ((c360[i].dpi >> 24) == (c360[k].dpi >> 24));  // fw48: per context
             }
             if (newer) {
                 drop = k;
@@ -2424,7 +2425,7 @@ static void h_c360() {
     c360[0].t = now_unix();
     c360[0].cm100 = (uint16_t) cm;
     c360[0].sp10 = (uint16_t) sp;
-    c360[0].dpi = (uint32_t) dpi;
+    c360[0].dpi = ((uint32_t) dpi & 0xFFFFFF) | ((uint32_t) (ctx & 0xFF) << 24);
     prefs.putBytes("c360", c360, sizeof(C360Rec) * c360_n);
     ok_json(true);
 }
