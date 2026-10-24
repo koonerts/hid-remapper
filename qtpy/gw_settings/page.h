@@ -929,7 +929,7 @@ function c3Ctx(){const s=$('c3ctx');return s?Number(s.value)||0:0}
 function c3L(){const ci=c3Cid();return(S&&S.c360||[]).filter(r=>(r[4]||0)===c3Ctx()&&(r[5]||0)===ci)}
 // which curve's results show: the user's pick, else the curve the Feather runs; 0 = from before curve ids (QT Py fw49)
 let c3CidPick=null;try{const v=localStorage.getItem('gw_c3cid');if(v!=null&&v!=='')c3CidPick=Number(v)}catch(e){}
-function c3Cid(){const a=S&&S.cv&&S.cv.id||0;return c3CidPick==null?a:c3CidPick}
+function c3Cid(){const a=S&&S.cv&&S.cv.id||0;if(c3CidPick!=null)return c3CidPick;const L=(S&&S.c360||[]).filter(r=>(r[4]||0)===c3Ctx());return a&&!L.some(r=>(r[5]||0)===a)&&L.some(r=>!(r[5]||0))?0:a}  // the running curve's results; while it has none yet, the ones from before curve ids
 function c3CidSet(){const v=Number($('c3cid').value),a=S&&S.cv&&S.cv.id||0;c3CidPick=v===a?null:v;try{localStorage.setItem('gw_c3cid',c3CidPick==null?'':String(v))}catch(e){}if(!c3.phase){c3.n=0;c3.hist=[]}c3.lk='';cvKey='';c3Draw();cvDraw()}
 function c3CidOpts(){const s=$('c3cid');if(!s)return;const a=S&&S.cv&&S.cv.id||0,L=(cvLib&&cvLib.curves)||[],cur=c3Cid();
 s.innerHTML=L.map(c=>'<option value="'+c.id+'">'+esc(c.name)+(c.id===a?' (running)':'')+'</option>').join('')+'<option value="0">before curve ids</option>';s.value=String(cur);
