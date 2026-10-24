@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 46      // this firmware's number, shown in /api/status
+#define QT_FW 47      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -146,6 +146,7 @@ static bool page_fs = false;
 static uint32_t page_fs_t = 0, page_fs_len = 0;
 static File page_up;
 static uint32_t page_up_len = 0;
+static bool page_up_ok = false;  // fw47: this request's upload reached its end with every byte written
 static uint8_t osd_n = 0;
 static uint16_t osd_seq = 0;
 static int16_t osd_stage = -1, osd_angle = 0x7FFF, osd_pos = 0x7FFF;  // last known values (sentinels: not yet)
@@ -231,6 +232,7 @@ static uint32_t dgt_keep_at = 0;
 static uint32_t dg_sent_at = 0;
 static bool dg_reread = false;
 static uint16_t dg_sends = 0;  // since boot, for /api/status
+static bool dg_force = false;  // fw47: send once even if the Feather's crc matches (an 8-bit crc can match a changed table)
 // fw46: the speed curve (Feather v30, gw_curve.cc): the XIM's ballistic curve done on the Feather, so the XIM can stay
 // linear. Points of hand speed (0.1 cm/s, rising) and gain (per mille), the speed's smoothing, the DPI when saved (the
 // Feather's fallback until it knows the mouse's), and the hosts it applies on. NVS "curve"; where it came from (the
@@ -250,6 +252,7 @@ static String cv_src;
 static uint32_t cv_sent_at = 0;
 static bool cv_reread = false;
 static uint16_t cv_sends = 0;
+static bool cv_force = false;  // fw47: as dg_force
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
 // fw36: + the cursor speed the run used (BallSheet's %, 0 = not known: the page's runs, and runs from before fw36), so
 // the page and BallSheet can pool runs made at a similar speed (NVS "calib2"; "calib" is moved over once)
@@ -1278,7 +1281,7 @@ static void h_osd() {
 static void h_status() {
     clock_sync();
     String j;
-    j.reserve(4096);  // fw33: the body is ~3-3.6 KB (was 2200: dozens of reallocs per poll)
+    j.reserve(6144);  // fw33: the body was ~3-3.6 KB (was 2200: dozens of reallocs per poll); fw47: ~5 KB with 24 cm/360 results and a curve
     j += "{\"link\":";
     j += link_up ? "true" : "false";
     if (st_ok) {
@@ -1948,9 +1951,10 @@ static void dg_tick() {
     if (dgt_on && (millis() - dgt_keep_at > 12000)) {
         dgt_on = false;  // fw42: BallSheet stopped checking in: back to the saved table
         dg_sent_at = 0;
+        dg_force = true;
     }
     bool want = dg_eff_want();
-    if (dg_applied() || (millis() - dg_sent_at < 1500)) {
+    if ((!dg_force && dg_applied()) || (millis() - dg_sent_at < 1500)) {
         return;
     }
     const uint16_t* g = dg_eff();
@@ -1961,6 +1965,7 @@ static void dg_tick() {
         d[2 + 2 * k] = g[k] >> 8;
     }
     if (queue_cmd(C_SET_DIRGAIN, d, 17)) {
+        dg_force = false;
         dg_sent_at = millis();
         dg_reread = true;
         dg_sends++;
@@ -1974,6 +1979,7 @@ static void h_dgtemp() {
         if (dgt_on) {
             dgt_on = false;
             dg_sent_at = 0;
+            dg_force = true;
         }
         return ok_json(true);
     }
@@ -1983,6 +1989,9 @@ static void h_dgtemp() {
     }
     if (!from_current_page()) {
         return;
+    }
+    if (!dg_supported()) {
+        return ok_json(false, "the Feather has no direction gains (v24+)");
     }
     long v[8];
     if (!csv8(server.arg("g"), 500, 2000, v)) {
@@ -1994,6 +2003,7 @@ static void h_dgtemp() {
     dgt_on = true;
     dgt_keep_at = millis();
     dg_sent_at = 0;  // send now
+    dg_force = true;
     ok_json(true);
 }
 
@@ -2054,6 +2064,7 @@ static void h_dirgain() {
     prefs.putBytes("dgain", &dg, sizeof(dg));
     log_edit(EK_DIRGAIN, String(n) + (n == 1 ? " host" : " hosts"));
     dg_sent_at = 0;  // send now
+    dg_force = true;
     ok_json(true);
 }
 
@@ -2214,12 +2225,13 @@ static void cv_tick() {
         }
         return;
     }
-    if (!ev_ok || cv_applied() || (millis() - cv_sent_at < 1500)) {
+    if (!ev_ok || (!cv_force && cv_applied()) || (millis() - cv_sent_at < 1500)) {
         return;
     }
     uint8_t d[4 + 4 * CV_N];
     uint8_t len = cv_payload(d);
     if (queue_cmd(C_SET_CURVE, d, len)) {
+        cv_force = false;
         cv_sent_at = millis();
         cv_reread = true;
         cv_sends++;
@@ -2262,8 +2274,8 @@ static void h_curve() {
         }
     }
     long tau = server.hasArg("tau") ? server.arg("tau").toInt() : 8, dpi = server.arg("dpi").toInt();
-    if ((tau < 1) || (tau > 200) || (dpi < 0) || (dpi > 65535)) {
-        return ok_json(false, "tau 1-200 ms, dpi 0-65535");
+    if ((tau < 1) || (tau > 200) || (dpi < 0) || (dpi > 65535) || (n && (dpi < 50))) {
+        return ok_json(false, "tau 1-200 ms, dpi 50-65535 (the Feather's fallback while it can't read the mouse's)");
     }
     uint32_t sig[HPROF_MAX];
     uint8_t hn = 0;
@@ -2312,6 +2324,7 @@ static void h_curve() {
     }
     log_edit(EK_CURVE, n ? String(hn) + (hn == 1 ? " host" : " hosts") : String("off"));
     cv_sent_at = 0;  // send now
+    cv_force = true;
     ok_json(true);
 }
 
@@ -2868,14 +2881,19 @@ static void h_page_upload() {
             fs_ok = FFat.begin(true);  // the first upload formats the partition (a few seconds)
         }
         page_up = fs_ok ? FFat.open("/page.tmp", "w") : File();
+        page_up_ok = (bool) page_up;
     } else if (u.status == UPLOAD_FILE_WRITE) {
-        if (page_up) {
-            page_up.write(u.buf, u.currentSize);
+        if (!page_up || (page_up.write(u.buf, u.currentSize) != u.currentSize)) {
+            page_up_ok = false;  // fw47: a short write is a broken page
         }
         page_up_len += u.currentSize;
     } else if ((u.status == UPLOAD_FILE_END) || (u.status == UPLOAD_FILE_ABORTED)) {
         if (page_up) {
             page_up.close();
+        }
+        if (u.status == UPLOAD_FILE_ABORTED) {
+            page_up_ok = false;
+            FFat.remove("/page.tmp");  // fw47: a dropped upload mustn't be installed by a later request
         }
     }
 }
@@ -2883,6 +2901,11 @@ static void h_page_upload() {
 // POST /api/page (multipart "file": the gzipped page) | ?reset=1 back to the built-in page (fw41)
 static void h_page_done() {
     touch();
+    bool up = page_up_ok;
+    page_up_ok = false;
+    if (radio != Radio::STA) {
+        return ok_json(false, "only on the home network");  // fw47: as /api/update (the setup network is open)
+    }
     if (server.hasArg("reset")) {
         if (fs_ok) {
             FFat.remove("/page.gz");
@@ -2895,7 +2918,7 @@ static void h_page_done() {
         return ok_json(false, "no file system");
     }
     File f = FFat.open("/page.tmp", "r");
-    bool good = f && (f.size() > 1024) && (f.read() == 0x1f) && (f.read() == 0x8b);
+    bool good = up && f && (f.size() == page_up_len) && (f.size() > 1024) && (f.read() == 0x1f) && (f.read() == 0x8b);
     if (f) {
         f.close();
     }
@@ -2986,9 +3009,10 @@ void setup() {
     fs_ok = FFat.begin(false);  // fw41: an uploaded page (no format here: an unformatted partition waits for the first upload)
     page_fs_load();
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
-    if (prefs.getBytes("curve", &cv, sizeof(cv)) != sizeof(cv) || (cv.n > CV_N)) {
+    if (prefs.getBytes("curve", &cv, sizeof(cv)) != sizeof(cv) || (cv.n > CV_N) || (cv.hn > HPROF_MAX) || (cv.tau < 1) || (cv.tau > 200)) {
         cv.n = 0;
         cv.hn = 0;
+        cv.tau = 8;
     }
     dg_src = prefs.getString("dgsrc", "");  // fw39: where the gains came from
     dg_src_t = prefs.getULong("dgsrct", 0);

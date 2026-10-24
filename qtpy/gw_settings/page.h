@@ -46,7 +46,7 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 .c3s{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--soft)}
 .c3s h3{font-size:14px;font-weight:650;margin:0 0 6px}.c3s>.mut{margin:0 0 10px}
 .c3b{margin-top:10px}.c3st{margin:10px 0 0;min-height:1.35em;font-variant-numeric:tabular-nums}
-.c3t tr.old td{color:var(--mut)}.c3t tr.old b{font-weight:400}.c3t td:nth-child(2){font-variant-numeric:tabular-nums}
+.c3t tr.old td{color:var(--mut)}.c3lg{margin-top:10px}.c3lg summary{cursor:pointer;color:var(--mut)}.c3lg summary button{margin-left:8px;padding:2px 10px}#c3log td{vertical-align:top}#c3log tr.now td{background:var(--soft)}#c3log .neg{color:var(--bad)}#c3log .pos{color:var(--ok)}#c3log td span+span::before{content:' · ';color:var(--mut)}.c3t tr.old b{font-weight:400}.c3t td:nth-child(2){font-variant-numeric:tabular-nums}
 #c3plot{width:100%;height:auto;display:block}#c3plot text{fill:var(--mut);font-size:11px}#c3plot .gl{stroke:var(--line)}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
@@ -236,7 +236,8 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut" id="c3from" style="margin:10px 0 0"></p>
 <div class="row c3b"><button class="p" id="c3go" onclick="c3Turn()">Turn</button><button id="c3stop" onclick="c3Stop()">Stop</button><button id="c3reset" onclick="c3Reset()">Start over</button></div>
 <p class="c3st" id="c3now"></p>
-<div class="row c3b" id="c3ans" hidden><button class="sq" id="c3L" aria-label="Hold to turn left" title="Hold to turn left (or the left arrow key)">◀</button><button class="sq" id="c3R" aria-label="Hold to turn right" title="Hold to turn right (or the right arrow key)">▶</button><button class="p" id="c3back" onclick="c3Back()">Back on the marker</button><button id="c3ex" onclick="c3Exact()">It stopped right on it: save</button><label class="mut">tap step <select id="c3step" onchange="this.blur()" style="width:auto"><option value="0.25" selected>0.25°</option><option value="0.5">0.5°</option><option value="1">1°</option><option value="2">2°</option></select></label></div></section>
+<div class="row c3b" id="c3ans" hidden><button class="sq" id="c3L" aria-label="Hold to turn left" title="Hold to turn left (or the left arrow key)">◀</button><button class="sq" id="c3R" aria-label="Hold to turn right" title="Hold to turn right (or the right arrow key)">▶</button><button class="p" id="c3back" onclick="c3Back()">Back on the marker</button><button id="c3ex" onclick="c3Exact()">It stopped right on it: save</button><label class="mut">tap step <select id="c3step" onchange="this.blur()" style="width:auto"><option value="0.25" selected>0.25°</option><option value="0.5">0.5°</option><option value="1">1°</option><option value="2">2°</option></select></label></div>
+<details class="c3lg" id="c3logbox" open hidden><summary>Tries this session <button type="button" onclick="event.preventDefault();c3LogCopy()">Copy</button></summary><table class="c3t" id="c3log"></table><p class="mut" style="margin:6px 0 0">Every turn and each hold and step after it. Holds run at the turn's speed; steps (@ their cm/s) are converted to it with your curve. Next = the try that Back on the marker set.</p></details></section>
 </div>
 <div class="c3g" id="c3res" hidden><div><svg id="c3plot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed"></svg></div>
 <div><table class="c3t" id="c3list"></table><p class="mut" style="margin:6px 0 0">The newest result at each speed counts (older ones are grey); BallSheet reads cm/360 between them at your flick speed.</p></div></div>
@@ -835,7 +836,7 @@ if(touched)return false;location.replace('http://'+ip+'/');return true}
 // everything but the style, so equal stamps mean only the style changed.
 let pgKey=null,pgNew=false,pgFetching=false;
 function pgKeyOf(j){return j.qt_fw+':'+(j.page&&j.page.fs?j.page.t+':'+j.page.len:'built-in')}
-function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.phase||c3.n||cvDirty()||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
+function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.phase||c3.n||c3.log.length||cvDirty()||cvHostsNew||(cvErr&&$('cvx').value)||(S&&S.turn&&S.turn.state===7&&S.turn.run!==c3.csaved)||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
 (a&&a!==document.body&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=='range'&&a.type!=='checkbox'&&a.type!=='color'))}
 // back to where it was: the cards below fill in over a few seconds, so keep trying until the page is that tall (or you scroll)
 function pgScroll(want){const t0=Date.now();let stop=false;['wheel','pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,()=>{stop=true},{once:true,passive:true}));
@@ -906,14 +907,14 @@ $('lvagain').onclick=()=>lvBegin();
 // itself, starting from your newest result; you bring the crosshair back onto the marker by hand while the Feather
 // counts that correction (count mode again), and the next turn adds it, from right there. No small nudges sent by the
 // Feather: the XIM turns short bursts unreliably. Results are kept on the QT Py (c360).
-let c3={n:0,sp:0,tn:1,phase:'',run:-1,crun:-1,at:0,dur:0,msg:'',lk:'',csaved:-1,corr:0,held:0,seg:-1,segBusy:false,relQ:false,hist:[],press:null,pend:0,segScale:1};  // phase: turn, correct (holding ◀ ▶ until back on the marker)
+let c3={n:0,sp:0,tn:1,phase:'',run:-1,crun:-1,at:0,dur:0,msg:'',lk:'',csaved:-1,corr:0,held:0,seg:-1,segBusy:false,relQ:false,hist:[],press:null,pend:0,segScale:1,log:[],cur:null,lost:null,waitRun:-1,waitAt:0,saving:false};  // phase: turn, correct (holding ◀ ▶ until back on the marker)
 // fw44 (Feather v28): count mode, you turn by hand and the Feather counts the X that reaches the XIM; live every 0.2 s
 function c3Count(){const t=S.turn;if(!t||c3.phase)return;if(t.state===6){post('/api/turn?stop=1');return}post('/api/turn?count=1').then(r=>{if(!(r&&r.ok))toast('Not started: '+(r&&r.err||'no answer'),true)})}
-function c3CSave(){const t=S.turn,cpc=c3Cpc(),tn=Number($('c3ctn').value);if(!t||t.state!==7||!cpc||!t.sent||t.run===c3.crun)return;const cm=Math.abs(t.sent)/cpc/tn;
-post('/api/c360?cm='+Math.round(cm*100)+'&sp=0&dpi='+Math.round(cpc*2.54)).then(r=>{if(r&&r.ok){c3.csaved=t.run;toast('Saved: '+cm.toFixed(2)+' cm/360 (by hand)');c3Draw()}else toast('Not saved: '+(r&&r.err||'no answer'),true)})}
+function c3CSave(){const t=S.turn,cpc=c3Cpc(),tn=Number($('c3ctn').value);if(!t||t.state!==7||!cpc||!t.sent||t.run===c3.crun||c3.saving)return;const cm=Math.abs(t.sent)/cpc/tn;c3.saving=true;
+post('/api/c360?cm='+Math.round(cm*100)+'&sp=0&dpi='+Math.round(cpc*2.54)).then(r=>{c3.saving=false;if(r&&r.ok){c3.csaved=t.run;toast('Saved: '+cm.toFixed(2)+' cm/360 (by hand)');c3Draw()}else toast('Not saved: '+(r&&r.err||'no answer'),true)})}
 function c3Cpc(){const d=S&&S.stage!=null&&S.dpi&&S.dpi[S.stage];return d&&d[0]?d[0]/2.54:0}
 // the newest fixed-speed result per speed, by speed: [cm/s, cm/360]
-function c3Pts(){const L=S&&S.c360||[],by={};L.forEach(r=>{if(r[2]>0&&!(r[2] in by))by[r[2]]=r});return Object.values(by).sort((a,b)=>a[2]-b[2]).map(r=>[r[2]/10,r[1]/100])}
+function c3Pts(){const L=S&&S.c360||[],by={},d0=L.length?L[0][3]:0;L.forEach(r=>{if(r[2]>0&&r[3]===d0&&!(r[2] in by))by[r[2]]=r});return Object.values(by).sort((a,b)=>a[2]-b[2]).map(r=>[r[2]/10,r[1]/100])}
 // where a check at sp cm/s starts: your curve there (between the two nearest speeds, in log speed; held at the ends), else your by-hand count
 function c3At(sp){const P=c3Pts();if(!P.length){const h=(S&&S.c360||[]).find(r=>!r[2]);return h?[h[1]/100,'your by-hand count']:[0,'']}
 if(sp<=P[0][0])return[P[0][1],P[0][0]===sp?'your result at '+sp+' cm/s':'your slowest result ('+P[0][0]+' cm/s)'];const z=P[P.length-1];if(sp>=z[0])return[z[1],z[0]===sp?'your result at '+sp+' cm/s':'your fastest result ('+z[0]+' cm/s)'];
@@ -928,9 +929,10 @@ if(H)s+='<line class="hl" x1="'+X0+'" y1="'+f(ly(hc))+'" x2="'+X1+'" y2="'+f(ly(
 if(P.length>1)s+='<polyline class="cv" points="'+P.map(p=>f(lx(p[0]))+','+f(ly(p[1]))).join(' ')+'"/>';// labels: above the point, or below it when the one before sits close by (alternating); kept inside the edges
 let lastX=-1e9,up=true;P.forEach(p=>{const x=lx(p[0]),y=ly(p[1]);up=x-lastX<34?!up:true;lastX=x;const ty=up?y-9:y+17,anc=x>X1-16?'end':x<X0+16?'start':'middle';
 s+='<circle class="pt" cx="'+f(x)+'" cy="'+f(y)+'" r="4"/><text class="pl" x="'+f(anc==='end'?x+4:anc==='start'?x-4:x)+'" y="'+f(ty)+'" text-anchor="'+anc+'">'+p[1].toFixed(1)+'</text>'});svg.innerHTML=s}
-function c3Reset(){if(c3.held||c3.segBusy)post('/api/turn?stop=1');c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3Draw()}
+function c3Reset(){if(c3.held||c3.segBusy){post('/api/turn?stop=1');c3.waitRun=c3.seg;c3.waitAt=Date.now()}  // audit 10-23: the next Turn waits for that run's end
+if(c3.cur){c3.cur.rule='start over';c3LogPush()}c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3.pend=0;c3.lost=null;if(c3.press){clearTimeout(c3.press.timer);c3.press=null}c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=c3From(),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
-if(!S.turn||!S.turn.sup||!cpc||c3.phase)return;if(sp!==c3.sp){c3.n=0;c3.hist=[]}c3.sp=sp;c3.tn=tn;  // another speed starts again from your curve there
+if(!S.turn||!S.turn.sup||!cpc||c3.phase||c3.waitRun>=0)return;if(sp!==c3.sp){c3.n=0;c3.hist=[]}c3.sp=sp;c3.tn=tn;  // another speed starts again from your curve there
 if(!c3.n){if(!(e>=2&&e<=300)){toast('Count your own turns first: the check starts from that result',true);return}c3.n=Math.round(e*cpc)}
 const total=c3.n*tn,dur=total/(sp*cpc)*1000,lim=S.fw>=29?118000:28000;if(dur>lim){toast('Too long for one turn ('+(S.fw>=29?'2 min':'30 s')+' at most): a faster speed or fewer turns',true);return}
 c3.run=(S.turn.run+1)&255;c3.phase='turn';c3.at=Date.now();c3.dur=dur;c3.msg='Turning'+(tn>1?' '+tn+' times':'')+'… hands off the mouse.';c3Draw();
@@ -939,10 +941,10 @@ function c3Stop(){post('/api/turn?stop=1')}
 // after a turn: hold ◀ / ▶ (or the arrow keys) and the Feather turns at the same speed until you let go; the page adds
 // up exactly what it sent (a hand correction is slower, and this chain turns much less per cm when slow). At most 30°
 // a hold, in case a release gets lost.
-async function c3Hold(dir,on){if(c3.phase!=='correct')return;const cpc=c3Cpc();
-if(on){if(c3.held||c3.segBusy)return;c3.held=dir;c3.segBusy=true;c3.segScale=1;c3.relQ=false;c3.seg=(S.turn.run+1)&255;c3.at=Date.now();c3Draw();
+async function c3Hold(dir,on){if(c3.phase!=='correct'||(on&&c3.lost))return;const cpc=c3Cpc();
+if(on){if(c3.held||c3.segBusy)return;c3.held=dir;c3.segBusy=true;c3.segScale=1;c3.segV=c3.sp;c3.relQ=false;c3.seg=(S.turn.run+1)&255;c3.at=Date.now();c3Draw();
 const r=await post('/api/turn?n='+Math.max(1,Math.round(c3.n*30/360))*dir+'&r='+Math.round(c3.sp*cpc)+'&hand='+Math.round(cpc*0.2));
-if(!r||!r.ok){c3.held=0;c3.segBusy=false;toast('Not started: '+(r&&r.err||'no answer'),true);c3Draw();return}if(c3.relQ)post('/api/turn?stop=1');return}
+if(r&&!r.ok){c3.held=0;c3.segBusy=false;toast('Not started: '+(r.err||'refused'),true);c3Draw();return}if(!r){c3.held=0;post('/api/turn?stop=1');c3Draw();return}if(c3.relQ)post('/api/turn?stop=1');return}  // no answer: it may have started (its report is still counted)
 if(!c3.held)return;c3.held=0;c3.relQ=true;c3.at=Date.now();post('/api/turn?stop=1');c3Draw()}
 // a tap (under 1/4 s): one step of the chosen size at the same speed, exact because the Feather sends a set count and
 // stops by itself (a hold's stop comes ~0.1-0.2 s late, which at 20 cm/s is several degrees); taps while one runs add up
@@ -952,16 +954,20 @@ function c3Tap(dir){if(c3.phase!=='correct')return;c3.pend+=dir*Math.max(1,Math.
 // steps run at 5 cm/s (or the session's speed if slower, or slower still so a step lasts 40 ms): a few-ms burst at
 // 40 cm/s falls between the game's frames and turns nothing. What a step turned is converted to the session's speed with
 // your curve (cm/360 there / cm/360 at the step's speed): this chain turns less per cm when slow.
-async function c3StepGo(){if(c3.segBusy||c3.held||!c3.pend)return;const n=c3.pend,cpc=c3Cpc(),v=Math.max(0.5,Math.min(c3.sp,5,Math.abs(n)/cpc/0.04)),a=c3At(c3.sp)[0],b=c3At(v)[0];
-c3.pend=0;c3.segBusy=true;c3.segScale=a>0&&b>0?a/b:1;c3.seg=(S.turn.run+1)&255;c3.at=Date.now();c3Draw();
-const r=await post('/api/turn?n='+n+'&r='+Math.max(10,Math.round(v*cpc))+'&hand='+Math.round(cpc*0.2));if(!r||!r.ok){c3.segBusy=false;toast('Not sent: '+(r&&r.err||'no answer'),true);c3Draw()}}
+// c3.pend is in counts at the session's speed; the step sends pend / scale counts at its own speed (audit 10-23: it sent
+// pend, so a "0.25°" step turned only ~0.2°)
+async function c3StepGo(){if(c3.segBusy||c3.held||!c3.pend||c3.lost)return;const cpc=c3Cpc(),a=c3At(c3.sp)[0],sv=n=>Math.max(0.5,Math.min(c3.sp,5,Math.abs(n)/cpc/0.04)),sc=v=>{const b=c3At(v)[0];return a>0&&b>0?a/b:1};
+let v=sv(c3.pend),s=sc(v);v=sv(c3.pend/s);s=sc(v);const n=Math.round(c3.pend/s)||Math.sign(c3.pend);
+c3.pend=0;c3.segBusy=true;c3.segScale=s;c3.segV=v;c3.seg=(S.turn.run+1)&255;c3.at=Date.now();c3Draw();
+const r=await post('/api/turn?n='+n+'&r='+Math.max(10,Math.round(v*cpc))+'&hand='+Math.round(cpc*0.2));if(r&&!r.ok){c3.segBusy=false;toast('Not sent: '+(r.err||'refused'),true);c3Draw()}}  // no answer: it may have run (its report is still counted)
 // back on the marker: the next try is this turn plus the holds; once two corrections bracket it, where their straight
 // line crosses 0 (robust to a little extra at each start, e.g. a ramp in the game's turning)
-function c3Back(){if(c3.phase!=='correct'||c3.held||c3.segBusy||c3.pend||c3.press)return;const nk=c3.n,dk=c3.corr/c3.tn,h=c3.hist;let nx=nk+dk;
+function c3Back(){if(c3.phase!=='correct'||c3.held||c3.segBusy||c3.pend||c3.press||c3.lost)return;const nk=c3.n,dk=c3.corr/c3.tn,h=c3.hist;let nx=nk+dk;
 if(h.length){const p=h[h.length-1];if(p[1]*dk<0)nx=nk-dk*(nk-p[0])/(dk-p[1])}h.push([nk,dk]);const dc=c3.corr/c3Cpc();
+if(c3.cur){c3.cur.corr=c3.corr;c3.cur.next=Math.max(1,Math.round(nx));c3.cur.rule=nx!==nk+dk?'between the last two':'this + correction';c3LogPush()}
 c3.n=Math.max(1,Math.round(nx));c3.corr=0;c3.phase='';c3.msg='Correction: '+(dc>=0?'+':'')+dc.toFixed(2)+' cm. Turn again from here (no need to line up); when a turn stops right on the marker, save it.';c3Draw()}
-function c3Exact(){const cpc=c3Cpc();if(!c3.n||!cpc||c3.held||c3.segBusy||c3.corr)return;const cm=c3.n/cpc,sp=c3.sp;
-post('/api/c360?cm='+Math.round(cm*100)+'&sp='+Math.round(sp*10)+'&dpi='+Math.round(cpc*2.54)).then(r=>{if(r&&r.ok){toast('Saved: '+cm.toFixed(2)+' cm/360 at '+sp+' cm/s');c3.phase='';c3Reset()}else toast('Not saved: '+(r&&r.err||'no answer'),true)})}
+function c3Exact(){const cpc=c3Cpc();if(!c3.n||!cpc||c3.held||c3.segBusy||c3.corr||c3.saving)return;const cm=c3.n/cpc,sp=c3.sp;c3.saving=true;
+post('/api/c360?cm='+Math.round(cm*100)+'&sp='+Math.round(sp*10)+'&dpi='+Math.round(cpc*2.54)).then(r=>{c3.saving=false;if(r&&r.ok){toast('Saved: '+cm.toFixed(2)+' cm/360 at '+sp+' cm/s');if(c3.cur){c3.cur.rule='saved';c3LogPush()}c3.phase='';c3Reset()}else toast('Not saved: '+(r&&r.err||'no answer'),true)})}
 // ---- QT Py fw46: the speed curve (Feather v30, gw_curve.cc)
 // The XIM's ballistic curve from its Copy string (XMBC:<base64>:XMBC): a 4-byte big-endian length, then zlib; inside,
 // the QString "XMBC" (4-byte length + UTF-16), a 4-byte stamp, a 4-byte lead and 20 (x, y) u16-LE points scaled
@@ -971,7 +977,7 @@ async function cvDecode(s){const m=/XMBC:([A-Za-z0-9+/=]+):XMBC/.exec(s||'');if(
 const b=Uint8Array.from(atob(m[1]),c=>c.charCodeAt(0)),d=new Uint8Array(await new Response(new Blob([b.slice(4)]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
 if(d.length<102||d[5]!==88||d[7]!==77)throw Error('not an XIM ballistic curve');const P=[[0,0]];
 for(let k=0;k<20;k++){const o=20+4*k,x=d[o]|d[o+1]<<8,y=d[o+2]|d[o+3]<<8;if(x===65535)break;if(x||y)P.push([x/1e4,y/1e4])}
-if(P.length<2)throw Error('the curve has no points');return P}
+if(P.length<2)throw Error('the curve has no points');if(P.some((p,i)=>p[0]>1.0001||p[1]>2||(i&&p[0]<P[i-1][0]))||P[P.length-1][0]<=0)throw Error('the curve\'s points don\'t run forwards from 0 to 100%');return P}
 function cvDegs(P){return[3,2,1].filter(d=>(P.length-1)%d===0)}
 // output/input at input X (0-1; held past the last point); deg 3/2 = Bézier stretches, 1 = straight lines
 function cvRatio(P,X,deg){const z=P[P.length-1];if(X>=z[0])return z[1]/z[0];X=Math.max(X,1e-4);
@@ -991,7 +997,7 @@ return pick.sort((a,b)=>a-b).map(i=>[Math.round(G[i][0]*10),Math.min(4000,Math.m
 function cvGain(T,v){if(v<=T[0][0]/10)return T[0][1]/1000;for(let k=1;k<T.length;k++)if(v<T[k][0]/10){const a=T[k-1],e=T[k];return(a[1]+(e[1]-a[1])*(v-a[0]/10)/((e[0]-a[0])/10))/1000}return T[T.length-1][1]/1000}
 let cvP=null,cvErr='',cvKey='',cvLoaded=false,cvHostsNew=null,cvFits=null;
 function cvSrcParse(s){const o={};(s||'').split(';').forEach((p,i)=>{if(!i)o.x=p;else{const e=p.indexOf('=');if(e>0)o[p.slice(0,e)]=p.slice(e+1)}});return o}
-async function cvImport(){const s=$('cvx').value.trim();cvP=null;cvErr='';cvFits=null;if(s){try{cvP=await cvDecode(s)}catch(e){cvErr=e.message}}
+async function cvImport(){const s=$('cvx').value.trim();cvP=null;cvErr='';cvFits=null;if(s){try{cvP=await cvDecode(s)}catch(e){cvErr=e.message||'not an XIM curve string'}}
 if(cvP){const ok=cvDegs(cvP);[...$('cvdeg').options].forEach(o=>o.disabled=!ok.includes(+o.value));if(!ok.includes(+$('cvdeg').value))$('cvdeg').value=ok[0];if(!$('cvv').value)cvFitNow(true)}cvKey='';cvDraw()}
 function cvFitNow(quiet){if(!cvP)return;const M=c3Pts();if(M.length<3){if(!$('cvv').value)$('cvv').value=72;if(!quiet)toast('Needs 3 fixed-speed results (cm/360 in game)',true);cvKey='';cvDraw();return}
 cvFits=cvDegs(cvP).map(d=>cvFit(cvP,M,d)).sort((a,b)=>a.rms-b.rms);$('cvv').value=cvFits[0].v100;$('cvdeg').value=cvFits[0].deg;cvKey='';cvDraw()}
@@ -1035,19 +1041,31 @@ const nm={3:'curved, 2 control points',2:'curved, 1 control point',1:'straight l
 $('cvfit').textContent=cvErr?cvErr:!n?(cvP?'Set where the curve ends (cm/s of hand speed) and the smoothing.':''):(n.sc?'Matches your '+n.M.length+' fixed-speed results within '+(n.sc.rms*100).toFixed(1)+'% (rms). With the XIM linear at its sensitivity now: '+n.sc.S.toFixed(1)+' cm/360. ':'No fixed-speed results to fit to: 100% is a guess. ')+
 (cvFits&&cvFits.length>1?'Other readings: '+cvFits.slice(1).map(f=>nm[f.deg]+' '+(f.rms*100).toFixed(1)+'% at '+f.v100+' cm/s').join(', ')+'. ':'')+n.T.length+' points to the Feather, from '+(n.T[0][1]/10).toFixed(1)+'% at '+(n.T[0][0]/10)+' cm/s to '+(n.T[n.T.length-1][1]/10).toFixed(1)+'% at '+(n.T[n.T.length-1][0]/10)+' cm/s.';
 cvPlot(n)}
+// this session's tries (audit 10-23, the user's ask): each turn, every hold and step after it as sent and as credited at
+// the session's speed, what the next try became and why. Page memory only (newest 40); Copy gives it as text.
+function c3LogPush(){const c=c3.cur;if(!c)return;c3.cur=null;c3.log.unshift(c);c3.log.length=Math.min(c3.log.length,40);c3LogDraw()}
+function c3SegTxt(s,cpc){return(s.cr>=0?'+':'')+(s.cr/cpc).toFixed(2)+' '+s.k+(s.k==='step'?' @'+(+s.v).toFixed(1):'')+(s.late?' (late)':'')}
+function c3TryTxt(c,cpc){return new Date(c.t).toLocaleTimeString()+' | '+c.sp+' cm/s'+(c.tn>1?' x'+c.tn:'')+' | try '+(c.n/cpc).toFixed(2)+' | '+(c.segs.length?c.segs.map(s=>c3SegTxt(s,cpc)).join(', '):'no corrections')+
+(c.corr!=null?' | total '+(c.corr>=0?'+':'')+(c.corr/cpc).toFixed(2):'')+(c.next?' | next '+(c.next/cpc).toFixed(2)+' ('+c.rule+')':c.rule?' | '+c.rule:'')}
+function c3LogDraw(){const box=$('c3logbox'),cpc=c3Cpc(),L=c3.cur?[c3.cur].concat(c3.log):c3.log;box.hidden=!L.length||!cpc;if(box.hidden)return;
+$('c3log').innerHTML='<tr><th>When</th><th>Try</th><th>Corrections (cm, as at the turn\'s speed)</th><th>Total</th><th>Next</th></tr>'+L.map((c,i)=>'<tr'+(c===c3.cur?' class="now"':'')+'><td>'+esc(new Date(c.t).toLocaleTimeString())+'<br><span class="mut">'+c.sp+' cm/s</span></td><td><b>'+(c.n/cpc).toFixed(2)+'</b></td><td>'+
+(c.segs.length?c.segs.map(s=>'<span class="'+(s.cr<0?'neg':'pos')+'">'+esc(c3SegTxt(s,cpc))+'</span>').join(' '):'<span class="mut">'+(c===c3.cur?'correcting…':'none')+'</span>')+'</td><td>'+(c.corr!=null?(c.corr>=0?'+':'')+(c.corr/cpc).toFixed(2):c===c3.cur?(c3.corr>=0?'+':'')+(c3.corr/cpc).toFixed(2):'')+'</td><td>'+(c.next?(c.next/cpc).toFixed(2)+'<br><span class="mut">'+esc(c.rule)+'</span>':c.rule?'<span class="mut">'+esc(c.rule)+'</span>':'')+'</td></tr>').join('')}
+function c3LogCopy(){const cpc=c3Cpc(),L=c3.cur?[c3.cur].concat(c3.log):c3.log;navigator.clipboard.writeText(L.slice().reverse().map(c=>c3TryTxt(c,cpc)).join('\n')).then(()=>toast('Copied '+L.length+' tries'),()=>toast('Copy failed',true))}
 function c3Del(t){post('/api/c360?del='+t).then(r=>{if(!(r&&r.ok))toast('Not removed',true)})}
-function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&&t.sup&&cpc);
-if(c3.phase==='turn'&&t&&t.run===c3.run&&t.state!==1){if(t.state===2){c3.phase='correct';c3.corr=0;c3.held=0;c3.segBusy=false;c3.msg=''}
-else{c3.phase='';c3.msg=t.state===3?'Stopped: the mouse moved. Let go of it during a turn, line up again, then Turn.':t.state===4?'Stopped.':t.state===5?'Stopped: the turn ran too long.':''}}
+function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&&t.sup&&cpc);setTimeout(c3LogDraw,0);
+if(c3.phase==='turn'&&t&&t.run===c3.run&&t.state!==1){if(t.state===2){c3.phase='correct';c3.corr=0;c3.held=0;c3.segBusy=false;c3.msg='';c3.pend=0;c3.lost=null;c3.cur={t:Date.now(),sp:c3.sp,tn:c3.tn,n:c3.n,segs:[]}}
+else{if(t.state>=3){c3.cur={t:Date.now(),sp:c3.sp,tn:c3.tn,n:c3.n,segs:[],rule:t.state===3?'stopped: mouse moved':t.state===4?'stopped':'too long'};c3LogPush()}c3.phase='';c3.msg=t.state===3?'Stopped: the mouse moved. Let go of it during a turn, line up again, then Turn.':t.state===4?'Stopped.':t.state===5?'Stopped: the turn ran too long.':''}}
 if(c3.phase==='turn'&&Date.now()-c3.at>c3.dur+8000){c3.phase='';c3.msg='No word from the Feather about the turn: try again.'}
-if(c3.segBusy&&t&&t.run===c3.seg&&t.state!==1){c3.corr+=Math.round(t.sent*c3.segScale);c3.segBusy=false;c3.held=0;  /* a hold that ended by itself (30° cap) is over: nothing waits on a release */ if(t.state===3)toast('A step stopped: the mouse moved',true);if(c3.pend)setTimeout(c3StepGo,0)}  // a hold or step ended: add what it turned; queued taps next
-if(c3.segBusy&&!c3.held&&Date.now()-c3.at>8000){c3.segBusy=false;c3.msg='No word from the Feather about the last hold: Start over to be sure.'}
+if(c3.lost&&t&&t.run===c3.lost.seg&&t.state!==1){const cr=Math.round(t.sent*c3.lost.scale);c3.corr+=cr;if(c3.cur)c3.cur.segs.push({k:c3.lost.v===c3.sp?'hold':'step',sent:t.sent,cr,v:c3.lost.v,late:1});c3.lost=null}  // a report after the 8 s wait
+if(c3.segBusy&&t&&t.run===c3.seg&&t.state!==1){const cr=Math.round(t.sent*c3.segScale);c3.corr+=cr;if(c3.cur)c3.cur.segs.push({k:c3.segScale===1&&c3.segV===c3.sp?'hold':'step',sent:t.sent,cr,v:c3.segV||c3.sp});c3.segBusy=false;c3.held=0;  /* a hold that ended by itself (30° cap) is over: nothing waits on a release */ if(t.state===3)toast('A step stopped: the mouse moved',true);if(c3.pend)setTimeout(c3StepGo,0)}  // a hold or step ended: add what it turned; queued taps next
+if(c3.segBusy&&!c3.held&&Date.now()-c3.at>8000){c3.segBusy=false;c3.lost={seg:c3.seg,scale:c3.segScale,v:c3.segV||c3.sp}}  // audit 10-23: was dropped (its turn never counted, the warning hidden)
+if(c3.waitRun>=0&&((t&&t.run===c3.waitRun&&t.state!==1)||Date.now()-c3.waitAt>4000))c3.waitRun=-1;
 $('c3off').hidden=ok;$('c3off').textContent=!(t&&t.sup)?'Needs Feather firmware v27 or newer.':'The DPI isn\'t known yet: Read from mouse.';
 const mine=!!(t&&t.run===c3.crun&&(t.state===6||t.state===7));
-$('c3go').disabled=!ok||!!c3.phase||(t.state===6&&!mine)||!c3From();$('c3stop').disabled=c3.phase!=='turn';$('c3reset').disabled=c3.phase==='turn'||!c3.n;
-$('c3ans').hidden=c3.phase!=='correct';$('c3back').disabled=!!(c3.held||c3.segBusy||c3.pend);$('c3ex').disabled=!!(c3.held||c3.segBusy||c3.pend||c3.corr);['c3L','c3R'].forEach(id=>{$(id).disabled=false;$(id).classList.toggle('on',c3.held===(id==='c3L'?-1:1))});
+$('c3go').disabled=!ok||!!c3.phase||c3.waitRun>=0||(t.state===6&&!mine)||!c3From();$('c3stop').disabled=c3.phase!=='turn';$('c3reset').disabled=c3.phase==='turn'||!c3.n;
+$('c3ans').hidden=c3.phase!=='correct';$('c3back').disabled=!!(c3.held||c3.segBusy||c3.pend||c3.lost);$('c3ex').disabled=!!(c3.held||c3.segBusy||c3.pend||c3.corr||c3.lost||c3.saving);['c3L','c3R'].forEach(id=>{$(id).disabled=false;$(id).classList.toggle('on',c3.held===(id==='c3L'?-1:1))});
 const cm=c3.n&&cpc?c3.n/cpc:0;
-$('c3now').textContent=c3.phase==='correct'?(c3.held?'Turning '+(c3.held<0?'left':'right')+'… ':c3.segBusy||c3.pend?'Stepping… ':'')+'Correction so far: '+(c3.corr>=0?'+':'')+(c3.corr/cpc).toFixed(2)+' cm. Tap ◀ ▶ or press the arrow keys for a small step, hold ◀ ▶ to keep turning; when the crosshair is back on the edge, press Back on the marker. If the turn stopped right on it, save.':(c3.msg?c3.msg+' ':'')+(cm?'This try: '+cm.toFixed(2)+' cm/360':'');$('c3go').textContent=cm?'Turn ('+cm.toFixed(2)+' cm)':'Turn';
+$('c3now').textContent=c3.phase==='correct'&&c3.lost?'The Feather hasn\'t reported the last '+(c3.lost.v===c3.sp?'hold':'step')+' yet, so the correction isn\'t known: wait, or Start over.':c3.phase==='correct'?(c3.held?'Turning '+(c3.held<0?'left':'right')+'… ':c3.segBusy||c3.pend?'Stepping… ':'')+'Correction so far: '+(c3.corr>=0?'+':'')+(c3.corr/cpc).toFixed(2)+' cm. Tap ◀ ▶ or press the arrow keys for a small step, hold ◀ ▶ to keep turning; when the crosshair is back on the edge, press Back on the marker. If the turn stopped right on it, save.':(c3.msg?c3.msg+' ':'')+(cm?'This try: '+cm.toFixed(2)+' cm/360':'');$('c3go').textContent=cm?'Turn ('+cm.toFixed(2)+' cm)':'Turn';
 const cnt=!!(t&&(t.state===6||t.state===7)&&!mine),tn2=Number($('c3ctn').value),ccm=cnt&&cpc?Math.abs(t.sent)/cpc:0;$('c3cbox').hidden=!(t&&t.count);
 $('c3cgo').textContent=cnt&&t.state===6?'Stop':'Start counting';$('c3cgo').disabled=!ok||!!c3.phase;const cL=S.c360||[],cdup=cnt&&cpc&&cL.length&&cL[0][2]===0&&cL[0][1]===Math.round(Math.abs(t.sent)/cpc/tn2*100);  // already the newest saved result
 $('c3csave').disabled=!(cnt&&t.state===7&&t.sent&&c3.csaved!==t.run&&!cdup);
