@@ -1064,10 +1064,14 @@ function cvSlowPct(g){if(!g||!g.length||!(g[g.length-1]>0))return 0;return Math.
 function cvSlowTxt(g){const p=cvSlowPct(g);return p===0?'slow = fast':'slow movements '+(p>0?'+':'\u2212')+Math.abs(p)+'%'}
 function cvLibLoad(){fetch(tq('/api/curves')).then(r=>r.json()).then(j=>{cvLib=j;cvLibDraw();c3CidOpts();c3.lk='';c3Draw()}).catch(()=>{})}
 function cvLibAct(q,msg){post('/api/curves?'+q).then(r=>{say(r,msg);cvLibLoad()})}
-function cvLibRename(id){const c=cvLib&&cvLib.curves.find(x=>x.id===id),nm=prompt('Name for this curve',c?c.name:'');if(nm!=null&&nm.trim())cvLibAct('id='+id+'&name='+encodeURIComponent(nm.trim()),'Renamed')}
+// rename in place (10-24: a prompt() box can be suppressed by the browser): the name becomes a field; Enter or Save keeps it, Esc cancels
+let cvRen=0;
+function cvLibRename(id){cvRen=id;cvLibDraw();const e=$('cvrenin');if(e){e.focus();e.select()}}
+function cvRenKey(ev){if(ev.key==='Enter')cvRenSave();else if(ev.key==='Escape'){cvRen=0;cvLibDraw()}}
+function cvRenSave(){const e=$('cvrenin'),id=cvRen;cvRen=0;if(e&&e.value.trim())cvLibAct('id='+id+'&name='+encodeURIComponent(e.value.trim()),'Renamed');else cvLibDraw()}
 function cvLibDraw(){const box=$('cvlibbox');if(!box)return;if(!cvLib||!cvLib.curves.length){box.innerHTML='';return}
 box.innerHTML='<h3 style="margin:14px 0 6px">Saved curves</h3><table class="c3t"><tr><th>Name</th><th></th><th></th></tr>'+cvLib.curves.map(c=>{const act=c.id===cvLib.active,cand=c.id===cvLib.cand;
-return '<tr><td><b>'+esc(c.name)+'</b>'+' <span class="mut">· '+cvSlowTxt(c.g)+(c.s10?' · linear '+(c.s10/10).toFixed(1):'')+'</span>'+'</td><td>'+(act?'<span class="use">active</span>':cand?'<span class="wn">candidate</span>':'')+'</td><td style="white-space:nowrap">'+
+return '<tr><td>'+(cvRen===c.id?'<input type="text" id="cvrenin" maxlength="47" value="'+esc(c.name)+'" onkeydown="cvRenKey(event)" style="width:16em"> <button onclick="cvRenSave()">Save</button>':'<b>'+esc(c.name)+'</b>')+' <span class="mut">· '+cvSlowTxt(c.g)+(c.s10?' · linear '+(c.s10/10).toFixed(1):'')+'</span>'+'</td><td>'+(act?'<span class="use">active</span>':cand?'<span class="wn">candidate</span>':'')+'</td><td style="white-space:nowrap">'+
 (act?'':'<button onclick="cvLibAct(\'use='+c.id+'\',\'Now active\')" title="Make it the curve the Feather runs">Use</button> ')+(act?'':'<button onclick="cvLibAct(\'cand='+(cand?0:c.id)+'\',\''+(cand?'No candidate':'Set as the candidate')+'\')" title="The curve BallSheet\'s curve-vs-curve A/B compares with the active one">'+(cand?'Not candidate':'Candidate')+'</button> ')+
 '<button onclick="cvLibRename('+c.id+')">Rename</button>'+(act?'':' <button onclick="cvLibAct(\'del='+c.id+'\',\'Deleted\')" aria-label="Delete">×</button>')+'</td></tr>'}).join('')+'</table><p class="mut" style="margin:6px 0 0">Results on the cm/360 card and BallSheet\'s runs are kept per curve. Candidate: BallSheet\'s accuracy test can A/B it blind against the active curve.</p>'}
 setTimeout(cvLibLoad,1500);
