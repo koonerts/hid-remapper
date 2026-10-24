@@ -254,7 +254,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="cvhosts"></div></div>
 <div class="row c3b"><label>Name<input type="text" id="cvname" maxlength="15" placeholder="e.g. quad 71.5" style="width:10em"></label><button class="p" id="cvsave" onclick="cvSave()">Save</button><button id="cvdel" onclick="cvDel()">Remove</button></div>
 <p class="c3st" id="cvnow"></p><div id="cvlibbox"></div></section>
-<div><svg id="cvplot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed with the curve"></svg><p class="mut" style="margin:6px 0 0" id="cvleg"></p></div>
+<div><div class="mut" id="cvhovtxt" style="min-height:1.4em;font-variant-numeric:tabular-nums"></div><svg id="cvplot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed with the curve"></svg><p class="mut" style="margin:6px 0 0" id="cvleg"></p></div>
 </div></div>
 <details class="card wide" id="cbsaved" hidden><summary><div><h2>Calibration runs <span class="mut" id="cbsavedn"></span></h2><div class="mut" id="cbsrc"></div></div></summary><div id="cbsavedlist"></div></details>
 </div></section>
@@ -1077,10 +1077,10 @@ if(c&&c.n)cvPost(c.sp.map((s,k)=>[s,c.g[k]]),c.tau,h);else{cvHostsNew=h;cvKey=''
 // cm/360 by speed with the curve (the saved one, or what the inputs make), your results as dots, the XIM linear alone dashed
 let cvHover=null;
 function cvHoverMove(ev){const h=cvHover,svg=$('cvplot');if(!h||!h.T)return;const r=svg.getBoundingClientRect(),x=(ev.clientX-r.left)/r.width*360;if(x<h.X0||x>h.X1)return;
-const v=5*Math.pow(32,(x-h.X0)/(h.X1-h.X0)),g=cvGain(h.T,v),fast=h.T[h.T.length-1][1]/1000,rel=(g/fast-1)*100,l=$('cvhl'),tx=$('cvht');
+const v=5*Math.pow(32,(x-h.X0)/(h.X1-h.X0)),g=cvGain(h.T,v),fast=h.T[h.T.length-1][1]/1000,rel=(g/fast-1)*100,l=$('cvhl'),tx=$('cvhovtxt');
 l.setAttribute('x1',x.toFixed(1));l.setAttribute('x2',x.toFixed(1));l.setAttribute('visibility','visible');
 tx.textContent=(v<10?v.toFixed(1):v.toFixed(0))+' cm/s: '+(h.Sx?(h.Sx/g).toFixed(1)+' cm/360, ':'')+'gain '+g.toFixed(2)+(Math.abs(rel)>=0.5?' ('+(rel>0?'+':'\u2212')+Math.abs(rel).toFixed(0)+'% vs fast)':'');
-tx.setAttribute('x',(h.X0+4).toFixed(1));tx.setAttribute('text-anchor','start');tx.setAttribute('visibility','visible')}
+}
 function cvPlot(n){const svg=$('cvplot'),c=S.cv,T=n?n.T:c&&c.n?c.sp.map((s,k)=>[s,c.g[k]]):null;if(!T){svg.innerHTML='';$('cvleg').textContent='';return}
 const M=c3Pts(),Sx=n&&n.sc?n.sc.S:Number(cvSrcParse(c&&c.src).S)||0,X0=42,X1=344,Y0=16,Y1=128,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),f=x=>x.toFixed(1);
 const V=[];for(let i=0;i<=80;i++)V.push(5*Math.pow(32,i/80));const y=v=>Sx?Sx/cvGain(T,v):cvGain(T,v)*100,ys=V.map(y).concat(Sx?M.map(m=>m[1]).concat([Sx]):[]);
@@ -1091,8 +1091,8 @@ if(Sx)s+='<line class="hl" x1="'+X0+'" y1="'+f(ly(Sx))+'" x2="'+X1+'" y2="'+f(ly
 s+='<polyline class="cv" points="'+V.map(v=>f(lx(v))+','+f(ly(y(v)))).join(' ')+'"/>';{const sp=cvSlowPct(T.map(q=>q[1]));if(sp)s+='<text class="pl" x="'+(X0+4)+'" y="'+f(ly(y(5))+(sp<0?-8:16))+'">slow '+(sp>0?'+':'\u2212')+Math.abs(sp)+'%</text>'}
 // dots: your results, with what the curve predicts there; hovering anywhere reads the curve at that hand speed
 if(Sx)M.forEach(m=>{const pr=Sx/cvGain(T,m[0]),d=(m[1]/pr-1)*100;s+='<circle class="pt" cx="'+f(lx(m[0]))+'" cy="'+f(ly(m[1]))+'" r="3.5"><title>'+m[0]+' cm/s: measured '+m[1].toFixed(1)+', the curve predicts '+pr.toFixed(1)+' ('+(d>=0?'+':'')+d.toFixed(1)+'%)</title></circle>'});
-s+='<line id="cvhl" class="gl" x1="0" y1="'+Y0+'" x2="0" y2="'+Y1+'" visibility="hidden"/><text id="cvht" class="pl" x="0" y="'+(Y0+10)+'" visibility="hidden"></text>';svg.innerHTML=s;
-cvHover={T,Sx,X0,X1,Y1};if(!svg.dataset.hv){svg.dataset.hv=1;svg.addEventListener('mousemove',cvHoverMove);svg.addEventListener('mouseleave',()=>{['cvhl','cvht'].forEach(id=>{const e=$(id);if(e)e.setAttribute('visibility','hidden')})})}
+s+='<line id="cvhl" class="gl" x1="0" y1="'+Y0+'" x2="0" y2="'+Y1+'" visibility="hidden"/>';svg.innerHTML=s;
+cvHover={T,Sx,X0,X1,Y1};if(!svg.dataset.hv){svg.dataset.hv=1;svg.addEventListener('mousemove',cvHoverMove);svg.addEventListener('mouseleave',()=>{const e=$('cvhl');if(e)e.setAttribute('visibility','hidden');$('cvhovtxt').textContent=''})}
 $('cvleg').textContent=Sx?'Line: cm/360 with the curve on the Feather and the XIM linear at '+Sx.toFixed(1)+'. Dots: your newest fixed-speed results.':'The curve as a share of the XIM\'s linear sensitivity (cm/360 needs fixed-speed results).'}
 function cvDraw(){if(!S||!$('cvcard'))return;const c=S.cv;if(c&&cvLib&&(c.id!==cvLib.active||c.cand!==cvLib.cand)&&!cvLib.busy){cvLib.busy=1;cvLibLoad()}
 if(!cvLoaded&&c){cvLoaded=true;if(c.src&&!/^lib:/.test(c.src)&&!$('cvx').value){const o=cvSrcParse(c.src);$('cvx').value=o.x||'';if(o.v)$('cvv').value=o.v;if(o.d)$('cvdeg').value=o.d;$('cvtau').value=c.tau||8;if(o.x){cvImport();return}}}
