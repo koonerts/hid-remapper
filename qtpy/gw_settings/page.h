@@ -42,11 +42,11 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 [hidden]{display:none!important}  /* a .row's display:flex beat the hidden attribute (the swipe test's buttons, the cm/360 answers) */
 .c3f label{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--mut)}.c3f input,.c3f select{width:110px}
 .c3t{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}.c3t td,.c3t th{padding:4px 6px;text-align:left;border-top:1px solid var(--line)}.c3t th{color:var(--mut);font-weight:600}.c3t button{padding:2px 8px}
-.c3g{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:12px;margin-top:12px;align-items:start}
+.c3col{display:flex;flex-direction:column;gap:12px;min-width:0}.c3lg>summary{justify-content:flex-start;gap:10px}.c3lg>summary::after{margin-left:auto}#c3list td.ol{min-width:7em}.c3g{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:12px;margin-top:12px;align-items:start}
 .c3s{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--soft)}
 .c3s h3{font-size:14px;font-weight:650;margin:0 0 6px}.c3s>.mut{margin:0 0 10px}
 .c3b{margin-top:10px}.c3st{margin:10px 0 0;min-height:1.35em;font-variant-numeric:tabular-nums}
-.c3t tr.old td{color:var(--mut)}.c3old{display:inline-flex;align-items:center;margin:2px 4px 2px 0;padding:0 0 0 8px;border:1px solid var(--line);border-radius:999px;color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums}.c3old button{border:0;background:none;padding:2px 7px;color:var(--mut);font-size:11px}#c3list td,#c3list th{white-space:nowrap}#c3list td.ol{white-space:normal;min-width:15em;line-height:1.1}.c3t .dv{font-variant-numeric:tabular-nums;color:var(--mut)}.c3t .dv.off{color:var(--bad)}.c3stt{display:block;min-height:1.35em;color:var(--acc)}.c3lg{margin-top:10px}.c3lg summary{cursor:pointer;color:var(--mut)}.c3lg summary button{margin-left:8px;padding:2px 10px}#c3log td{vertical-align:top}#c3log tr.now td{background:var(--soft)}#c3log .neg{color:var(--bad)}#c3log .pos{color:var(--ok)}#c3log td span+span::before{content:' · ';color:var(--mut)}.c3t tr.old b{font-weight:400}.c3t td:nth-child(2){font-variant-numeric:tabular-nums}
+.c3t tr.old td{color:var(--mut)}.c3old{display:inline-flex;align-items:center;margin:2px 4px 2px 0;padding:0 0 0 8px;border:1px solid var(--line);border-radius:999px;color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums}.c3old button{border:0;background:none;padding:2px 7px;color:var(--mut);font-size:11px}#c3list td,#c3list th{white-space:nowrap}#c3list td.ol{white-space:normal;line-height:1.1}.c3t .dv{font-variant-numeric:tabular-nums;color:var(--mut)}.c3t .dv.off{color:var(--bad)}.c3stt{display:block;min-height:1.35em;color:var(--acc)}.c3lg{margin-top:10px}.c3lg summary{cursor:pointer;color:var(--mut)}.c3lg summary button{margin-left:8px;padding:2px 10px}#c3log td{vertical-align:top}#c3log tr.now td{background:var(--soft)}#c3log .neg{color:var(--bad)}#c3log .pos{color:var(--ok)}#c3log td span+span::before{content:' · ';color:var(--mut)}.c3t tr.old b{font-weight:400}.c3t td:nth-child(2){font-variant-numeric:tabular-nums}
 #c3plot{width:100%;height:auto;display:block}#c3plot text{fill:var(--mut);font-size:11px}#c3plot .gl{stroke:var(--line)}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
@@ -225,13 +225,14 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="card wide" id="c3card"><div class="hd"><div><h2>cm/360 in game</h2><div class="mut">How far the mouse moves for one full turn in game, through the XIM. BallSheet's Match BF6 reads these results.</div></div></div>
 <p class="note" id="c3off" hidden></p>
 <div class="row c3f" style="margin-top:6px"><label>Measured as<select id="c3ctx" onchange="c3CtxSet()" style="width:auto"><option value="0">ADS 4.5x</option><option value="1">Hip</option><option value="2">ADS 1x</option><option value="3">ADS 2x</option><option value="4">ADS 3x</option><option value="5">ADS 6x</option><option value="6">ADS 8x</option></select></label><span class="mut" style="align-self:end">Saved with each result; the list, chart, averages, the speed curve's fit and BallSheet use one at a time.</span></div>
-<div class="c3g">
+<div class="c3g"><div class="c3col">
 <section class="c3s" id="c3cbox" hidden><h3>Count your own turns</h3>
 <p class="mut">Crosshair on a sharp vertical edge, Start counting, turn whole turns by hand back to that edge (lifting the mouse and small corrections are fine), Stop, Save. The Feather counts your hand's movement (after your direction gains, before the speed curve): your own mix of speeds.</p>
 <div class="row c3f"><label>Full turns<select id="c3ctn" onchange="c3Draw()"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label></div>
 <div class="row c3b"><button class="p" id="c3cgo" onclick="c3Count()">Start counting</button><button id="c3csave" onclick="c3CSave()">Save</button></div>
 <p class="c3st" id="c3cnow"></p></section>
-<section class="c3s"><h3>At a fixed speed</h3>
+<div id="c3resA" hidden><svg id="c3plot" viewBox="0 0 360 218" role="img" aria-label="cm/360 by turning speed"></svg></div></div>
+<div class="c3col"><section class="c3s"><h3>At a fixed speed</h3>
 <p class="mut">The Feather turns the view by itself, steadily (through the speed curve, like your hand). If it stops short or past, tap ▶ or ◀, or press the arrow keys, for a small step (steps run at 5 cm/s so the game sees them, converted to this speed with your curve); hold ▶ or ◀ to keep turning at this speed. Then press Back on the marker and the next turn adds that correction. Save when a turn stops right on the edge. Hands off the mouse: touching it stops a turn.</p>
 <div class="row c3f"><label>Speed<select id="c3sp" onchange="c3Draw()"><option value="5">5 cm/s</option><option value="10" selected>10 cm/s</option><option value="15">15 cm/s</option><option value="20">20 cm/s</option><option value="25">25 cm/s</option><option value="30">30 cm/s</option><option value="35">35 cm/s</option><option value="40">40 cm/s</option><option value="50">50 cm/s</option><option value="60">60 cm/s</option><option value="80">80 cm/s</option><option value="120">120 cm/s</option><option value="160">160 cm/s</option></select></label><label>Turns<select id="c3tn"><option>1</option><option>2</option><option>3</option></select></label></div>
 <p class="mut" id="c3from" style="margin:10px 0 0"></p>
@@ -239,9 +240,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="c3st" id="c3now"></p>
 <div id="c3ans" hidden><div class="row c3b"><button class="sq" id="c3L" aria-label="Hold to turn left" title="Hold to turn left (or the left arrow key)">◀</button><button class="sq" id="c3R" aria-label="Hold to turn right" title="Hold to turn right (or the right arrow key)">▶</button><label class="mut" title="↑ / ↓ change it while turning or correcting">tap step <select id="c3step" onchange="this.blur()" style="width:auto"><option value="0.25" selected>0.25°</option><option value="0.5">0.5°</option><option value="1">1°</option><option value="2">2°</option></select></label></div><div class="row c3b"><button class="p" id="c3back" onclick="c3Back()">Back on the marker</button><button id="c3ex" onclick="c3Exact()">It stopped right on it: save</button></div></div>
 <details class="c3lg" id="c3logbox" open hidden><summary>Tries this session <span id="c3logsp"></span> <button type="button" onclick="event.preventDefault();c3LogCopy()">Copy</button><button type="button" onclick="event.preventDefault();c3LogClear()" title="Remove this speed's tries and its running average">Clear</button></summary><table class="c3t" id="c3log"></table><p class="mut" style="margin:6px 0 0">Every turn and each hold and step after it. Holds run at the turn's speed; steps (@ their cm/s) are converted to it with your curve. Says = this try plus its correction (where it would have landed exactly); Next = the average of those so far at this speed.</p></details></section>
-</div>
-<div class="c3g" id="c3res" hidden><div><svg id="c3plot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed"></svg></div>
-<div><table class="c3t" id="c3list"></table><p class="mut" style="margin:6px 0 0">The newest result at each speed counts; older ones are the grey chips. vs curve: against the saved speed curve's prediction (red past 3%).</p></div></div>
+<div id="c3res" hidden><table class="c3t" id="c3list"></table><p class="mut" style="margin:6px 0 0">The newest result at each speed counts; older ones are the grey chips. vs curve: against the saved speed curve's prediction (red past 3%).</p></div></div></div>
 </div>
 <div class="card wide" id="cvcard"><div class="hd"><div><h2>Speed curve</h2><div class="mut">Your XIM curve, done on the Feather instead: the XIM stays linear, so the same hand movement always turns the same.</div></div></div>
 <p class="note" id="cvoff" hidden></p>
@@ -937,13 +936,18 @@ for(let i=1;i<P.length;i++)if(sp<=P[i][0]){if(sp===P[i][0])return[P[i][1],'your 
 function c3From(){return c3At(Number($('c3sp').value))[0]}
 // the curve: fixed-speed results by speed (log axis), your by-hand count dashed
 function c3Plot(L){const svg=$('c3plot'),P=c3Pts(),H=L.find(r=>!r[2]),hc=H?H[1]/100:0;const ys=P.map(p=>p[1]).concat(H?[hc]:[]);if(!ys.length){svg.innerHTML='';return}
-let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(4,(hi-lo)*0.18);lo-=pad;hi+=pad;const X0=42,X1=344,Y0=16,Y1=128,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),ly=c=>Y1-(c-lo)/(hi-lo)*(Y1-Y0),f=n=>n.toFixed(1);
+let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(4,(hi-lo)*0.18);lo-=pad;hi+=pad;const X0=42,X1=344,Y0=18,Y1=170,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),ly=c=>Y1-(c-lo)/(hi-lo)*(Y1-Y0),f=n=>n.toFixed(1);
 let s='<text x="4" y="10">cm/360</text>';[5,10,20,40,80,160].forEach(v=>{s+='<line class="gl" x1="'+f(lx(v))+'" y1="'+Y0+'" x2="'+f(lx(v))+'" y2="'+Y1+'"/><text x="'+f(lx(v))+'" y="'+(Y1+14)+'" text-anchor="middle">'+v+'</text>'});
 s+='<text x="'+((X0+X1)/2)+'" y="'+(Y1+30)+'" text-anchor="middle">turning speed, cm/s</text>';[lo+pad,hi-pad].forEach(c=>{s+='<text x="'+(X0-6)+'" y="'+f(ly(c)+4)+'" text-anchor="end">'+c.toFixed(0)+'</text>'});
-if(H)s+='<line class="hl" x1="'+X0+'" y1="'+f(ly(hc))+'" x2="'+X1+'" y2="'+f(ly(hc))+'"/><text x="'+(X1-2)+'" y="'+f(ly(hc)-5)+'" text-anchor="end">by hand '+hc.toFixed(1)+'</text>';
-if(P.length>1)s+='<polyline class="cv" points="'+P.map(p=>f(lx(p[0]))+','+f(ly(p[1]))).join(' ')+'"/>';// labels: above the point, or below it when the one before sits close by (alternating); kept inside the edges
-let lastX=-1e9,up=true;P.forEach(p=>{const x=lx(p[0]),y=ly(p[1]);up=x-lastX<34?!up:true;lastX=x;const ty=up?y-9:y+17,anc=x>X1-16?'end':x<X0+16?'start':'middle';
-s+='<circle class="pt" cx="'+f(x)+'" cy="'+f(y)+'" r="4"/><text class="pl" x="'+f(anc==='end'?x+4:anc==='start'?x-4:x)+'" y="'+f(ty)+'" text-anchor="'+anc+'">'+p[1].toFixed(1)+'</text>'});svg.innerHTML=s}
+if(H)s+='<line class="hl" x1="'+X0+'" y1="'+f(ly(hc))+'" x2="'+X1+'" y2="'+f(ly(hc))+'"/>';
+if(P.length>1)s+='<polyline class="cv" points="'+P.map(p=>f(lx(p[0]))+','+f(ly(p[1]))).join(' ')+'"/>';// labels (10-24): each where it overlaps no point and no other label (above, below, further out), else only in the point's
+// tooltip; the by-hand line's label at its left end, moved below the line if a point is there
+const B=[],hits=b=>B.some(o=>b[0]<o[2]&&b[2]>o[0]&&b[1]<o[3]&&b[3]>o[1]),bx=(x,y,w,a)=>{const x0=a==='end'?x-w:a==='start'?x:x-w/2;return[x0,y-11,x0+w,y+2]};
+const pts=P.map(p=>({p,x:lx(p[0]),y:ly(p[1])}));pts.forEach(q=>B.push([q.x-5,q.y-5,q.x+5,q.y+5]));
+if(H){const tx='by hand '+hc.toFixed(1),w=tx.length*6.2;for(const yy of[ly(hc)-5,ly(hc)+13]){const b=bx(X0+4,yy,w,'start');if(!hits(b)){B.push(b);s+='<text x="'+(X0+4)+'" y="'+f(yy)+'">'+tx+'</text>';break}}}
+let lab='';pts.forEach(q=>{const tx=q.p[1].toFixed(1),w=tx.length*6.6,a=q.x>X1-16?'end':q.x<X0+16?'start':'middle',xx=a==='end'?q.x+4:a==='start'?q.x-4:q.x;
+for(const yy of[q.y-9,q.y+17,q.y-21,q.y+29]){if(yy<12||yy>Y1+2)continue;const b=bx(xx,yy,w,a);if(!hits(b)){B.push(b);lab+='<text class="pl" x="'+f(xx)+'" y="'+f(yy)+'" text-anchor="'+a+'">'+tx+'</text>';break}}
+s+='<circle class="pt" cx="'+f(q.x)+'" cy="'+f(q.y)+'" r="4"><title>'+q.p[0]+' cm/s: '+tx+'</title></circle>'});svg.innerHTML=s+lab}
 function c3Reset(){if(c3.held||c3.segBusy){post('/api/turn?stop=1');c3.waitRun=c3.seg;c3.waitAt=Date.now()}  // audit 10-23: the next Turn waits for that run's end
 if(c3.cur){c3.cur.rule='start over';c3LogPush()}c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3.pend=0;c3.lost=null;if(c3.press){clearTimeout(c3.press.timer);c3.press=null}c3Persist();c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=c3From(),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
@@ -1119,7 +1123,7 @@ $('c3cgo').textContent=cnt&&t.state===6?'Stop':'Start counting';$('c3cgo').disab
 $('c3csave').disabled=!(cnt&&t.state===7&&t.sent&&c3.csaved!==t.run&&!cdup);
 $('c3cnow').textContent=cnt&&(t.state===6||t.sent)?(t.state===6?'Counting: ':'Counted: ')+ccm.toFixed(2)+' cm'+(tn2>1?' for '+tn2+' turns':'')+' = '+(ccm/tn2).toFixed(2)+' cm/360'+(t.state===6?' (updates as you turn)':''):'';
 const L=c3L(),k=JSON.stringify([L,c3Ctx(),S.cv&&S.cv.src,S.cv&&S.cv.n]),fr=c3At(Number($('c3sp').value));$('c3from').hidden=!!c3.n;$('c3from').textContent=fr[0]?'Starts from '+fr[0].toFixed(2)+' cm/360, '+fr[1]+'.':'Count your own turns first: this starts from that result.';
-if(k!==c3.lk){c3.lk=k;$('c3res').hidden=!L.length;c3List(L);c3Plot(L)}}
+if(k!==c3.lk){c3.lk=k;$('c3res').hidden=$('c3resA').hidden=!L.length;c3List(L);c3Plot(L)}}
 [['c3L',-1],['c3R',1]].forEach(([id,d])=>{const b=$(id);b.addEventListener('pointerdown',e=>{if(b.disabled)return;b.setPointerCapture(e.pointerId);e.preventDefault();c3Press(d,true)});
 ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>c3Press(0,false)))});
 document.addEventListener('keydown',e=>{if((c3.phase==='correct'||c3.phase==='turn')&&(e.key==='ArrowUp'||e.key==='ArrowDown')){const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA)$/.test(a.tagName))return;const s=$('c3step'),i=s.selectedIndex+(e.key==='ArrowUp'?1:-1);e.preventDefault();if(a===s)s.blur();if(i>=0&&i<s.options.length){s.selectedIndex=i;toast('Tap step '+s.value+'°')}return}  // up/down: the tap step
