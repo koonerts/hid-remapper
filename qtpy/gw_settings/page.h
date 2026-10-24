@@ -46,7 +46,7 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 .c3s{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--soft)}
 .c3s h3{font-size:14px;font-weight:650;margin:0 0 6px}.c3s>.mut{margin:0 0 10px}
 .c3b{margin-top:10px}.c3st{margin:10px 0 0;min-height:1.35em;font-variant-numeric:tabular-nums}
-.c3t tr.old td{color:var(--mut)}.c3stt{display:inline-block;min-width:8.5em;color:var(--acc)}.c3lg{margin-top:10px}.c3lg summary{cursor:pointer;color:var(--mut)}.c3lg summary button{margin-left:8px;padding:2px 10px}#c3log td{vertical-align:top}#c3log tr.now td{background:var(--soft)}#c3log .neg{color:var(--bad)}#c3log .pos{color:var(--ok)}#c3log td span+span::before{content:' · ';color:var(--mut)}.c3t tr.old b{font-weight:400}.c3t td:nth-child(2){font-variant-numeric:tabular-nums}
+.c3t tr.old td{color:var(--mut)}.c3stt{display:block;min-height:1.35em;color:var(--acc)}.c3lg{margin-top:10px}.c3lg summary{cursor:pointer;color:var(--mut)}.c3lg summary button{margin-left:8px;padding:2px 10px}#c3log td{vertical-align:top}#c3log tr.now td{background:var(--soft)}#c3log .neg{color:var(--bad)}#c3log .pos{color:var(--ok)}#c3log td span+span::before{content:' · ';color:var(--mut)}.c3t tr.old b{font-weight:400}.c3t td:nth-child(2){font-variant-numeric:tabular-nums}
 #c3plot{width:100%;height:auto;display:block}#c3plot text{fill:var(--mut);font-size:11px}#c3plot .gl{stroke:var(--line)}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
