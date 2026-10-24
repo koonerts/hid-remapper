@@ -2,7 +2,8 @@
 // power-on and when it changes, "off" on hosts it shouldn't apply to; nothing is kept in the Feather's flash.
 //
 // The speed is the motion's length per time in cm/s (counts through the mouse's DPI, so a DPI stage change needs no
-// new table), smoothed exponentially over tau_ms by the frames' own times, and back to rest after a 50 ms gap. Like
+// new table), smoothed exponentially over tau_ms by the frames' own times, and back to rest after 50 ms without motion
+// (v31: the frames tick every 1 ms whether the mouse moves or not, so a 50 ms gap between frames never came). Like
 // the direction gains, only the size of the motion changes, never its direction, and the fractions left after
 // rounding carry over to the next frame.
 
@@ -24,6 +25,9 @@ static float pt_sp[GW_CURVE_N], pt_g[GW_CURVE_N];  // cm/s, gain
 static float spd = 0;                              // cm/s, smoothed
 static uint64_t last_us = 0;
 static bool have_t = false;
+static uint64_t moved_us = 0;  // v31: the last frame with motion
+static bool moved = false;
+static uint8_t last_on = 0xFF;  // v31: the last payload's on byte (an identical resend changes nothing)
 static float rx = 0, ry = 0;  // carried fractions
 
 void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, const uint16_t* sp, const uint16_t* g) {
@@ -46,10 +50,15 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
     got = true;
     on = want && ok;
     spd = rx = ry = 0;
-    have_t = false;
+    have_t = moved = false;
 }
 
 void gw_curve_link(const uint8_t* d, uint8_t len) {
+    uint8_t crc = (len > 1) ? gw_crc8(d + 1, len - 1) : 0;
+    if (got && (len >= 1) && (crc == table_crc) && (d[0] == last_on)) {
+        return;  // v31: the QT Py sent the same again (it resends while it can't confirm): keep the speed and the carry
+    }
+    last_on = (len >= 1) ? d[0] : 0xFF;
     uint16_t sp[GW_CURVE_N] = {}, g[GW_CURVE_N] = {};
     uint8_t n = (len >= 4) ? (len - 4) / 4 : 0;
     bool ok = (len >= 4) && ((len - 4) % 4 == 0) && (n <= GW_CURVE_N);
@@ -58,7 +67,7 @@ void gw_curve_link(const uint8_t* d, uint8_t len) {
         g[k] = d[6 + 4 * k] | d[7 + 4 * k] << 8;
     }
     gw_curve_set(ok && (d[0] != 0), ok ? d[1] : 0, ok ? (d[2] | d[3] << 8) : 0, ok ? n : 0, sp, g);
-    table_crc = (len > 1) ? gw_crc8(d + 1, len - 1) : 0;
+    table_crc = crc;
 }
 
 static float gain_at(float v) {
@@ -80,20 +89,30 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
     if (dpi == 0) {
         dpi = dpi_fb;
     }
+    if (dpi == 0) {
+        spd = 0;  // v31: no DPI known: the speed can't be, so the motion passes unchanged (it froze the last gain)
+        have_t = moved = false;
+        return;
+    }
     int32_t dx = *x, dy = *y;
-    uint64_t gap = have_t ? (now_us - last_us) : GW_CURVE_GAP_US;
+    uint64_t gap = have_t ? (now_us - last_us) : 0;
     last_us = now_us;
     have_t = true;
-    if (gap >= GW_CURVE_GAP_US) {
-        spd = 0;  // after a pause it starts from rest
-    } else if ((gap > 0) && (dpi > 0)) {
+    if ((dx == 0) && (dy == 0)) {
+        if (gap > 0) {
+            spd *= expf(-(gap / 1000.0f) / tau);  // a still frame: the speed decays
+        }
+        return;
+    }
+    if (!moved || (now_us - moved_us >= GW_CURVE_GAP_US)) {
+        spd = 0;  // the first motion after 50 ms without any starts from rest
+    } else if (gap > 0) {
         float dt = gap / 1000.0f;  // ms
         float cm = sqrtf((float) dx * dx + (float) dy * dy) * 2.54f / dpi;
         spd += (cm / dt * 1000.0f - spd) * (1.0f - expf(-dt / tau));
     }
-    if ((dx == 0) && (dy == 0)) {
-        return;
-    }
+    moved = true;
+    moved_us = now_us;
     float g = gain_at(spd);
     // as in gw_dirgain.cc: an axis that didn't move stays 0, floor(x + 0.5) rounding, clamped to a 16-bit report
     if (dx != 0) {
