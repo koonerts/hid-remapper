@@ -1080,7 +1080,7 @@ function cvHoverMove(ev){const h=cvHover,svg=$('cvplot');if(!h||!h.T)return;cons
 const v=5*Math.pow(32,(x-h.X0)/(h.X1-h.X0)),g=cvGain(h.T,v),fast=h.T[h.T.length-1][1]/1000,rel=(g/fast-1)*100,l=$('cvhl'),tx=$('cvht');
 l.setAttribute('x1',x.toFixed(1));l.setAttribute('x2',x.toFixed(1));l.setAttribute('visibility','visible');
 tx.textContent=(v<10?v.toFixed(1):v.toFixed(0))+' cm/s: '+(h.Sx?(h.Sx/g).toFixed(1)+' cm/360, ':'')+'gain '+g.toFixed(2)+(Math.abs(rel)>=0.5?' ('+(rel>0?'+':'\u2212')+Math.abs(rel).toFixed(0)+'% vs fast)':'');
-tx.setAttribute('x',x>(h.X0+h.X1)/2?(x-6).toFixed(1):(x+6).toFixed(1));tx.setAttribute('text-anchor',x>(h.X0+h.X1)/2?'end':'start');tx.setAttribute('visibility','visible')}
+tx.setAttribute('x',(h.X0+4).toFixed(1));tx.setAttribute('text-anchor','start');tx.setAttribute('visibility','visible')}
 function cvPlot(n){const svg=$('cvplot'),c=S.cv,T=n?n.T:c&&c.n?c.sp.map((s,k)=>[s,c.g[k]]):null;if(!T){svg.innerHTML='';$('cvleg').textContent='';return}
 const M=c3Pts(),Sx=n&&n.sc?n.sc.S:Number(cvSrcParse(c&&c.src).S)||0,X0=42,X1=344,Y0=16,Y1=128,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),f=x=>x.toFixed(1);
 const V=[];for(let i=0;i<=80;i++)V.push(5*Math.pow(32,i/80));const y=v=>Sx?Sx/cvGain(T,v):cvGain(T,v)*100,ys=V.map(y).concat(Sx?M.map(m=>m[1]).concat([Sx]):[]);
