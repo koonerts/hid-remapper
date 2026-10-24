@@ -252,7 +252,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row c3b"><button id="cvfitb" onclick="cvFitNow()">Fit to my results</button></div>
 <p class="mut" id="cvfit" style="margin:10px 0 0"></p>
 <div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="cvhosts"></div></div>
-<div class="row c3b"><label>Name<input type="text" id="cvname" maxlength="15" placeholder="e.g. quad 71.5" style="width:10em"></label><button class="p" id="cvsave" onclick="cvSave()">Save</button><button id="cvdel" onclick="cvDel()">Remove</button></div>
+<div class="row c3b"><label>Name<input type="text" id="cvname" maxlength="47" placeholder="e.g. hip 2-line, ends 75.5" style="width:16em"></label><button class="p" id="cvsave" onclick="cvSave()">Save</button><button id="cvdel" onclick="cvDel()">Remove</button></div>
 <p class="c3st" id="cvnow"></p><div id="cvlibbox"></div></section>
 <div><div class="mut" id="cvhovtxt" style="min-height:1.4em;font-variant-numeric:tabular-nums"></div><svg id="cvplot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed with the curve"></svg><p class="mut" style="margin:6px 0 0" id="cvleg"></p></div>
 </div></div>

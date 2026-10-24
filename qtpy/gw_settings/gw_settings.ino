@@ -261,15 +261,16 @@ static uint32_t cvt_keep_at = 0;
 // so results under different curves stay apart; one may be the candidate a curve-vs-curve A/B compares the active one
 // with (BallSheet switches to it through /api/cvtemp?cand=1). NVS "cvlib", "cvid", "cvcand".
 #define CVLIB_N 16
-struct __attribute__((packed)) CurveLib {  // 62 bytes
+struct __attribute__((packed)) CurveLib {  // 93 bytes (fw49 first had 16-byte names: 61, converted at boot)
     uint8_t used;
-    char name[16];
+    char name[48];
     uint8_t n, tau;
     uint16_t s10;  // the XIM-linear cm/360 it was fitted with, x10 (0 = not known)
     uint16_t sp[CV_N];
     uint16_t g[CV_N];
 };
 static CurveLib cvlib[CVLIB_N];
+static_assert(sizeof(CurveLib) == 93, "the boot conversion assumes this layout");
 static uint8_t cv_id = 0, cv_cand = 0;  // the active curve's id, the candidate's; 0 = none
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
@@ -2355,7 +2356,7 @@ static bool csv_n(const String& s, long lo, long hi, long* out, uint8_t* n) {
 
 static String cvlib_clean(const String& s) {
     String o;
-    for (unsigned i = 0; (i < s.length()) && (o.length() < 15); i++) {
+    for (unsigned i = 0; (i < s.length()) && (o.length() < 47); i++) {
         char c = s[i];
         if (isalnum((unsigned char) c) || (c && strchr(" .-_+", c))) {
             o += c;
@@ -3271,6 +3272,17 @@ void setup() {
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
     if (prefs.getBytes("cvlib", cvlib, sizeof(cvlib)) != sizeof(cvlib)) {  // fw49
         memset(cvlib, 0, sizeof(cvlib));
+        const size_t OLD = sizeof(CurveLib) - 32;  // the first fw49 library had 16-byte names: moved over
+        static uint8_t old[CVLIB_N * (sizeof(CurveLib) - 32)];
+        if (prefs.getBytesLength("cvlib") == sizeof(old) && prefs.getBytes("cvlib", old, sizeof(old)) == sizeof(old)) {
+            for (int k = 0; k < CVLIB_N; k++) {
+                const uint8_t* o = old + OLD * k;
+                cvlib[k].used = o[0];
+                memcpy(cvlib[k].name, o + 1, 15);
+                memcpy(&cvlib[k].n, o + 17, OLD - 17);
+            }
+            prefs.putBytes("cvlib", cvlib, sizeof(cvlib));
+        }
     }
     cv_id = prefs.getUChar("cvid", 0);
     cv_cand = prefs.getUChar("cvcand", 0);
