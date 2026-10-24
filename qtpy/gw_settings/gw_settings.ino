@@ -2367,10 +2367,23 @@ static void h_c360() {
     if ((cm < 100) || (cm > 60000) || (sp < 0) || (sp > 65535) || (dpi < 50) || (dpi > 100000)) {
         return ok_json(false, "need cm (x100), sp (cm/s x10) and dpi");
     }
-    memmove(c360 + 1, c360, sizeof(C360Rec) * (C360_KEEP - 1));
-    if (c360_n < C360_KEEP) {
-        c360_n++;
+    if (c360_n == C360_KEEP) {  // fw47: full: drop the oldest result that a newer one at its speed replaced (greyed on the
+        uint8_t drop = c360_n - 1;  // page); only when every result is the newest at its speed, the oldest of all
+        for (int k = c360_n - 1; k > 0; k--) {
+            bool newer = false;
+            for (int i = 0; (i < k) && !newer; i++) {
+                newer = (c360[i].sp10 == c360[k].sp10);
+            }
+            if (newer) {
+                drop = k;
+                break;
+            }
+        }
+        memmove(c360 + drop, c360 + drop + 1, sizeof(C360Rec) * (c360_n - drop - 1));
+        c360_n--;
     }
+    memmove(c360 + 1, c360, sizeof(C360Rec) * c360_n);
+    c360_n++;
     c360[0].t = now_unix();
     c360[0].cm100 = (uint16_t) cm;
     c360[0].sp10 = (uint16_t) sp;
