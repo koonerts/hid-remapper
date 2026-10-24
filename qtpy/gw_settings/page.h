@@ -46,7 +46,7 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 .c3s{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--soft)}
 .c3s h3{font-size:14px;font-weight:650;margin:0 0 6px}.c3s>.mut{margin:0 0 10px}
 .c3b{margin-top:10px}.c3st{margin:10px 0 0;min-height:1.35em;font-variant-numeric:tabular-nums}
-.c3t tr.old td{color:var(--mut)}.c3stt{display:block;min-height:1.35em;color:var(--acc)}.c3lg{margin-top:10px}.c3lg summary{cursor:pointer;color:var(--mut)}.c3lg summary button{margin-left:8px;padding:2px 10px}#c3log td{vertical-align:top}#c3log tr.now td{background:var(--soft)}#c3log .neg{color:var(--bad)}#c3log .pos{color:var(--ok)}#c3log td span+span::before{content:' · ';color:var(--mut)}.c3t tr.old b{font-weight:400}.c3t td:nth-child(2){font-variant-numeric:tabular-nums}
+.c3t tr.old td{color:var(--mut)}.c3old{display:inline-flex;align-items:center;margin:2px 4px 2px 0;padding:0 0 0 8px;border:1px solid var(--line);border-radius:999px;color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums}.c3old button{border:0;background:none;padding:2px 7px;color:var(--mut);font-size:11px}#c3list td,#c3list th{white-space:nowrap}#c3list td.ol{white-space:normal;min-width:15em;line-height:1.1}.c3t .dv{font-variant-numeric:tabular-nums;color:var(--mut)}.c3t .dv.off{color:var(--bad)}.c3stt{display:block;min-height:1.35em;color:var(--acc)}.c3lg{margin-top:10px}.c3lg summary{cursor:pointer;color:var(--mut)}.c3lg summary button{margin-left:8px;padding:2px 10px}#c3log td{vertical-align:top}#c3log tr.now td{background:var(--soft)}#c3log .neg{color:var(--bad)}#c3log .pos{color:var(--ok)}#c3log td span+span::before{content:' · ';color:var(--mut)}.c3t tr.old b{font-weight:400}.c3t td:nth-child(2){font-variant-numeric:tabular-nums}
 #c3plot{width:100%;height:auto;display:block}#c3plot text{fill:var(--mut);font-size:11px}#c3plot .gl{stroke:var(--line)}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
@@ -241,7 +241,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <details class="c3lg" id="c3logbox" open hidden><summary>Tries this session <span id="c3logsp"></span> <button type="button" onclick="event.preventDefault();c3LogCopy()">Copy</button><button type="button" onclick="event.preventDefault();c3LogClear()" title="Remove this speed's tries and its running average">Clear</button></summary><table class="c3t" id="c3log"></table><p class="mut" style="margin:6px 0 0">Every turn and each hold and step after it. Holds run at the turn's speed; steps (@ their cm/s) are converted to it with your curve. Says = this try plus its correction (where it would have landed exactly); Next = the average of those so far at this speed.</p></details></section>
 </div>
 <div class="c3g" id="c3res" hidden><div><svg id="c3plot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed"></svg></div>
-<div><table class="c3t" id="c3list"></table><p class="mut" style="margin:6px 0 0">The newest result at each speed counts (older ones are grey); BallSheet reads cm/360 between them at your flick speed.</p></div></div>
+<div><table class="c3t" id="c3list"></table><p class="mut" style="margin:6px 0 0">The newest result at each speed counts; older ones are the grey chips. vs curve: against the saved speed curve's prediction (red past 3%).</p></div></div>
 </div>
 <div class="card wide" id="cvcard"><div class="hd"><div><h2>Speed curve</h2><div class="mut">Your XIM curve, done on the Feather instead: the XIM stays linear, so the same hand movement always turns the same.</div></div></div>
 <p class="note" id="cvoff" hidden></p>
@@ -1080,6 +1080,15 @@ function c3LogCopy(){const cpc=c3Cpc(),sel=c3SelSp(),L=(c3.cur?[c3.cur].concat(c
 // in the click itself
 function copyText(s){const a=document.createElement('textarea');a.value=s;a.setAttribute('readonly','');a.style.cssText='position:fixed;top:0;left:0;opacity:0';document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand('copy')}catch(e){}a.remove();if(!ok&&navigator.clipboard){navigator.clipboard.writeText(s).catch(()=>{});ok=true}return ok}
 setTimeout(c3Restore,0);
+// 10-24: the results, one row per speed (by hand last): the newest value, how it compares with the saved speed curve, when,
+// and the older values as small chips (each removable), instead of a row each
+function c3Short(ms){const d=new Date(ms),n=new Date(),tm=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});return d.toDateString()===n.toDateString()?tm:d.toLocaleDateString([],{month:'short',day:'numeric'})+', '+tm}
+function c3List(L){const by={},keys=[];L.forEach(r=>{const key=r[2]||0;if(!(key in by)){by[key]=[];keys.push(key)}by[key].push(r)});keys.sort((a,b)=>(a||1e9)-(b||1e9));
+const c=S.cv,Sx=c&&c.n>=2?Number(cvSrcParse(c.src).S)||0:0,T=c&&c.n>=2?c.sp.map((s,k)=>[s,c.g[k]]):null;
+$('c3list').innerHTML=keys.length?'<tr><th>cm/s</th><th>cm/360</th><th title="The newest result against what the saved speed curve predicts there">vs curve</th><th>Saved</th><th>Older</th><th></th></tr>'+keys.map(key=>{const R=by[key].sort((a,b)=>b[0]-a[0]),r=R[0],cm=r[1]/100;
+let dv='';if(key&&Sx&&T){const p=(cm/(Sx/cvGain(T,key/10))-1)*100;dv='<span class="dv'+(Math.abs(p)>3?' off':'')+'">'+(p>=0?'+':'')+p.toFixed(1)+'%</span>'}
+return '<tr><td>'+(key?key/10:'by hand')+'</td><td><b>'+cm.toFixed(2)+'</b></td><td>'+dv+'</td><td title="'+esc(whenText(r[0]*1000))+' · '+(r[3]||'?')+' DPI">'+esc(c3Short(r[0]*1000))+'</td><td class="ol">'+
+R.slice(1).map(o=>'<span class="c3old" title="'+esc(whenText(o[0]*1000))+'">'+(o[1]/100).toFixed(2)+'<button onclick="c3Del('+o[0]+')" aria-label="Remove '+(o[1]/100).toFixed(2)+'">✕</button></span>').join('')+'</td><td><button onclick="c3Del('+r[0]+')" aria-label="Remove">✕</button></td></tr>'}).join(''):''}
 function c3Del(t){post('/api/c360?del='+t).then(r=>{if(!(r&&r.ok))toast('Not removed',true)})}
 function c3Draw(){if(!S||!$('c3card'))return;const t=S.turn,cpc=c3Cpc(),ok=!!(t&&t.sup&&cpc);setTimeout(c3LogDraw,0);
 if(c3.phase==='turn'&&t&&t.run===c3.run&&t.state!==1){if(t.state===2){c3.phase='correct';c3.corr=0;c3.held=0;c3.segBusy=false;c3.msg='';c3.pend=0;c3.lost=null;c3.cur={t:Date.now(),sp:c3.sp,tn:c3.tn,n:c3.n,segs:[],ctx:c3Ctx()}}
@@ -1101,9 +1110,8 @@ const cnt=!!(t&&(t.state===6||t.state===7)&&!mine),tn2=Number($('c3ctn').value),
 $('c3cgo').textContent=cnt&&t.state===6?'Stop':'Start counting';$('c3cgo').disabled=!ok||!!c3.phase;const cL=c3L(),cdup=cnt&&cpc&&cL.length&&cL[0][2]===0&&cL[0][1]===Math.round(Math.abs(t.sent)/cpc/tn2*100);  // already the newest saved result
 $('c3csave').disabled=!(cnt&&t.state===7&&t.sent&&c3.csaved!==t.run&&!cdup);
 $('c3cnow').textContent=cnt&&(t.state===6||t.sent)?(t.state===6?'Counting: ':'Counted: ')+ccm.toFixed(2)+' cm'+(tn2>1?' for '+tn2+' turns':'')+' = '+(ccm/tn2).toFixed(2)+' cm/360'+(t.state===6?' (updates as you turn)':''):'';
-const L=c3L(),k=JSON.stringify([L,c3Ctx()]),fr=c3At(Number($('c3sp').value));$('c3from').hidden=!!c3.n;$('c3from').textContent=fr[0]?'Starts from '+fr[0].toFixed(2)+' cm/360, '+fr[1]+'.':'Count your own turns first: this starts from that result.';
-if(k!==c3.lk){c3.lk=k;$('c3res').hidden=!L.length;const seen={},R=L.slice().sort((a,b)=>(a[2]||1e9)-(b[2]||1e9)||b[0]-a[0]);  // by speed, by hand last; newest first within a speed
-$('c3list').innerHTML=L.length?'<tr><th>Speed</th><th>cm/360</th><th>When</th><th></th></tr>'+R.map(r=>{const key=r[2]||'h',cur=!(key in seen);seen[key]=1;return '<tr'+(cur?'':' class="old"')+' title="'+r[3]+' DPI"><td>'+(r[2]?r[2]/10+' cm/s':'by hand')+'</td><td><b>'+(r[1]/100).toFixed(2)+'</b></td><td>'+esc(whenText(r[0]*1000))+'</td><td><button onclick="c3Del('+r[0]+')" aria-label="Remove">✕</button></td></tr>'}).join(''):'';c3Plot(L)}}
+const L=c3L(),k=JSON.stringify([L,c3Ctx(),S.cv&&S.cv.src,S.cv&&S.cv.n]),fr=c3At(Number($('c3sp').value));$('c3from').hidden=!!c3.n;$('c3from').textContent=fr[0]?'Starts from '+fr[0].toFixed(2)+' cm/360, '+fr[1]+'.':'Count your own turns first: this starts from that result.';
+if(k!==c3.lk){c3.lk=k;$('c3res').hidden=!L.length;c3List(L);c3Plot(L)}}
 [['c3L',-1],['c3R',1]].forEach(([id,d])=>{const b=$(id);b.addEventListener('pointerdown',e=>{if(b.disabled)return;b.setPointerCapture(e.pointerId);e.preventDefault();c3Press(d,true)});
 ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>c3Press(0,false)))});
 document.addEventListener('keydown',e=>{if((c3.phase==='correct'||c3.phase==='turn')&&(e.key==='ArrowUp'||e.key==='ArrowDown')){const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA)$/.test(a.tagName))return;const s=$('c3step'),i=s.selectedIndex+(e.key==='ArrowUp'?1:-1);e.preventDefault();if(a===s)s.blur();if(i>=0&&i<s.options.length){s.selectedIndex=i;toast('Tap step '+s.value+'°')}return}  // up/down: the tap step
