@@ -942,6 +942,8 @@ if(sp<=P[0][0])return[P[0][1],P[0][0]===sp?'your result at '+sp+' cm/s':'your sl
 for(let i=1;i<P.length;i++)if(sp<=P[i][0]){if(sp===P[i][0])return[P[i][1],'your result at '+sp+' cm/s'];const u=Math.log(sp/P[i-1][0])/Math.log(P[i][0]/P[i-1][0]);return[P[i-1][1]+(P[i][1]-P[i-1][1])*u,'your curve between '+P[i-1][0]+' and '+P[i][0]+' cm/s']}return[z[1],'']}
 function c3From(){return c3At(Number($('c3sp').value))[0]}
 // the curve: fixed-speed results by speed (log axis), your by-hand count dashed
+// what the selected curve predicts at sp cm/s (its linear cm/360 / its gain there), 0 = not known
+function c3Pred(sp){const lc=cvLib&&cvLib.curves.find(x=>x.id===c3Cid());return lc&&lc.s10&&lc.n>=2?lc.s10/10/cvGain(lc.sp.map((s,k)=>[s,lc.g[k]]),sp):0}
 function c3Plot(L){const svg=$('c3plot'),P=c3Pts(),H=L.find(r=>!r[2]),hc=H?H[1]/100:0;const ys=P.map(p=>p[1]).concat(H?[hc]:[]);if(!ys.length){svg.innerHTML='';return}
 let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(4,(hi-lo)*0.18);lo-=pad;hi+=pad;const X0=42,X1=344,Y0=18,Y1=170,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),ly=c=>Y1-(c-lo)/(hi-lo)*(Y1-Y0),f=n=>n.toFixed(1);
 let s='<text x="4" y="10">cm/360</text>';[5,10,20,40,80,160].forEach(v=>{s+='<line class="gl" x1="'+f(lx(v))+'" y1="'+Y0+'" x2="'+f(lx(v))+'" y2="'+Y1+'"/><text x="'+f(lx(v))+'" y="'+(Y1+14)+'" text-anchor="middle">'+v+'</text>'});
@@ -954,7 +956,7 @@ const pts=P.map(p=>({p,x:lx(p[0]),y:ly(p[1])}));pts.forEach(q=>B.push([q.x-5,q.y
 if(H){const tx='by hand '+hc.toFixed(1),w=tx.length*6.2;for(const yy of[ly(hc)-5,ly(hc)+13]){const b=bx(X0+4,yy,w,'start');if(!hits(b)){B.push(b);s+='<text x="'+(X0+4)+'" y="'+f(yy)+'">'+tx+'</text>';break}}}
 let lab='';pts.forEach(q=>{const tx=q.p[1].toFixed(1),w=tx.length*6.6,a=q.x>X1-16?'end':q.x<X0+16?'start':'middle',xx=a==='end'?q.x+4:a==='start'?q.x-4:q.x;
 for(const yy of[q.y-9,q.y+17,q.y-21,q.y+29]){if(yy<12||yy>Y1+2)continue;const b=bx(xx,yy,w,a);if(!hits(b)){B.push(b);lab+='<text class="pl" x="'+f(xx)+'" y="'+f(yy)+'" text-anchor="'+a+'">'+tx+'</text>';break}}
-s+='<circle class="pt" cx="'+f(q.x)+'" cy="'+f(q.y)+'" r="4"><title>'+q.p[0]+' cm/s: '+tx+'</title></circle>'});svg.innerHTML=s+lab}
+const pr=c3Pred(q.p[0]),dd=pr?(q.p[1]/pr-1)*100:0;s+='<circle class="pt" cx="'+f(q.x)+'" cy="'+f(q.y)+'" r="4"><title>'+q.p[0]+' cm/s: '+tx+' cm/360'+(pr?', the curve predicts '+pr.toFixed(1)+' ('+(dd>=0?'+':'')+dd.toFixed(1)+'%)':'')+'</title></circle>'});svg.innerHTML=s+lab}
 function c3Reset(){if(c3.held||c3.segBusy){post('/api/turn?stop=1');c3.waitRun=c3.seg;c3.waitAt=Date.now()}  // audit 10-23: the next Turn waits for that run's end
 if(c3.cur){c3.cur.rule='start over';c3LogPush()}c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3.pend=0;c3.lost=null;if(c3.press){clearTimeout(c3.press.timer);c3.press=null}c3Persist();c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=c3From(),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
@@ -1073,6 +1075,12 @@ function cvDel(){post('/api/curve?sp=&g=&hosts=').then(r=>{say(r,'Removed');if(r
 function cvHostTap(sig){const c=S.cv,cur=cvHosts(),h=cur.includes(sig)?cur.filter(x=>x!==sig):cur.concat([sig]);
 if(c&&c.n)cvPost(c.sp.map((s,k)=>[s,c.g[k]]),c.tau,h);else{cvHostsNew=h;cvKey='';cvDraw()}}
 // cm/360 by speed with the curve (the saved one, or what the inputs make), your results as dots, the XIM linear alone dashed
+let cvHover=null;
+function cvHoverMove(ev){const h=cvHover,svg=$('cvplot');if(!h||!h.T)return;const r=svg.getBoundingClientRect(),x=(ev.clientX-r.left)/r.width*360;if(x<h.X0||x>h.X1)return;
+const v=5*Math.pow(32,(x-h.X0)/(h.X1-h.X0)),g=cvGain(h.T,v),fast=h.T[h.T.length-1][1]/1000,rel=(g/fast-1)*100,l=$('cvhl'),tx=$('cvht');
+l.setAttribute('x1',x.toFixed(1));l.setAttribute('x2',x.toFixed(1));l.setAttribute('visibility','visible');
+tx.textContent=(v<10?v.toFixed(1):v.toFixed(0))+' cm/s: '+(h.Sx?(h.Sx/g).toFixed(1)+' cm/360, ':'')+'gain '+g.toFixed(2)+(Math.abs(rel)>=0.5?' ('+(rel>0?'+':'\u2212')+Math.abs(rel).toFixed(0)+'% vs fast)':'');
+tx.setAttribute('x',x>(h.X0+h.X1)/2?(x-6).toFixed(1):(x+6).toFixed(1));tx.setAttribute('text-anchor',x>(h.X0+h.X1)/2?'end':'start');tx.setAttribute('visibility','visible')}
 function cvPlot(n){const svg=$('cvplot'),c=S.cv,T=n?n.T:c&&c.n?c.sp.map((s,k)=>[s,c.g[k]]):null;if(!T){svg.innerHTML='';$('cvleg').textContent='';return}
 const M=c3Pts(),Sx=n&&n.sc?n.sc.S:Number(cvSrcParse(c&&c.src).S)||0,X0=42,X1=344,Y0=16,Y1=128,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),f=x=>x.toFixed(1);
 const V=[];for(let i=0;i<=80;i++)V.push(5*Math.pow(32,i/80));const y=v=>Sx?Sx/cvGain(T,v):cvGain(T,v)*100,ys=V.map(y).concat(Sx?M.map(m=>m[1]).concat([Sx]):[]);
@@ -1080,7 +1088,11 @@ let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(Sx?4:3,(hi-lo)*0.18
 let s='<text x="4" y="10">'+(Sx?'cm/360':'% of linear')+'</text>';[5,10,20,40,80,160].forEach(v=>{s+='<line class="gl" x1="'+f(lx(v))+'" y1="'+Y0+'" x2="'+f(lx(v))+'" y2="'+Y1+'"/><text x="'+f(lx(v))+'" y="'+(Y1+14)+'" text-anchor="middle">'+v+'</text>'});
 s+='<text x="'+((X0+X1)/2)+'" y="'+(Y1+30)+'" text-anchor="middle">hand speed, cm/s</text>';[lo+pad,hi-pad].forEach(c=>{s+='<text x="'+(X0-6)+'" y="'+f(ly(c)+4)+'" text-anchor="end">'+c.toFixed(0)+'</text>'});
 if(Sx)s+='<line class="hl" x1="'+X0+'" y1="'+f(ly(Sx))+'" x2="'+X1+'" y2="'+f(ly(Sx))+'"/><text x="'+(X1-2)+'" y="'+f(ly(Sx)-5)+'" text-anchor="end">XIM linear '+Sx.toFixed(1)+'</text>';
-s+='<polyline class="cv" points="'+V.map(v=>f(lx(v))+','+f(ly(y(v)))).join(' ')+'"/>';{const sp=cvSlowPct(T.map(q=>q[1]));if(sp)s+='<text class="pl" x="'+(X0+4)+'" y="'+f(ly(y(5))+(sp<0?-8:16))+'">slow '+(sp>0?'+':'\u2212')+Math.abs(sp)+'%</text>'}  // the slow end's sensitivity against fastif(Sx)M.forEach(m=>{s+='<circle class="pt" cx="'+f(lx(m[0]))+'" cy="'+f(ly(m[1]))+'" r="3.5"><title>'+m[0]+' cm/s: '+m[1].toFixed(1)+'</title></circle>'});svg.innerHTML=s;
+s+='<polyline class="cv" points="'+V.map(v=>f(lx(v))+','+f(ly(y(v)))).join(' ')+'"/>';{const sp=cvSlowPct(T.map(q=>q[1]));if(sp)s+='<text class="pl" x="'+(X0+4)+'" y="'+f(ly(y(5))+(sp<0?-8:16))+'">slow '+(sp>0?'+':'\u2212')+Math.abs(sp)+'%</text>'}
+// dots: your results, with what the curve predicts there; hovering anywhere reads the curve at that hand speed
+if(Sx)M.forEach(m=>{const pr=Sx/cvGain(T,m[0]),d=(m[1]/pr-1)*100;s+='<circle class="pt" cx="'+f(lx(m[0]))+'" cy="'+f(ly(m[1]))+'" r="3.5"><title>'+m[0]+' cm/s: measured '+m[1].toFixed(1)+', the curve predicts '+pr.toFixed(1)+' ('+(d>=0?'+':'')+d.toFixed(1)+'%)</title></circle>'});
+s+='<line id="cvhl" class="gl" x1="0" y1="'+Y0+'" x2="0" y2="'+Y1+'" visibility="hidden"/><text id="cvht" class="pl" x="0" y="'+(Y0+10)+'" visibility="hidden"></text>';svg.innerHTML=s;
+cvHover={T,Sx,X0,X1,Y1};if(!svg.dataset.hv){svg.dataset.hv=1;svg.addEventListener('mousemove',cvHoverMove);svg.addEventListener('mouseleave',()=>{['cvhl','cvht'].forEach(id=>{const e=$(id);if(e)e.setAttribute('visibility','hidden')})})}
 $('cvleg').textContent=Sx?'Line: cm/360 with the curve on the Feather and the XIM linear at '+Sx.toFixed(1)+'. Dots: your newest fixed-speed results.':'The curve as a share of the XIM\'s linear sensitivity (cm/360 needs fixed-speed results).'}
 function cvDraw(){if(!S||!$('cvcard'))return;const c=S.cv;if(c&&cvLib&&(c.id!==cvLib.active||c.cand!==cvLib.cand)&&!cvLib.busy){cvLib.busy=1;cvLibLoad()}
 if(!cvLoaded&&c){cvLoaded=true;if(c.src&&!/^lib:/.test(c.src)&&!$('cvx').value){const o=cvSrcParse(c.src);$('cvx').value=o.x||'';if(o.v)$('cvv').value=o.v;if(o.d)$('cvdeg').value=o.d;$('cvtau').value=c.tau||8;if(o.x){cvImport();return}}}
