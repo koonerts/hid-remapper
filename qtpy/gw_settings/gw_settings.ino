@@ -2187,11 +2187,24 @@ static bool cv_wanted() {  // on for the host connected now
     return false;
 }
 
+// fw47: the Feather's fallback DPI (only while it can't read the mouse's): the connected host's own stage DPI (FLOW's
+// stage is 800, the XIM's 40000), else the one saved with the curve
+static uint16_t cv_fallback_dpi() {
+    for (uint8_t k = 0; auto_sig && st_ok && (st[3] & 128) && (k < hprof_n); k++) {
+        if ((hprof[k].sig == auto_sig) && (hprof[k].stage >= 1) && (hprof[k].stage <= 5)) {
+            uint16_t v = u16(23 + 4 * (hprof[k].stage - 1));
+            return (v >= 50) ? v : cv.dpi;
+        }
+    }
+    return cv.dpi;
+}
+
 static uint8_t cv_payload(uint8_t* d) {  // what C_SET_CURVE carries (no points = off)
+    uint16_t fb = cv_fallback_dpi();
     d[0] = cv_wanted() ? 1 : 0;
     d[1] = cv.tau;
-    d[2] = cv.dpi & 0xFF;
-    d[3] = cv.dpi >> 8;
+    d[2] = fb & 0xFF;
+    d[3] = fb >> 8;
     for (uint8_t k = 0; k < cv.n; k++) {
         d[4 + 4 * k] = cv.sp[k] & 0xFF;
         d[5 + 4 * k] = cv.sp[k] >> 8;
