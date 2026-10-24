@@ -438,7 +438,7 @@ function us(v){return v>=1020?'1020+':String(v)}
 // frame timing (Feather v15+; the whole frame from v19): a bar of each 1 ms frame's use, then the parts
 // QT Py fw41: what each frame-timing row measures (hover on a computer, tap on a phone)
 const PTIP={usb:'Every 1 ms a timer interrupt talks to the mouse over USB (start of frame, then its latest report). This is the time spent in that interrupt; the frame\'s tick is marked when it ends.',
-remap:'After the tick, the main loop turns the mouse\'s latest input into the report for the PC or XIM: chords, direction gains (about 11 µs a frame at rest, 40 µs while moving), the cm/360 card's measured turn, the speed curve (Feather v30+: a square root and an exponential a frame), DPI and sensor logic, and every 20 ms the status for the QT Py.',
+remap:'After the tick, the main loop turns the mouse\'s latest input into the report for the PC or XIM: chords, direction gains (about 11 µs a frame at rest, 40 µs while moving), the cm/360 card\'s measured turn, the speed curve (Feather v30+: a square root and an exponential a frame), DPI and sensor logic, and every 20 ms the status for the QT Py.',
 chord:'The chord-detection part of the remapping. The direction gains run after it and are not in this row.',
 tick:'From the tick to the moment that frame\'s report is built and queued: the remapping plus the short wait before the loop picks the tick up. The PC or XIM then reads it on its own 1 ms schedule (0 to 1 ms later, not shown). Over 1000 µs the next tick would come first and a frame would be skipped.',
 bar:'The share of each 1 ms frame the Feather is busy: USB interrupt plus frame finished. Dark: average over the last second; light: the worst frame.'};
