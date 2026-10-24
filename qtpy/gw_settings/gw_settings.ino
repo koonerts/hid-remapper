@@ -2426,6 +2426,7 @@ static String cvlib_json_one(uint8_t id) {
 }
 
 // GET /api/curves: the library; POST ?use=id (make it the active curve) | ?cand=id (0 = none) | ?del=id | ?id=&name= (fw49)
+// | ?add=1&name=&sp=&g=&tau=&s10=[&setcand=1]: a curve from the page's editor into the library, not running (answers its id)
 static void h_curves() {
     touch();
     if (server.method() == HTTP_GET) {
@@ -2441,6 +2442,32 @@ static void h_curves() {
         return;
     }
     if (!from_current_page()) {
+        return;
+    }
+    if (server.hasArg("add")) {
+        long sp[CV_N], g[CV_N];
+        uint8_t n = 0, ng = 0;
+        if (!csv_n(server.arg("sp"), 1, 65535, sp, &n) || !csv_n(server.arg("g"), 250, 4000, g, &ng) || (n != ng) || (n < 2)) {
+            return ok_json(false, "need 2-10 speeds (0.1 cm/s) and as many gains (250-4000 per mille)");
+        }
+        uint16_t s16[CV_N] = {}, g16[CV_N] = {};
+        for (uint8_t k = 0; k < n; k++) {
+            if (k && (sp[k] <= sp[k - 1])) {
+                return ok_json(false, "speeds must rise");
+            }
+            s16[k] = sp[k];
+            g16[k] = g[k];
+        }
+        long tau = server.hasArg("tau") ? server.arg("tau").toInt() : 8, s10 = server.arg("s10").toInt();
+        uint8_t nid = cvlib_add(cvlib_clean(server.arg("name")), n, (uint8_t) std::max(1L, std::min(200L, tau)), (uint16_t) std::max(0L, std::min(65535L, s10)), s16, g16);
+        if (!nid) {
+            return ok_json(false, "the library is full (16): delete a curve first");
+        }
+        if ((server.arg("setcand") == "1") && (nid != cv_id)) {
+            cv_cand = nid;
+        }
+        cvlib_save();
+        server.send(200, "application/json", "{\"ok\":true,\"id\":" + String(nid) + "}");
         return;
     }
     long id = server.arg(server.hasArg("use") ? "use" : server.hasArg("cand") ? "cand" : server.hasArg("del") ? "del" : "id").toInt();

@@ -50,7 +50,7 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 #c3plot{width:100%;height:auto;display:block}#c3plot text{fill:var(--mut);font-size:11px}#c3plot .gl{stroke:var(--line)}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
-#cvplot{width:100%;height:auto;display:block}#cvplot text{fill:var(--mut);font-size:11px}#cvplot .gl{stroke:var(--line)}
+#cvplot{width:100%;height:auto;display:block;touch-action:none}#cvplot .eh{fill:var(--card);stroke:var(--acc);stroke-width:2;cursor:grab}#cvplot .eh.on{fill:var(--acc)}#cvplot text{fill:var(--mut);font-size:11px}#cvplot .gl{stroke:var(--line)}
 #cvplot .cv{fill:none;stroke:var(--acc);stroke-width:2}#cvplot .pt{fill:var(--fg)}#cvplot .hl{stroke:var(--mut);stroke-dasharray:5 4}
 label.cvx{flex:1 1 100%}label.cvx input{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .c3s button.sq{font-size:15px}.c3s button.sq.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
@@ -249,12 +249,12 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut">In XIM Manager's curve editor, copy the curve and paste it here. Fit it to your fixed-speed results above (taken with that curve on the XIM), save, then set the XIM's curve to linear and leave its sensitivity as it was (the curve is 1.0 at speed, so nothing needs a bump).</p>
 <div class="row c3f"><label class="cvx">XIM curve<input type="text" id="cvx" placeholder="XMBC:…:XMBC" spellcheck="false" autocomplete="off" oninput="cvImport()"></label></div>
 <div class="row c3f"><label title="The hand speed where the XIM curve's input axis ends (its 100%): faster movements keep the last point's ratio. Not a sensitivity: keep the XIM's sensitivity as it was.">Curve ends at<input type="number" id="cvv" min="5" max="500" step="0.5" oninput="cvKey='';cvDraw()" style="width:6em"> cm/s hand speed</label><label>Between the points<select id="cvdeg" onchange="cvKey='';cvDraw()"><option value="3">curved, 2 control points</option><option value="2">curved, 1 control point</option><option value="1">straight lines</option></select></label><label>Smoothing<input type="number" id="cvtau" min="1" max="200" value="8" oninput="cvKey='';cvDraw()" style="width:5em"> ms</label></div>
-<div class="row c3b"><button id="cvfitb" onclick="cvFitNow()">Fit to my results</button></div>
+<div class="row c3b"><button id="cvfitb" onclick="cvFitNow()">Fit to my results</button><button onclick="cvEdStart(0)" title="Shape the curve by hand on the chart; it saves as a new curve, set as the candidate">Edit on the chart</button></div>
 <p class="mut" id="cvfit" style="margin:10px 0 0"></p>
 <div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="cvhosts"></div></div>
 <div class="row c3b"><label>Name<input type="text" id="cvname" maxlength="47" placeholder="e.g. hip 2-line, ends 75.5" style="width:16em"></label><button class="p" id="cvsave" onclick="cvSave()">Save</button><button id="cvdel" onclick="cvDel()">Remove</button></div>
 <p class="c3st" id="cvnow"></p><div id="cvlibbox"></div></section>
-<div><div class="mut" id="cvhovtxt" style="min-height:1.4em;font-variant-numeric:tabular-nums"></div><svg id="cvplot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed with the curve"></svg><p class="mut" style="margin:6px 0 0" id="cvleg"></p></div>
+<div><div id="cveditbar" hidden><div class="row c3b" style="margin-top:0"><label>Name<input type="text" id="cvedname" maxlength="47" style="width:15em"></label><button class="p" onclick="cvEdSave()">Save as candidate</button><button onclick="cvEdCancel()">Cancel</button></div><p class="mut" id="cvedinfo" style="margin:6px 0"></p><p class="mut" style="margin:0 0 6px">Drag a point: higher on the chart = more cm/360 (slower there), sideways = its speed. Click one, then the arrow keys move it the same way (Shift = bigger steps); Delete removes it; double-click the chart adds one (10 at most).</p></div><div class="mut" id="cvhovtxt" style="min-height:1.4em;font-variant-numeric:tabular-nums"></div><svg id="cvplot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed with the curve"></svg><p class="mut" style="margin:6px 0 0" id="cvleg"></p></div>
 </div></div>
 <details class="card wide" id="cbsaved" hidden><summary><div><h2>Calibration runs <span class="mut" id="cbsavedn"></span></h2><div class="mut" id="cbsrc"></div></div></summary><div id="cbsavedlist"></div></details>
 </div></section>
@@ -1073,30 +1073,56 @@ function cvLibDraw(){const box=$('cvlibbox');if(!box)return;if(!cvLib||!cvLib.cu
 box.innerHTML='<h3 style="margin:14px 0 6px">Saved curves</h3><table class="c3t"><tr><th>Name</th><th></th><th></th></tr>'+cvLib.curves.map(c=>{const act=c.id===cvLib.active,cand=c.id===cvLib.cand;
 return '<tr><td>'+(cvRen===c.id?'<input type="text" id="cvrenin" maxlength="47" value="'+esc(c.name)+'" onkeydown="cvRenKey(event)" style="width:16em"> <button onclick="cvRenSave()">Save</button>':'<b>'+esc(c.name)+'</b>')+' <span class="mut">· '+cvSlowTxt(c.g)+(c.s10?' · linear '+(c.s10/10).toFixed(1):'')+'</span>'+'</td><td>'+(act?'<span class="use">active</span>':cand?'<span class="wn">candidate</span>':'')+'</td><td style="white-space:nowrap">'+
 (act?'':'<button onclick="cvLibAct(\'use='+c.id+'\',\'Now active\')" title="Make it the curve the Feather runs">Use</button> ')+(act?'':'<button onclick="cvLibAct(\'cand='+(cand?0:c.id)+'\',\''+(cand?'No candidate':'Set as the candidate')+'\')" title="The curve BallSheet\'s curve-vs-curve A/B compares with the active one">'+(cand?'Not candidate':'Candidate')+'</button> ')+
-'<button onclick="cvLibRename('+c.id+')">Rename</button>'+(act?'':' <button onclick="cvLibAct(\'del='+c.id+'\',\'Deleted\')" aria-label="Delete">×</button>')+'</td></tr>'}).join('')+'</table><p class="mut" style="margin:6px 0 0">Results on the cm/360 card and BallSheet\'s runs are kept per curve. Candidate: BallSheet\'s accuracy test can A/B it blind against the active curve.</p>'}
+'<button onclick="cvEdStart('+c.id+')" title="Shape a copy of it on the chart">Edit</button> <button onclick="cvLibRename('+c.id+')">Rename</button>'+(act?'':' <button onclick="cvLibAct(\'del='+c.id+'\',\'Deleted\')" aria-label="Delete">×</button>')+'</td></tr>'}).join('')+'</table><p class="mut" style="margin:6px 0 0">Results on the cm/360 card and BallSheet\'s runs are kept per curve. Candidate: BallSheet\'s accuracy test can A/B it blind against the active curve.</p>'}
 setTimeout(cvLibLoad,1500);
 function cvDel(){post('/api/curve?sp=&g=&hosts=').then(r=>{say(r,'Removed');if(r&&r.ok&&S.cv){S.cv.n=0;S.cv.sp=[];S.cv.g=[];S.cv.hosts=[];S.cv.src=''}cvKey='';cvDraw()})}
 function cvHostTap(sig){const c=S.cv,cur=cvHosts(),h=cur.includes(sig)?cur.filter(x=>x!==sig):cur.concat([sig]);
 if(c&&c.n)cvPost(c.sp.map((s,k)=>[s,c.g[k]]),c.tau,h);else{cvHostsNew=h;cvKey='';cvDraw()}}
 // cm/360 by speed with the curve (the saved one, or what the inputs make), your results as dots, the XIM linear alone dashed
+// the curve editor (10-24): the Feather's table as points on the chart; drag one (up/down = gain, sideways = speed,
+// kept between its neighbours), or click it and use the arrow keys; Delete removes, a double-click adds; saves as a
+// new library curve set as the candidate (BallSheet's A/B), never the running one
+let cvEd=null,cvDrag=-1;
+function cvEdStart(id){const c=id&&cvLib?cvLib.curves.find(x=>x.id===id):null,n=cvNow(),cc=S.cv;
+const T=c?c.sp.map((s,k)=>[s,c.g[k]]):n?n.T.map(q=>q.slice()):cc&&cc.n?cc.sp.map((s,k)=>[s,cc.g[k]]):null;if(!T)return;
+const S0=c&&c.s10?c.s10/10:n&&n.sc?n.sc.S:Number(cvSrcParse(cc&&cc.src).S)||0;
+cvEd={T,S:S0,tau:c?c.tau:Number($('cvtau').value)||8,sel:-1,rng:null};$('cveditbar').hidden=false;$('cvedname').value=((c?c.name:'curve')+' edit').slice(0,47);cvEdDraw();$('cvplot').scrollIntoView({block:'nearest'})}
+function cvEdDraw(){cvPlot(null);const T=cvEd.T,i=cvEd.sel;$('cvedinfo').textContent='Editing: '+T.length+' points, '+cvSlowTxt(T.map(q=>q[1]))+(i>=0?'. Point '+(i+1)+': '+(T[i][0]/10)+' cm/s, gain '+(T[i][1]/1000).toFixed(3)+(cvEd.S?' ('+(cvEd.S/(T[i][1]/1000)).toFixed(1)+' cm/360)':''):'.')}
+function cvEdCancel(){cvEd=null;cvDrag=-1;$('cveditbar').hidden=true;cvKey='';cvDraw()}
+function cvEdSave(){if(!cvEd)return;const T=cvEd.T,nm=$('cvedname').value.trim()||'edited curve';
+post('/api/curves?add=1&setcand=1&name='+encodeURIComponent(nm)+'&sp='+T.map(q=>q[0]).join(',')+'&g='+T.map(q=>q[1]).join(',')+'&tau='+cvEd.tau+'&s10='+Math.round((cvEd.S||0)*10)).then(r=>{say(r,'Saved as the candidate: A/B it in BallSheet');if(r&&r.ok){cvEdCancel();cvLibLoad()}})}
+function cvEdSet(i,sp,g){const T=cvEd.T,lo=i?T[i-1][0]+1:1,hi=i<T.length-1?T[i+1][0]-1:65535;T[i]=[Math.max(lo,Math.min(hi,Math.round(sp))),Math.max(250,Math.min(4000,Math.round(g)))]}
+function cvEdKey(e){if(!cvEd||cvEd.sel<0)return false;const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return false;const i=cvEd.sel,q=cvEd.T[i],st=(e.shiftKey?20:5)*(cvEd.S?-1:1);
+if(e.key==='ArrowUp')cvEdSet(i,q[0],q[1]+st);else if(e.key==='ArrowDown')cvEdSet(i,q[0],q[1]-st);else if(e.key==='ArrowRight')cvEdSet(i,q[0]*1.02+1,q[1]);else if(e.key==='ArrowLeft')cvEdSet(i,q[0]/1.02-1,q[1]);
+else if((e.key==='Delete'||e.key==='Backspace')&&cvEd.T.length>2){cvEd.T.splice(i,1);cvEd.sel=-1}else if(e.key==='Escape')cvEd.sel=-1;else return false;e.preventDefault();cvEdDraw();return true}
+document.addEventListener('keydown',e=>{if(cvEd&&cvEdKey(e))e.stopImmediatePropagation()},true);
+// pointer on the chart: viewBox coordinates, the value scale frozen while dragging (it would rescale under the pointer)
+function cvXY(ev){const svg=$('cvplot'),r=svg.getBoundingClientRect();return[(ev.clientX-r.left)/r.width*360,(ev.clientY-r.top)/r.height*176]}
+function cvFromXY(x,y){const h=cvHover,v=5*Math.pow(32,Math.max(0,Math.min(1,(x-h.X0)/(h.X1-h.X0)))),val=h.lo+(h.Y1-y)/(h.Y1-h.Y0)*(h.hi-h.lo);return[v*10,h.Sx?h.Sx/Math.max(1,val)*1000:val*10]}
+function cvEdDown(ev){const i=ev.target&&ev.target.dataset?ev.target.dataset.i:undefined;if(!cvEd||i===undefined)return;cvDrag=Number(i);cvEd.sel=cvDrag;cvEd.rng=[cvHover.lo,cvHover.hi];$('cvplot').setPointerCapture(ev.pointerId);ev.preventDefault();cvEdDraw()}
+function cvEdMove(ev){if(!cvEd||cvDrag<0)return;const[x,y]=cvXY(ev),[sp,g]=cvFromXY(x,y),q=cvEd.T[cvDrag];cvEdSet(cvDrag,q[0]<50&&x<=cvHover.X0+1?q[0]:sp,g);cvEdDraw()}
+function cvEdUp(){if(cvDrag<0)return;cvDrag=-1;if(cvEd)cvEd.rng=null;cvEdDraw()}
+function cvEdDbl(ev){if(!cvEd||ev.target.dataset.i!==undefined||cvEd.T.length>=10)return;const[x]=cvXY(ev),[sp]=cvFromXY(x,0),T=cvEd.T,s=Math.round(sp);if(T.some(q=>Math.abs(q[0]-s)<2))return;
+T.push([s,Math.round(cvGain(T,s/10)*1000)]);T.sort((a,b)=>a[0]-b[0]);cvEd.sel=T.findIndex(q=>q[0]===s);cvEdDraw()}
 let cvHover=null;
 function cvHoverMove(ev){const h=cvHover,svg=$('cvplot');if(!h||!h.T)return;const r=svg.getBoundingClientRect(),x=(ev.clientX-r.left)/r.width*360;if(x<h.X0||x>h.X1)return;
 const v=5*Math.pow(32,(x-h.X0)/(h.X1-h.X0)),g=cvGain(h.T,v),fast=h.T[h.T.length-1][1]/1000,rel=(g/fast-1)*100,l=$('cvhl'),tx=$('cvhovtxt');
 l.setAttribute('x1',x.toFixed(1));l.setAttribute('x2',x.toFixed(1));l.setAttribute('visibility','visible');
 tx.textContent=(v<10?v.toFixed(1):v.toFixed(0))+' cm/s: '+(h.Sx?(h.Sx/g).toFixed(1)+' cm/360, ':'')+'gain '+g.toFixed(2)+(Math.abs(rel)>=0.5?' ('+(rel>0?'+':'\u2212')+Math.abs(rel).toFixed(0)+'% vs fast)':'');
 }
-function cvPlot(n){const svg=$('cvplot'),c=S.cv,T=n?n.T:c&&c.n?c.sp.map((s,k)=>[s,c.g[k]]):null;if(!T){svg.innerHTML='';$('cvleg').textContent='';return}
-const M=c3Pts(),Sx=n&&n.sc?n.sc.S:Number(cvSrcParse(c&&c.src).S)||0,X0=42,X1=344,Y0=16,Y1=128,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),f=x=>x.toFixed(1);
+function cvPlot(n){const svg=$('cvplot'),c=S.cv,E=cvEd,T=E?E.T:n?n.T:c&&c.n?c.sp.map((s,k)=>[s,c.g[k]]):null;if(!T){svg.innerHTML='';$('cvleg').textContent='';return}
+const M=c3Pts(),Sx=E?E.S:n&&n.sc?n.sc.S:Number(cvSrcParse(c&&c.src).S)||0,X0=42,X1=344,Y0=16,Y1=128,lx=v=>X0+Math.log(Math.min(160,Math.max(5,v))/5)/Math.log(32)*(X1-X0),f=x=>x.toFixed(1);
 const V=[];for(let i=0;i<=80;i++)V.push(5*Math.pow(32,i/80));const y=v=>Sx?Sx/cvGain(T,v):cvGain(T,v)*100,ys=V.map(y).concat(Sx?M.map(m=>m[1]).concat([Sx]):[]);
-let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(Sx?4:3,(hi-lo)*0.18);lo-=pad;hi+=pad;const ly=c=>Y1-(c-lo)/(hi-lo)*(Y1-Y0);
+let lo=Math.min(...ys),hi=Math.max(...ys);const pad=Math.max(Sx?4:3,(hi-lo)*0.18);lo-=pad;hi+=pad;if(E&&E.rng){lo=E.rng[0];hi=E.rng[1]}const ly=c=>Y1-(c-lo)/(hi-lo)*(Y1-Y0);
 let s='<text x="4" y="10">'+(Sx?'cm/360':'% of linear')+'</text>';[5,10,20,40,80,160].forEach(v=>{s+='<line class="gl" x1="'+f(lx(v))+'" y1="'+Y0+'" x2="'+f(lx(v))+'" y2="'+Y1+'"/><text x="'+f(lx(v))+'" y="'+(Y1+14)+'" text-anchor="middle">'+v+'</text>'});
 s+='<text x="'+((X0+X1)/2)+'" y="'+(Y1+30)+'" text-anchor="middle">hand speed, cm/s</text>';[lo+pad,hi-pad].forEach(c=>{s+='<text x="'+(X0-6)+'" y="'+f(ly(c)+4)+'" text-anchor="end">'+c.toFixed(0)+'</text>'});
 if(Sx)s+='<line class="hl" x1="'+X0+'" y1="'+f(ly(Sx))+'" x2="'+X1+'" y2="'+f(ly(Sx))+'"/><text x="'+(X1-2)+'" y="'+f(ly(Sx)-5)+'" text-anchor="end">XIM linear '+Sx.toFixed(1)+'</text>';
 s+='<polyline class="cv" points="'+V.map(v=>f(lx(v))+','+f(ly(y(v)))).join(' ')+'"/>';{const sp=cvSlowPct(T.map(q=>q[1]));if(sp)s+='<text class="pl" x="'+(X0+4)+'" y="'+f(ly(y(5))+(sp<0?-8:16))+'">slow '+(sp>0?'+':'\u2212')+Math.abs(sp)+'%</text>'}
 // dots: your results, with what the curve predicts there; hovering anywhere reads the curve at that hand speed
 if(Sx)M.forEach(m=>{const pr=Sx/cvGain(T,m[0]),d=(m[1]/pr-1)*100;s+='<circle class="pt" cx="'+f(lx(m[0]))+'" cy="'+f(ly(m[1]))+'" r="3.5"><title>'+m[0]+' cm/s: measured '+m[1].toFixed(1)+', the curve predicts '+pr.toFixed(1)+' ('+(d>=0?'+':'')+d.toFixed(1)+'%)</title></circle>'});
-s+='<line id="cvhl" class="gl" x1="0" y1="'+Y0+'" x2="0" y2="'+Y1+'" visibility="hidden"/>';svg.innerHTML=s;
-cvHover={T,Sx,X0,X1,Y1};if(!svg.dataset.hv){svg.dataset.hv=1;svg.addEventListener('mousemove',cvHoverMove);svg.addEventListener('mouseleave',()=>{const e=$('cvhl');if(e)e.setAttribute('visibility','hidden');$('cvhovtxt').textContent=''})}
+s+='<line id="cvhl" class="gl" x1="0" y1="'+Y0+'" x2="0" y2="'+Y1+'" visibility="hidden"/>';
+if(E)E.T.forEach((q,i)=>{const yv=Sx?Sx/(q[1]/1000):q[1]/10;s+='<circle class="eh'+(i===E.sel?' on':'')+'" data-i="'+i+'" cx="'+f(lx(q[0]/10))+'" cy="'+f(ly(yv))+'" r="6"><title>'+(q[0]/10)+' cm/s, gain '+(q[1]/1000).toFixed(3)+'</title></circle>'});svg.innerHTML=s;
+cvHover={T,Sx,X0,X1,Y0,Y1,lo,hi};if(!svg.dataset.hv){svg.dataset.hv=1;svg.addEventListener('mousemove',cvHoverMove);svg.addEventListener('pointerdown',cvEdDown);svg.addEventListener('pointermove',cvEdMove);svg.addEventListener('pointerup',cvEdUp);svg.addEventListener('pointercancel',cvEdUp);svg.addEventListener('dblclick',cvEdDbl);svg.addEventListener('mouseleave',()=>{const e=$('cvhl');if(e)e.setAttribute('visibility','hidden');$('cvhovtxt').textContent=''})}
 $('cvleg').textContent=Sx?'Line: cm/360 with the curve on the Feather and the XIM linear at '+Sx.toFixed(1)+'. Dots: your newest fixed-speed results.':'The curve as a share of the XIM\'s linear sensitivity (cm/360 needs fixed-speed results).'}
 function cvDraw(){if(!S||!$('cvcard'))return;const c=S.cv;if(c&&cvLib&&(c.id!==cvLib.active||c.cand!==cvLib.cand)&&!cvLib.busy){cvLib.busy=1;cvLibLoad()}
 if(!cvLoaded&&c){cvLoaded=true;if(c.src&&!/^lib:/.test(c.src)&&!$('cvx').value){const o=cvSrcParse(c.src);$('cvx').value=o.x||'';if(o.v)$('cvv').value=o.v;if(o.d)$('cvdeg').value=o.d;$('cvtau').value=c.tau||8;if(o.x){cvImport();return}}}
@@ -1104,7 +1130,7 @@ $('cvoff').hidden=!!(c&&c.sup);$('cvoff').textContent=c?'The Feather needs firmw
 const n=cvNow(),dirty=cvDirty(),hs=S.hosts||[],cur=cvHosts(),key=JSON.stringify([n&&n.T,n&&n.sc&&n.sc.rms,c,hs,cur,cvErr,cvFits,dirty,S.c360]);
 $('cvsave').disabled=!n||!dirty&&!!c.n;$('cvdel').disabled=!c.n;$('cvfitb').disabled=!cvP;
 $('cvnow').textContent=!c.n?(n?'Not saved yet.':'No curve saved.'):dirty?'Changed: Save sends it to the Feather.':c.temp?'Off for now: BallSheet is running with the curve off (it comes back by itself 12 s after BallSheet stops).':c.want?(c.applied&&c.on?'On: the Feather applies it now. The XIM\'s own curve should be linear.':'Sending to the Feather…'):'Saved; off on the host connected now'+(c.hosts.length?'.':' (on for no host).');
-if(key===cvKey)return;cvKey=key;
+if(cvEd)return;if(key===cvKey)return;cvKey=key;
 $('cvhosts').innerHTML=hs.length?hs.map(x=>{const on=cur.includes(x[0]);return '<button type="button" class="'+(on?'on':'')+'" data-sig="'+x[0]+'" aria-pressed="'+on+'">'+esc(hostName(x))+'</button>'}).join(''):'<span class="mut">no host recognised yet</span>';
 $('cvhosts').querySelectorAll('button').forEach(b=>b.onclick=()=>cvHostTap(b.dataset.sig));
 const nm={3:'curved, 2 control points',2:'curved, 1 control point',1:'straight lines'};
