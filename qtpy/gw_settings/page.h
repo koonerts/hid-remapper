@@ -1057,12 +1057,15 @@ cvPost(n.T,n.tau,cvHosts(),(m?m[0]:'')+';v='+n.v+';d='+n.deg+(n.sc?';S='+n.sc.S.
 // QT Py fw49: named curves. Every saved curve is kept (16 at most) with an id that cm/360 results and BallSheet's runs
 // carry; one may be the candidate BallSheet's curve-vs-curve A/B compares the active one with.
 let cvLib=null;
+// slow movements' sensitivity against fast ones': the slowest point's gain / the fastest's - 1, % (- = slower, + = faster)
+function cvSlowPct(g){if(!g||!g.length||!(g[g.length-1]>0))return 0;return Math.round((g[0]/g[g.length-1]-1)*100)}
+function cvSlowTxt(g){const p=cvSlowPct(g);return p===0?'slow = fast':'slow movements '+(p>0?'+':'\u2212')+Math.abs(p)+'%'}
 function cvLibLoad(){fetch(tq('/api/curves')).then(r=>r.json()).then(j=>{cvLib=j;cvLibDraw();c3CidOpts();c3.lk='';c3Draw()}).catch(()=>{})}
 function cvLibAct(q,msg){post('/api/curves?'+q).then(r=>{say(r,msg);cvLibLoad()})}
 function cvLibRename(id){const c=cvLib&&cvLib.curves.find(x=>x.id===id),nm=prompt('Name for this curve',c?c.name:'');if(nm!=null&&nm.trim())cvLibAct('id='+id+'&name='+encodeURIComponent(nm.trim()),'Renamed')}
 function cvLibDraw(){const box=$('cvlibbox');if(!box)return;if(!cvLib||!cvLib.curves.length){box.innerHTML='';return}
 box.innerHTML='<h3 style="margin:14px 0 6px">Saved curves</h3><table class="c3t"><tr><th>Name</th><th></th><th></th></tr>'+cvLib.curves.map(c=>{const act=c.id===cvLib.active,cand=c.id===cvLib.cand;
-return '<tr><td><b>'+esc(c.name)+'</b>'+(c.s10?' <span class="mut">· linear '+(c.s10/10).toFixed(1)+'</span>':'')+'</td><td>'+(act?'<span class="use">active</span>':cand?'<span class="wn">candidate</span>':'')+'</td><td style="white-space:nowrap">'+
+return '<tr><td><b>'+esc(c.name)+'</b>'+' <span class="mut">· '+cvSlowTxt(c.g)+(c.s10?' · linear '+(c.s10/10).toFixed(1):'')+'</span>'+'</td><td>'+(act?'<span class="use">active</span>':cand?'<span class="wn">candidate</span>':'')+'</td><td style="white-space:nowrap">'+
 (act?'':'<button onclick="cvLibAct(\'use='+c.id+'\',\'Now active\')" title="Make it the curve the Feather runs">Use</button> ')+(act?'':'<button onclick="cvLibAct(\'cand='+(cand?0:c.id)+'\',\''+(cand?'No candidate':'Set as the candidate')+'\')" title="The curve BallSheet\'s curve-vs-curve A/B compares with the active one">'+(cand?'Not candidate':'Candidate')+'</button> ')+
 '<button onclick="cvLibRename('+c.id+')">Rename</button>'+(act?'':' <button onclick="cvLibAct(\'del='+c.id+'\',\'Deleted\')" aria-label="Delete">×</button>')+'</td></tr>'}).join('')+'</table><p class="mut" style="margin:6px 0 0">Results on the cm/360 card and BallSheet\'s runs are kept per curve. Candidate: BallSheet\'s accuracy test can A/B it blind against the active curve.</p>'}
 setTimeout(cvLibLoad,1500);
@@ -1091,6 +1094,7 @@ $('cvhosts').querySelectorAll('button').forEach(b=>b.onclick=()=>cvHostTap(b.dat
 const nm={3:'curved, 2 control points',2:'curved, 1 control point',1:'straight lines'};
 $('cvfit').textContent=cvErr?cvErr:!n?(cvP?'Set where the curve ends (cm/s of hand speed) and the smoothing.':''):(n.sc?'Matches your '+n.M.length+' fixed-speed results within '+(n.sc.rms*100).toFixed(1)+'% (rms). With the XIM linear at its sensitivity now: '+n.sc.S.toFixed(1)+' cm/360. ':'No fixed-speed results to fit to: 100% is a guess. ')+
 (cvFits&&cvFits.length>1?'Other readings: '+cvFits.slice(1).map(f=>nm[f.deg]+' '+(f.rms*100).toFixed(1)+'% at '+f.v100+' cm/s').join(', ')+'. ':'')+n.T.length+' points to the Feather, from '+(n.T[0][1]/10).toFixed(1)+'% at '+(n.T[0][0]/10)+' cm/s to '+(n.T[n.T.length-1][1]/10).toFixed(1)+'% at '+(n.T[n.T.length-1][0]/10)+' cm/s.';
+if(n)$('cvfit').textContent+=' Sensitivity: '+cvSlowTxt(n.T.map(p=>p[1]))+' against fast ones.';
 if(n&&n.T.some(p=>p[1]>=4000||p[1]<=250))$('cvfit').textContent+=' This curve needs more than the Feather\'s 0.25-4x gain somewhere (clamped): curves like it lean on the XIM\'s sensitivity scaling (set very low) and a stick-speed ceiling the Feather can\'t make.';
 cvPlot(n)}
 // this session's tries (audit 10-23, the user's ask): each turn, every hold and step after it as sent and as credited at
