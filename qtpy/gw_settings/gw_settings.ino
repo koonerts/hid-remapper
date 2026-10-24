@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 48      // this firmware's number, shown in /api/status
+#define QT_FW 49      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -257,6 +257,21 @@ static bool cv_force = false;  // fw47: as dg_force
 // connected now until restore=1 or 12 s after the last keep-alive, never saved
 static bool cvt_off = false;
 static uint32_t cvt_keep_at = 0;
+// fw49: named curves: each saved curve table gets an id (1-16) that cm/360 results carry and BallSheet stamps on its runs,
+// so results under different curves stay apart; one may be the candidate a curve-vs-curve A/B compares the active one
+// with (BallSheet switches to it through /api/cvtemp?cand=1). NVS "cvlib", "cvid", "cvcand".
+#define CVLIB_N 16
+struct __attribute__((packed)) CurveLib {  // 62 bytes
+    uint8_t used;
+    char name[16];
+    uint8_t n, tau;
+    uint16_t s10;  // the XIM-linear cm/360 it was fitted with, x10 (0 = not known)
+    uint16_t sp[CV_N];
+    uint16_t g[CV_N];
+};
+static CurveLib cvlib[CVLIB_N];
+static uint8_t cv_id = 0, cv_cand = 0;  // the active curve's id, the candidate's; 0 = none
+static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
 // fw36: + the cursor speed the run used (BallSheet's %, 0 = not known: the page's runs, and runs from before fw36), so
 // the page and BallSheet can pool runs made at a similar speed (NVS "calib2"; "calib" is moved over once)
@@ -1374,7 +1389,8 @@ static void h_status() {
         bool sup = cv_supported() && ev_ok;
         j += "],\"src\":\"" + cv_src + "\",\"sup\":" + String(cv_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[60] & 1) ? "true" : "false") +
              ",\"got\":" + String(sup && (evb[60] & 2) ? "true" : "false") + ",\"want\":" + String(cv_wanted() ? "true" : "false") +
-             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + "}";  // fw48: temp = a BallSheet curve-off run
+             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + ",\"id\":" + String(cv_id) + ",\"cand\":" + String(cv_cand) + ",\"tcand\":" + String(cvt_cand ? "true" : "false") +
+             ",\"name\":\"" + String(cv_id ? cvlib[cv_id - 1].name : "") + "\",\"cand_name\":\"" + String(cv_cand ? cvlib[cv_cand - 1].name : "") + "\"}";  // fw48: temp = a BallSheet curve-off run; fw49: ids, names, tcand = its candidate block
     }
     j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
     {  // fw43: the measured turn (Feather v27: status 246-251, read with the 192-255 block when a turn starts or ends)
@@ -1384,7 +1400,7 @@ static void h_status() {
              ",\"sent\":" + String((long) sent) + ",\"count\":" + String(sup && (st[56] >= 28) ? "true" : "false") + "}";
         j += ",\"c360\":[";
         for (uint8_t k = 0; k < c360_n; k++) {
-            j += String(k ? "," : "") + "[" + String(c360[k].t) + "," + String(c360[k].cm100) + "," + String(c360[k].sp10) + "," + String(c360[k].dpi & 0xFFFFFF) + "," + String(c360[k].dpi >> 24) + "]";  // fw48: [.., dpi, context]
+            j += String(k ? "," : "") + "[" + String(c360[k].t) + "," + String(c360[k].cm100) + "," + String(c360[k].sp10) + "," + String(c360[k].dpi & 0xFFFF) + "," + String(c360[k].dpi >> 24) + "," + String((c360[k].dpi >> 16) & 0xFF) + "]";  // fw48: [.., dpi, context]; fw49: + curve id
         }
         j += "]";
     }
@@ -2209,6 +2225,20 @@ static uint16_t cv_fallback_dpi() {
 
 static uint8_t cv_payload(uint8_t* d) {  // what C_SET_CURVE carries (no points = off)
     uint16_t fb = cv_fallback_dpi();
+    if (cvt_cand && cv_cand && cvlib[cv_cand - 1].used) {  // fw49: the candidate, on the same hosts
+        const CurveLib& c = cvlib[cv_cand - 1];
+        d[0] = cv_wanted() ? 1 : 0;
+        d[1] = c.tau;
+        d[2] = fb & 0xFF;
+        d[3] = fb >> 8;
+        for (uint8_t k = 0; k < c.n; k++) {
+            d[4 + 4 * k] = c.sp[k] & 0xFF;
+            d[5 + 4 * k] = c.sp[k] >> 8;
+            d[6 + 4 * k] = c.g[k] & 0xFF;
+            d[7 + 4 * k] = c.g[k] >> 8;
+        }
+        return 4 + 4 * c.n;
+    }
     d[0] = cv_wanted() ? 1 : 0;
     d[1] = cv.tau;
     d[2] = fb & 0xFF;
@@ -2233,8 +2263,9 @@ static bool cv_applied() {  // the Feather holds the curve it should (status 252
 
 // as dg_tick: 252-253 come with the 192-255 block, so after sending, read it once more ourselves
 static void cv_tick() {
-    if (cvt_off && (millis() - cvt_keep_at > 12000)) {
-        cvt_off = false;  // fw48: BallSheet stopped checking in (before any other check: it must end even with the Feather away)
+    if ((cvt_off || cvt_cand) && (millis() - cvt_keep_at > 12000)) {
+        cvt_off = false;
+        cvt_cand = false;  // fw48: BallSheet stopped checking in (before any other check: it must end even with the Feather away)
         cv_force = true;
         cv_sent_at = 0;
     }
@@ -2268,8 +2299,9 @@ static void cv_tick() {
 static void h_cvtemp() {
     touch();
     if (server.hasArg("restore")) {
-        if (cvt_off) {
+        if (cvt_off || cvt_cand) {
             cvt_off = false;
+            cvt_cand = false;
             cv_force = true;
             cv_sent_at = 0;
         }
@@ -2277,11 +2309,23 @@ static void h_cvtemp() {
     }
     if (server.hasArg("keep")) {
         cvt_keep_at = millis();
-        return ok_json(cvt_off);
+        return ok_json(cvt_off || cvt_cand);
     }
     if (!from_current_page()) {
         return;
     }
+    if (server.hasArg("cand")) {  // fw49: the candidate curve instead of the active one
+        if (!cv_cand || !cvlib[cv_cand - 1].used) {
+            return ok_json(false, "no candidate curve set (Speed curve card)");
+        }
+        cvt_cand = true;
+        cvt_off = false;
+        cvt_keep_at = millis();
+        cv_force = true;
+        cv_sent_at = 0;
+        return ok_json(true);
+    }
+    cvt_cand = false;
     cvt_off = true;
     cvt_keep_at = millis();
     cv_force = true;
@@ -2307,6 +2351,152 @@ static bool csv_n(const String& s, long lo, long hi, long* out, uint8_t* n) {
         at = comma + 1;
     }
     return true;
+}
+
+static String cvlib_clean(const String& s) {
+    String o;
+    for (unsigned i = 0; (i < s.length()) && (o.length() < 15); i++) {
+        char c = s[i];
+        if (isalnum((unsigned char) c) || (c && strchr(" .-_+", c))) {
+            o += c;
+        }
+    }
+    return o;
+}
+
+static void cvlib_save() {
+    prefs.putBytes("cvlib", cvlib, sizeof(cvlib));
+    prefs.putUChar("cvid", cv_id);
+    prefs.putUChar("cvcand", cv_cand);
+}
+
+static uint16_t cv_src_s10() {  // the "S=" in the active curve's source, x10
+    int at = cv_src.indexOf(";S=");
+    return (at < 0) ? 0 : (uint16_t) lround(cv_src.substring(at + 3).toFloat() * 10);
+}
+
+// the library entry with this table (same points), registered if new; 0 = the library is full
+static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s10, const uint16_t* sp, const uint16_t* g) {
+    int fr = -1;
+    for (int k = 0; k < CVLIB_N; k++) {
+        CurveLib& c = cvlib[k];
+        if (c.used && (c.n == n) && !memcmp(c.sp, sp, 2 * n) && !memcmp(c.g, g, 2 * n)) {
+            if (name.length()) {
+                memset(c.name, 0, sizeof(c.name));
+                strncpy(c.name, name.c_str(), sizeof(c.name) - 1);
+            }
+            if (s10) {
+                c.s10 = s10;
+            }
+            c.tau = tau;
+            return k + 1;
+        }
+        if (!c.used && (fr < 0)) {
+            fr = k;
+        }
+    }
+    if (fr < 0) {
+        return 0;
+    }
+    CurveLib& c = cvlib[fr];
+    memset(&c, 0, sizeof(c));
+    c.used = 1;
+    String nm = name.length() ? name : String("curve ") + String(fr + 1);
+    strncpy(c.name, nm.c_str(), sizeof(c.name) - 1);
+    c.n = n;
+    c.tau = tau;
+    c.s10 = s10;
+    memcpy(c.sp, sp, 2 * n);
+    memcpy(c.g, g, 2 * n);
+    return fr + 1;
+}
+
+static String cvlib_json_one(uint8_t id) {
+    const CurveLib& c = cvlib[id - 1];
+    String j = "{\"id\":" + String(id) + ",\"name\":\"" + String(c.name) + "\",\"n\":" + String(c.n) + ",\"tau\":" + String(c.tau) + ",\"s10\":" + String(c.s10) + ",\"sp\":[";
+    for (uint8_t k = 0; k < c.n; k++) {
+        j += (k ? "," : "") + String(c.sp[k]);
+    }
+    j += "],\"g\":[";
+    for (uint8_t k = 0; k < c.n; k++) {
+        j += (k ? "," : "") + String(c.g[k]);
+    }
+    return j + "]}";
+}
+
+// GET /api/curves: the library; POST ?use=id (make it the active curve) | ?cand=id (0 = none) | ?del=id | ?id=&name= (fw49)
+static void h_curves() {
+    touch();
+    if (server.method() == HTTP_GET) {
+        String j = "{\"active\":" + String(cv_id) + ",\"cand\":" + String(cv_cand) + ",\"curves\":[";
+        bool first = true;
+        for (uint8_t k = 1; k <= CVLIB_N; k++) {
+            if (cvlib[k - 1].used) {
+                j += (first ? "" : ",") + cvlib_json_one(k);
+                first = false;
+            }
+        }
+        server.send(200, "application/json", j + "]}");
+        return;
+    }
+    if (!from_current_page()) {
+        return;
+    }
+    long id = server.arg(server.hasArg("use") ? "use" : server.hasArg("cand") ? "cand" : server.hasArg("del") ? "del" : "id").toInt();
+    bool ok = (id >= 1) && (id <= CVLIB_N) && cvlib[id - 1].used;
+    if (server.hasArg("cand") && (id == 0)) {
+        cv_cand = 0;
+        cvlib_save();
+        return ok_json(true);
+    }
+    if (!ok) {
+        return ok_json(false, "no such curve");
+    }
+    CurveLib& c = cvlib[id - 1];
+    if (server.hasArg("use")) {
+        cv.n = c.n;
+        cv.tau = c.tau;
+        memset(cv.sp, 0, sizeof(cv.sp));
+        memset(cv.g, 0, sizeof(cv.g));
+        memcpy(cv.sp, c.sp, 2 * c.n);
+        memcpy(cv.g, c.g, 2 * c.n);
+        cv_id = id;
+        if (cv_cand == id) {
+            cv_cand = 0;
+        }
+        cv_src = String("lib:") + String(c.name) + (c.s10 ? ";S=" + String(c.s10 / 10.0f, 1) : String(""));
+        prefs.putString("cvsrc", cv_src);
+        prefs.putBytes("curve", &cv, sizeof(cv));
+        cvlib_save();
+        log_edit(EK_CURVE, String("use ") + String(c.name));
+        cv_sent_at = 0;
+        cv_force = true;
+        return ok_json(true);
+    }
+    if (server.hasArg("cand")) {
+        cv_cand = (id == cv_id) ? 0 : id;
+        cvlib_save();
+        return ok_json(true);
+    }
+    if (server.hasArg("del")) {
+        if (id == cv_id) {
+            return ok_json(false, "that's the active curve: use another one first");
+        }
+        memset(&c, 0, sizeof(c));
+        if (cv_cand == id) {
+            cv_cand = 0;
+        }
+        cvlib_save();
+        return ok_json(true);
+    }
+    String nm = cvlib_clean(server.arg("name"));
+    if (!nm.length()) {
+        return ok_json(false, "a name, please");
+    }
+    memset(c.name, 0, sizeof(c.name));
+    strncpy(c.name, nm.c_str(), sizeof(c.name) - 1);
+    cvlib_save();
+    ok_json(true);
 }
 
 static void h_curve() {
@@ -2370,9 +2560,15 @@ static void h_curve() {
     }
     if (n) {
         prefs.putBytes("curve", &cv, sizeof(cv));
+        cv_id = cvlib_add(cvlib_clean(server.arg("name")), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g);  // fw49
+        if (cv_cand == cv_id) {
+            cv_cand = 0;
+        }
     } else {
         prefs.remove("curve");
+        cv_id = 0;
     }
+    cvlib_save();
     log_edit(EK_CURVE, n ? String(hn) + (hn == 1 ? " host" : " hosts") : String("off"));
     cv_sent_at = 0;  // send now
     cv_force = true;
@@ -2401,8 +2597,8 @@ static void h_c360() {
         }
         return ok_json(false, "no result at that time");
     }
-    long cm = server.arg("cm").toInt(), sp = server.arg("sp").toInt(), dpi = server.arg("dpi").toInt(), ctx = server.arg("ctx").toInt();  // fw48: ctx 0-255
-    if ((cm < 100) || (cm > 60000) || (sp < 0) || (sp > 65535) || (dpi < 50) || (dpi > 100000)) {
+    long cm = server.arg("cm").toInt(), sp = server.arg("sp").toInt(), dpi = server.arg("dpi").toInt(), ctx = server.arg("ctx").toInt(), cid = server.arg("cid").toInt();  // fw48: ctx 0-255; fw49: cid
+    if ((cm < 100) || (cm > 60000) || (sp < 0) || (sp > 65535) || (dpi < 50) || (dpi > 65535) || (cid < 0) || (cid > 255)) {
         return ok_json(false, "need cm (x100), sp (cm/s x10) and dpi");
     }
     if (c360_n == C360_KEEP) {  // fw47: full: drop the oldest result that a newer one at its speed replaced (greyed on the
@@ -2410,7 +2606,7 @@ static void h_c360() {
         for (int k = c360_n - 1; k > 0; k--) {
             bool newer = false;
             for (int i = 0; (i < k) && !newer; i++) {
-                newer = (c360[i].sp10 == c360[k].sp10) && ((c360[i].dpi >> 24) == (c360[k].dpi >> 24));  // fw48: per context
+                newer = (c360[i].sp10 == c360[k].sp10) && ((c360[i].dpi >> 16) == (c360[k].dpi >> 16));  // fw48: per context; fw49: and curve
             }
             if (newer) {
                 drop = k;
@@ -2425,7 +2621,7 @@ static void h_c360() {
     c360[0].t = now_unix();
     c360[0].cm100 = (uint16_t) cm;
     c360[0].sp10 = (uint16_t) sp;
-    c360[0].dpi = ((uint32_t) dpi & 0xFFFFFF) | ((uint32_t) (ctx & 0xFF) << 24);
+    c360[0].dpi = ((uint32_t) dpi & 0xFFFF) | ((uint32_t) (cid & 0xFF) << 16) | ((uint32_t) (ctx & 0xFF) << 24);
     prefs.putBytes("c360", c360, sizeof(C360Rec) * c360_n);
     ok_json(true);
 }
@@ -3073,10 +3269,25 @@ void setup() {
     fs_ok = FFat.begin(false);  // fw41: an uploaded page (no format here: an unformatted partition waits for the first upload)
     page_fs_load();
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
+    if (prefs.getBytes("cvlib", cvlib, sizeof(cvlib)) != sizeof(cvlib)) {  // fw49
+        memset(cvlib, 0, sizeof(cvlib));
+    }
+    cv_id = prefs.getUChar("cvid", 0);
+    cv_cand = prefs.getUChar("cvcand", 0);
+    if ((cv_id > CVLIB_N) || (cv_id && !cvlib[cv_id - 1].used)) {
+        cv_id = 0;
+    }
+    if ((cv_cand > CVLIB_N) || (cv_cand && !cvlib[cv_cand - 1].used)) {
+        cv_cand = 0;
+    }
     if (prefs.getBytes("curve", &cv, sizeof(cv)) != sizeof(cv) || (cv.n > CV_N) || (cv.hn > HPROF_MAX) || (cv.tau < 1) || (cv.tau > 200)) {
         cv.n = 0;
         cv.hn = 0;
         cv.tau = 8;
+    }
+    if ((cv.n >= 2) && !cv_id) {  // fw49: the curve saved before named curves becomes the library's first
+        cv_id = cvlib_add(String(""), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g);
+        cvlib_save();
     }
     dg_src = prefs.getString("dgsrc", "");  // fw39: where the gains came from
     dg_src_t = prefs.getULong("dgsrct", 0);
@@ -3125,6 +3336,8 @@ void setup() {
     server.on("/api/c360", HTTP_POST, h_c360);  // fw43
     server.on("/api/curve", HTTP_POST, h_curve);  // fw46
     server.on("/api/cvtemp", HTTP_POST, h_cvtemp);  // fw48
+    server.on("/api/curves", HTTP_GET, h_curves);  // fw49
+    server.on("/api/curves", HTTP_POST, h_curves);
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
