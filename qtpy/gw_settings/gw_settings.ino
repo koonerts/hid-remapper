@@ -2358,7 +2358,7 @@ static String cvlib_clean(const String& s) {
     String o;
     for (unsigned i = 0; (i < s.length()) && (o.length() < 47); i++) {
         char c = s[i];
-        if (isalnum((unsigned char) c) || (c && strchr(" .-_+", c))) {
+        if ((c >= 32) && (c < 127) && (c != '"') && (c != '\\')) {  // any printable ASCII but the two that would break the status JSON
             o += c;
         }
     }
