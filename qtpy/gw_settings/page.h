@@ -818,7 +818,7 @@ tabShow(location.hash.slice(1));
 function drawBar(){const b=[],a=S.auto,hs=S.hosts||[],ch=(c,s,t)=>'<span class="chip'+(c?' '+c:'')+'"'+(t?' title="'+esc(t)+'"':'')+'>'+esc(s)+'</span>';
 if(a&&a[0]!=='00000000'){const x=hs.find(x=>x[0]===a[0]);b.push(ch(a[1]===3?'bad':'',x?hostName(x):'Host',hAutoLine()))}
 const d=S.stage!=null&&S.dpi&&S.dpi[S.stage];if(d)b.push(ch('','Stage '+(S.stage+1)+' · '+d[0]+(d[1]&&d[1]!==d[0]?'/'+d[1]:'')+' DPI'));
-if(S.dg&&S.dg.sup)b.push(ch(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off')));
+if(S.dg&&S.dg.sup)b.push(ch(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off')));{const c=S.cv;if(c&&c.sup){const nm=c.name||'',sh=nm.length>18?nm.slice(0,17)+'\u2026':nm;b.push(c.temp||c.tcand?ch('','Curve: BallSheet A/B','BallSheet is running a blind A/B: which curve is on is hidden until it ends'):c.on?ch('ok','Curve '+(sh||'on'),'The Feather applies '+(nm||'the speed curve')+' on this host'):ch('','Curve off',c.n?'The speed curve isn\'t applied on this host':'No speed curve saved'))}}
 const bt=S.battery;if(bt)b.push(ch(bt.pct<=15?'bad':'','Battery '+bt.pct+'%'));
 $('sbar').innerHTML=b.join('')}
 function render(){const st=$('state');
