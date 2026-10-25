@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 51      // this firmware's number, shown in /api/status
+#define QT_FW 53      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -2314,31 +2314,78 @@ static uint8_t lv_blk[LV_LEN];
 static uint8_t lh_blk[LH_LEN];
 static bool lh_have = false;
 static uint32_t lv_reads = 0, lv_fails = 0;
+static uint32_t lvf_wr = 0, lvf_short = 0, lvf_crc = 0, lvf_mark = 0, lvf_ms = 0;  // fw52: why live reads failed
+static uint8_t lvf_wr_code = 0, lvf_short_n = 0, lvf_bad[LH_LEN], lvf_bad_len = 0, lvf_prev[LH_LEN], lvf_prev_len = 0;
 
 static bool live_supported() {
     return st_ok && st_ext && (st[56] >= 32);
 }
 
-static bool read_sel(uint8_t which, uint8_t* b, uint8_t len) {
+// The Feather takes the select write in its lowest-priority interrupt (the mouse's USB work comes first). When that
+// interrupt is late, the read arrives before the write was taken and the answer is the status block ("G", seen in
+// ~1.7 % of reads, QT Py fw52's capture): so wait a little between the two, and select again once if it still happens.
+#define LV_SEL_WAIT_US 600
+static uint32_t lvf_lost = 0, lvf_retry_ok = 0;
+
+static uint8_t read_sel_once(uint8_t which, uint8_t* b, uint8_t len) {  // 0 ok, 1 failed, 2 got the status block
+    uint32_t t0 = millis();
     Wire1.beginTransmission(LINK_ADDR);
     Wire1.write(LV_SEL);
     Wire1.write(which);
-    if (Wire1.endTransmission() != 0) {
-        return false;
+    uint8_t e = Wire1.endTransmission();
+    if (e != 0) {
+        lvf_wr++;
+        lvf_wr_code = e;
+        lvf_ms = millis() - t0;
+        return 1;
     }
+    delayMicroseconds(LV_SEL_WAIT_US);
     uint8_t n = Wire1.requestFrom((uint8_t) LINK_ADDR, len);
     if (n != len) {
         while (Wire1.available()) {
             Wire1.read();
         }
-        return false;
+        lvf_short++;
+        lvf_short_n = n;
+        lvf_ms = millis() - t0;
+        return 1;
     }
     for (uint8_t i = 0; i < len; i++) {
         b[i] = Wire1.read();
     }
-    return crc8(b, len - 1) == b[len - 1];
+    if ((b[0] == 'G') && (b[1] == 1)) {
+        return 2;
+    }
+    if (crc8(b, len - 1) != b[len - 1]) {
+        lvf_crc++;
+        memcpy(lvf_bad, b, len);
+        lvf_bad_len = len;
+        return 1;
+    }
+    if ((b[0] != 'L') && (b[0] != 'H')) {
+        lvf_mark++;
+        return 1;
+    }
+    if (which == 1) {
+        memcpy(lvf_prev, b, len);  // the last good live block, to compare a bad one with
+        lvf_prev_len = len;
+    }
+    return 0;
 }
 
+static bool read_sel(uint8_t which, uint8_t* b, uint8_t len) {
+    uint8_t r = read_sel_once(which, b, len);
+    if (r == 2) {
+        lvf_lost++;
+        r = read_sel_once(which, b, len);
+        if (r == 0) {
+            lvf_retry_ok++;
+        } else if (r == 2) {
+            lvf_lost++;
+        }
+    }
+    return r == 0;
+}
 static void lv_push(uint16_t v) {
     lv_ring[lv_n % LV_RING] = v;
     lv_n++;
@@ -2404,7 +2451,7 @@ static void h_live() {
     String j = "{\"sup\":" + String(live_supported() ? "true" : "false") + ",\"fw\":" + String(st_ok ? st[56] : 0);
     uint32_t since = server.hasArg("since") ? strtoul(server.arg("since").c_str(), nullptr, 10) : 0;
     uint32_t from = (since && (since <= lv_n) && (lv_n - since < LV_RING)) ? since : ((lv_n > 200) ? lv_n - 200 : 0);
-    j += ",\"n\":" + String(lv_n) + ",\"from\":" + String(from) + ",\"every\":5,\"reads\":" + String(lv_reads) + ",\"fails\":" + String(lv_fails);
+    j += ",\"n\":" + String(lv_n) + ",\"from\":" + String(from) + ",\"every\":5,\"reads\":" + String(lv_reads) + ",\"fails\":" + String(lv_fails) + ",\"why\":{\"wr\":" + String(lvf_wr) + ",\"wr_code\":" + String(lvf_wr_code) + ",\"short\":" + String(lvf_short) + ",\"short_n\":" + String(lvf_short_n) + ",\"crc\":" + String(lvf_crc) + ",\"mark\":" + String(lvf_mark) + ",\"ms\":" + String(lvf_ms) + ",\"lost\":" + String(lvf_lost) + ",\"retry_ok\":" + String(lvf_retry_ok) + ",\"bad\":\"" + hex_bytes(lvf_bad, lvf_bad_len) + "\",\"prev\":\"" + hex_bytes(lvf_prev, lvf_prev_len) + "\"}";
     if (lv_have) {
         const uint8_t* b = lv_blk;
         j += ",\"on\":" + String((b[1] & 1) ? "true" : "false") + ",\"mv\":" + String((b[1] & 4) ? "true" : "false") +
