@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 50      // this firmware's number, shown in /api/status
+#define QT_FW 51      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -2300,7 +2300,7 @@ static void cv_tick() {
 // ---- fw50: the live view (Feather v32): its hand speed every 5 ms and the time spent at each speed, read over the
 // link's selected blocks only while the page's speed curve chart asks (GET /api/live in the last 3 s)
 #define LV_SEL 0xF5   // a 2-byte write [LV_SEL, block]: the Feather's next read answers that block
-#define LV_LEN 48
+#define LV_LEN 80     // Feather v33: 32 samples a read (v32: 48 bytes, 16 samples)
 #define LH_LEN 116
 #define LV_RING 512   // samples kept here (2.5 s)
 #define LV_GAP 0xFFFF // a sample that wasn't read (a break in the trace)
@@ -2356,19 +2356,20 @@ static void live_tick() {
     if (cq_n > 0) {
         return;  // a command waits for its ack in the status
     }
-    if (millis() - lv_read_at >= 40) {
+    if (millis() - lv_read_at >= 50) {
         lv_read_at = millis();
         uint8_t b[LV_LEN];
-        if (read_sel(1, b, LV_LEN) && (b[0] == 'L')) {
+        uint8_t len = (st[56] >= 33) ? 80 : 48, held = (len - 16) / 2;  // samples a block holds: 32 (v33) or 16
+        if (read_sel(1, b, len) && (b[0] == 'L')) {
             lv_reads++;
             uint16_t raw = b[2] | b[3] << 8;
-            uint16_t d = lv_have ? (uint16_t) (raw - lv_raw) : 16;
-            if (d > 64) {
+            uint16_t d = lv_have ? (uint16_t) (raw - lv_raw) : held;
+            if (d > 128) {
                 lv_push(LV_GAP);  // a long break, or the Feather restarted
-                d = 16;
+                d = held;
             }
-            for (uint16_t k = d; k > 0; k--) {  // oldest first; the block holds the newest 16
-                lv_push((k <= 16) ? (uint16_t) (b[8 + 2 * k] | b[9 + 2 * k] << 8) : LV_GAP);
+            for (uint16_t k = d; k > 0; k--) {  // oldest first; the block holds the newest ones
+                lv_push((k <= held) ? (uint16_t) (b[8 + 2 * k] | b[9 + 2 * k] << 8) : LV_GAP);
             }
             lv_raw = raw;
             lv_have = true;
@@ -2391,7 +2392,7 @@ static uint32_t le32(const uint8_t* p) {
     return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t) p[3] << 24;
 }
 
-// GET /api/live?since=N (fw50): the samples after N (else the last second), the speed and gain now, the histogram;
+// GET /api/live?since=N (fw50; fw51 reads Feather v33's 32-sample blocks every 50 ms): the samples after N (else the last second), the speed and gain now, the histogram;
 // POST /api/live?reset=1: the histogram starts over
 static void h_live() {
     touch();
