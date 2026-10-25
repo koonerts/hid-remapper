@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 57      // this firmware's number, shown in /api/status
+#define QT_FW 58      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -1787,7 +1787,7 @@ static void auto_tick() {
     }
     uint32_t wait = (auto_lost >= 20) ? 15000 : 3000;  // unanswered: every 3 s, every 15 s after a minute
     if (auto_state == 0) {
-        if ((millis() - auto_at >= wait) && auto_probe()) {
+        if (((auto_at == 0) || (millis() - auto_at >= wait)) && auto_probe()) {  // fw58: the first read at once (auto_at 0 made it wait until 3 s after power-on)
             auto_state = 8;
         }
         return;
