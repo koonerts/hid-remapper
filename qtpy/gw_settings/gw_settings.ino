@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 55      // this firmware's number, shown in /api/status
+#define QT_FW 56      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -284,7 +284,7 @@ struct __attribute__((packed)) CalibRec {  // 47 bytes
     uint8_t n[8];       // flicks measured per direction
     uint16_t med[8];    // median reach per mille (0 = too few)
     uint16_t g[8];      // the gains this host applied while measuring, per mille
-    uint8_t flags;      // bit 0 raw input, bit 1 coarse browser clock
+    uint8_t flags;      // bit 0 raw input, bit 1 coarse browser clock, bit 2 the speed curve on; 10-24: bits 3-7 its curve id (0 = not recorded)
     uint8_t skipped;    // flicks skipped (at most 255)
     uint8_t speed;      // fw36: cursor speed %, 0 = not known
 };
@@ -2131,6 +2131,28 @@ static void h_calib_post() {
     ok_json(true);
 }
 
+// POST /api/calibcid?run=<its Unix time>&cid=<curve id 1-31> (fw56): record which curve a saved run used (flags bits
+// 3-7, as BallSheet sends them since 10-24), for runs saved before that
+static void h_calibcid() {
+    touch();
+    if (!from_current_page()) {
+        return;
+    }
+    uint32_t run = strtoul(server.arg("run").c_str(), nullptr, 10);
+    long cid = server.arg("cid").toInt();
+    if ((cid < 0) || (cid > 31)) {
+        return ok_json(false, "cid 0-31");
+    }
+    for (uint8_t k = 0; k < calib_n; k++) {
+        if (calib[k].t == run) {
+            calib[k].flags = (calib[k].flags & 7) | (uint8_t) (cid << 3);
+            prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+            return ok_json(true);
+        }
+    }
+    ok_json(false, "no such run");
+}
+
 // POST /api/calibdel?run=<its Unix time> (fw39): remove a saved run
 static void h_calibdel() {
     touch();
@@ -3568,6 +3590,7 @@ void setup() {
     server.on("/api/calib", HTTP_GET, h_calib_get);
     server.on("/api/calibspeed", HTTP_POST, h_calibspeed);
     server.on("/api/calibdel", HTTP_POST, h_calibdel);
+  server.on("/api/calibcid", HTTP_POST, h_calibcid);  // fw56
     server.on("/api/dgtemp", HTTP_POST, h_dgtemp);
     server.on("/api/turn", HTTP_POST, h_turn);  // fw43
     server.on("/api/c360", HTTP_POST, h_c360);  // fw43
