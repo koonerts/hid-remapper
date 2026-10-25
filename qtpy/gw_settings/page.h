@@ -50,7 +50,7 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 #c3plot{width:100%;height:auto;display:block}#c3plot text{fill:var(--mut);font-size:11px}#c3plot .gl{stroke:var(--line)}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
-#cvlibbox a{color:var(--acc);text-decoration:underline dotted}#cvplot{width:100%;height:auto;display:block;touch-action:none}#cvplot .eh{fill:var(--card);stroke:var(--acc);stroke-width:2;cursor:grab}#cvplot .eh.on{fill:var(--acc)}#cvplot text{fill:var(--mut);font-size:11px}#cvplot .gl{stroke:var(--line)}
+#cvlibbox a{color:var(--acc);text-decoration:underline dotted}.lvnow{font-size:13px;color:var(--mut);white-space:nowrap}.lvnow b{font-size:22px;color:var(--fg);margin-left:6px;font-variant-numeric:tabular-nums}#cvplot{width:100%;height:auto;display:block;touch-action:none}#cvplot .eh{fill:var(--card);stroke:var(--acc);stroke-width:2;cursor:grab}#cvplot .eh.on{fill:var(--acc)}#cvplot text{fill:var(--mut);font-size:11px}#cvplot .gl{stroke:var(--line)}
 #cvplot .cv{fill:none;stroke:var(--acc);stroke-width:2}#cvplot .pt{fill:var(--fg)}#cvplot .hl{stroke:var(--mut);stroke-dasharray:5 4}#cvplot .cvlb{fill:var(--acc);opacity:.16}#cvplot .cvld{fill:var(--warn)}#cvplot .cvld.rest{fill:var(--mut)}#cvlstrip{width:100%;height:auto;display:block}#cvlstrip text{fill:var(--mut);font-size:11px}#cvlstrip .gl{stroke:var(--line)}#cvlstrip .sp{fill:none;stroke:var(--warn);stroke-width:1.6}#cvlstrip .dp{fill:none;stroke:var(--acc);stroke-width:1.6}
 label.cvx{flex:1 1 100%}label.cvx input{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .c3s button.sq{font-size:15px}.c3s button.sq.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
@@ -215,7 +215,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div id="cbres" hidden></div>
 <div id="cbwrap"><canvas id="cbc" aria-label="Flick area"></canvas><div id="cbhint"></div></div>
 </div>
-<div class="card" id="lvl"><div class="hd"><h2>Level your swipes</h2></div>
+<div class="card" id="lvl"><div class="hd"><h2>Level your swipes</h2><div class="lvnow" title="The sensor angle the mouse has now (the Mouse tab sets it too)">Sensor angle <b id="lvang">–</b></div></div>
 <p class="mut" style="margin:0 0 8px">Suggests a sensor angle that makes left-right swipes come out level, starting from the angle the mouse has now. Use the mouse on this computer: click the box, swipe left and right a few times the way you do in game, then right-click or press Esc.</p>
 <p class="note" id="lvsnap" hidden>Angle Snap is on: it straightens swipes, so it hides the tilt. Turn it off under More mouse settings to measure.</p>
 <div id="lvwrap"><canvas id="lvc" aria-label="Swipe area"></canvas><div id="lvhint">Swipe left and right a few times · right-click or Esc to finish</div></div>
@@ -829,7 +829,7 @@ const d=S.stage!=null&&S.dpi&&S.dpi[S.stage];if(d)b.push(ch('','Stage '+(S.stage
 const sig=a&&a[0]!=='00000000'?a[0]:'',hn=sig?hostName(hs.find(x=>x[0]===sig)||[sig]):'',cb=(c,s,t,f)=>sig?'<button type="button" class="chip chipb2'+(c?' '+c:'')+'" title="'+esc(t)+'" onclick="'+f+'()">'+esc(s)+'</button>':ch(c,s,t);
 if(S.dg&&S.dg.sup)b.push(cb(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off'),'Click: '+(S.dg.on?'turn the direction gains off':'turn the direction gains on')+' for '+hn,'sbGains'));{const c=S.cv;if(c&&c.sup){const nm=c.name||'',sh=nm.length>18?nm.slice(0,17)+'\u2026':nm;b.push(c.temp||c.tcand?ch('','Curve: BallSheet A/B','BallSheet is running a blind A/B: which curve is on is hidden until it ends'):c.on?cb('ok','Curve '+(sh||'on'),'The Feather applies '+(nm||'the speed curve')+' on '+hn+'. Click: turn it off there','sbCurve'):c.n?cb('','Curve off','Not applied on '+hn+'. Click: turn '+(nm||'the curve')+' on there','sbCurve'):ch('','Curve off','No speed curve saved'))}}
 const bt=S.battery;if(bt)b.push(ch(bt.pct<=15?'bad':'','Battery '+bt.pct+'%'));
-$('sbar').innerHTML=b.join('')}
+$('sbar').innerHTML=b.join('');lvAngDraw()}
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
 else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
@@ -909,6 +909,8 @@ const k=Math.min((W-30)/Math.max(1,x1-x0),(H-30)/Math.max(1,y1-y0),1),px=x=>W/2+
 c.strokeStyle='rgba(255,255,255,.12)';c.beginPath();c.moveTo(0,py(cy));c.lineTo(W,py(cy));c.stroke();
 c.strokeStyle='#9a9a9a';c.lineWidth=1;c.beginPath();lv.pts.forEach(([x,y],i)=>i?c.lineTo(px(x),py(y)):c.moveTo(px(x),py(y)));c.stroke();
 if(!lvOn&&lv.sxx+lv.syy>0){const t=lvTheta(lv),L=W*2;c.strokeStyle='#3ddc4a';c.lineWidth=2;c.beginPath();c.moveTo(px(cx)-Math.cos(t)*L,py(cy)-Math.sin(t)*L);c.lineTo(px(cx)+Math.cos(t)*L,py(cy)+Math.sin(t)*L);c.stroke()}}
+// 10-25: the angle the mouse has now, big in the card's header; Set stays done once the mouse reports that angle
+function lvAngDraw(){const e=$('lvang');if(!e)return;e.textContent=S&&S.angle!=null?S.angle+'°':'–';const b=$('lvset');if(b&&lv&&lv.setTo!=null&&S.angle===lv.setTo){b.disabled=true;b.textContent='\u2713 Set to '+lv.setTo+'°'}}
 function lvResult(){const m=lv;if(!m||m.dist<800||m.sxx<4*m.syy){$('lvr').textContent=!m||m.dist<800?'Too little movement: swipe further, a few times each way.':'Those swipes were not mostly sideways: swipe left and right.';return}
 const tilt=-lvTheta(m)*180/Math.PI,a0=m.a0;
 const want=Math.max(-30,Math.min(30,Math.round(a0+tilt)));
@@ -916,7 +918,7 @@ const dir=Math.abs(tilt)<.05?'level':(tilt>0?'rise to the right':'fall to the ri
 let h='Your swipes '+(Math.abs(tilt)<.05?'are level':dir+' by <b>'+Math.abs(tilt).toFixed(1)+'°</b>')+' at the current angle of '+a0+'°.';
 if(want===a0){h+=' That rounds to no change: keep '+a0+'°.';$('lvb').hidden=false;$('lvset').hidden=true}
 else{h+=' Suggested angle: <b>'+want+'°</b>.';
-$('lvset').hidden=false;$('lvset').textContent='Set '+want+'°';$('lvset').onclick=()=>post('/api/set?angle='+want).then(r=>say(r,'Angle set to '+want+'°'));$('lvb').hidden=false}
+$('lvset').hidden=false;$('lvset').textContent='Set '+want+'°';$('lvset').disabled=false;$('lvset').onclick=()=>{const b=$('lvset');b.disabled=true;b.textContent='Setting\u2026';post('/api/set?angle='+want).then(r=>{say(r,'Angle set to '+want+'°');if(r&&r.ok){m.setTo=want;b.textContent='\u2713 Set to '+want+'°';$('lvr').innerHTML=h+' <b>Set.</b> The angle is now '+want+'°: Measure again to check it.'}else{b.disabled=false;b.textContent='Set '+want+'°'}})};$('lvb').hidden=false}
 $('lvr').innerHTML=h}
 $('lvagain').onclick=()=>lvBegin();
 // fw43: cm/360 in game, through the XIM. Count your own turns (fw44, Feather v28 count mode): the Feather sums the X
