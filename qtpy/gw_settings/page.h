@@ -37,7 +37,7 @@ p{margin:8px 0 0}
 .mut{color:var(--mut);font-size:13px}
 .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;min-height:26px}
-.chip{font-size:12.5px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--soft);color:var(--mut)}
+.chip{font-size:12.5px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--soft);color:var(--mut)}button.chip.chipb2{font:inherit;font-size:12.5px;font-weight:600;border:0;cursor:pointer}button.chip.chipb2:hover{filter:brightness(1.25)}
 button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 [hidden]{display:none!important}  /* a .row's display:flex beat the hidden attribute (the swipe test's buttons, the cm/360 answers) */
 .c3f label{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--mut)}.c3f input,.c3f select{width:110px}
@@ -818,10 +818,15 @@ if(save){tabSet=true;try{history.replaceState(null,'','#'+n)}catch(e){}post('/ap
 function tabApply(){if(tabSet||!S)return;tabSet=true;if(TABS.includes(location.hash.slice(1)))return;if(S.ui_tab>=0&&S.ui_tab<TABS.length)tabShow(TABS[S.ui_tab])}
 tabShow(location.hash.slice(1));
 // status bar: the host the ATEN connects, its DPI stage, direction gains, battery
+// 10-25: the Gains and Curve chips toggle them for the connected host (the cards' own host buttons, same saves)
+function sbSig(){const a=S&&S.auto;return a&&a[0]!=='00000000'?a[0]:''}
+function sbGains(){const sig=sbSig();if(!sig||!S.dg)return;const cur=S.dg.hosts||[],h=cur.includes(sig)?cur.filter(x=>x!==sig):cur.concat([sig]);S.dg.hosts=h;S.dg.on=h.includes(sig);dgKey='';drawDG();drawBar();dgPost(dgSaved(),h)}
+function sbCurve(){const sig=sbSig(),c=S&&S.cv;if(!sig||!c||!c.n||c.temp||c.tcand)return;c.on=!cvHosts().includes(sig);drawBar();cvHostTap(sig)}
 function drawBar(){const b=[],a=S.auto,hs=S.hosts||[],ch=(c,s,t)=>'<span class="chip'+(c?' '+c:'')+'"'+(t?' title="'+esc(t)+'"':'')+'>'+esc(s)+'</span>';
 if(a&&a[0]!=='00000000'){const x=hs.find(x=>x[0]===a[0]);b.push(ch(a[1]===3?'bad':'',x?hostName(x):'Host',hAutoLine()))}
 const d=S.stage!=null&&S.dpi&&S.dpi[S.stage];if(d)b.push(ch('','Stage '+(S.stage+1)+' · '+d[0]+(d[1]&&d[1]!==d[0]?'/'+d[1]:'')+' DPI'));
-if(S.dg&&S.dg.sup)b.push(ch(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off')));{const c=S.cv;if(c&&c.sup){const nm=c.name||'',sh=nm.length>18?nm.slice(0,17)+'\u2026':nm;b.push(c.temp||c.tcand?ch('','Curve: BallSheet A/B','BallSheet is running a blind A/B: which curve is on is hidden until it ends'):c.on?ch('ok','Curve '+(sh||'on'),'The Feather applies '+(nm||'the speed curve')+' on this host'):ch('','Curve off',c.n?'The speed curve isn\'t applied on this host':'No speed curve saved'))}}
+const sig=a&&a[0]!=='00000000'?a[0]:'',hn=sig?hostName(hs.find(x=>x[0]===sig)||[sig]):'',cb=(c,s,t,f)=>sig?'<button type="button" class="chip chipb2'+(c?' '+c:'')+'" title="'+esc(t)+'" onclick="'+f+'()">'+esc(s)+'</button>':ch(c,s,t);
+if(S.dg&&S.dg.sup)b.push(cb(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off'),'Click: '+(S.dg.on?'turn the direction gains off':'turn the direction gains on')+' for '+hn,'sbGains'));{const c=S.cv;if(c&&c.sup){const nm=c.name||'',sh=nm.length>18?nm.slice(0,17)+'\u2026':nm;b.push(c.temp||c.tcand?ch('','Curve: BallSheet A/B','BallSheet is running a blind A/B: which curve is on is hidden until it ends'):c.on?cb('ok','Curve '+(sh||'on'),'The Feather applies '+(nm||'the speed curve')+' on '+hn+'. Click: turn it off there','sbCurve'):c.n?cb('','Curve off','Not applied on '+hn+'. Click: turn '+(nm||'the curve')+' on there','sbCurve'):ch('','Curve off','No speed curve saved'))}}
 const bt=S.battery;if(bt)b.push(ch(bt.pct<=15?'bad':'','Battery '+bt.pct+'%'));
 $('sbar').innerHTML=b.join('')}
 function render(){const st=$('state');
