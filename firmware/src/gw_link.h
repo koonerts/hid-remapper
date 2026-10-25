@@ -15,7 +15,7 @@
 // v32: a 2-byte write [GW_LINK_SEL, block] makes the next read return that block (from its byte 0) instead of the
 // status; the read after it is the status again. 1 = the live speed, 2 = the speed histogram (gw_curve.h)
 #define GW_LINK_SEL 0xF5
-#define GW_LINK_LIVE_LEN 48
+#define GW_LINK_LIVE_LEN 80  // v33 (48 in v32)
 #define GW_LINK_HIST_LEN 116
 
 void gw_link_init();
