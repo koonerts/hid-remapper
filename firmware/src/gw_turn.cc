@@ -56,11 +56,35 @@ void gw_turn_stop(void) {
     }
 }
 
-void gw_turn_count(void) {
+static bool count_after = false;  // v34
+
+void gw_turn_count(bool after_curve) {
+    count_after = after_curve;
     counted = bumped = 0;
     started = false;
     run_no++;
     set_state(GW_TURN_COUNT);
+}
+
+static void tally(int32_t x, uint64_t now_us) {
+    if (!started) {
+        started = true;
+        t0 = bump_at = now_us;
+    }
+    counted += x;
+    if (now_us - t0 > GW_TURN_COUNT_MAX_US) {
+        set_state(GW_TURN_COUNTED);
+    } else if ((counted != bumped) && (now_us - bump_at >= GW_TURN_BUMP_US)) {
+        bumped = counted;
+        bump_at = now_us;
+        changes++;  // a live figure for the page
+    }
+}
+
+void gw_turn_count_out(const int32_t* x, uint64_t now_us) {
+    if ((state == GW_TURN_COUNT) && count_after && (x != nullptr)) {
+        tally(*x, now_us);
+    }
 }
 
 void gw_turn_filter(int32_t* x, int32_t* y, uint64_t now_us) {
@@ -68,17 +92,8 @@ void gw_turn_filter(int32_t* x, int32_t* y, uint64_t now_us) {
         return;
     }
     if (state == GW_TURN_COUNT) {
-        if (!started) {
-            started = true;
-            t0 = bump_at = now_us;
-        }
-        counted += *x;
-        if (now_us - t0 > GW_TURN_COUNT_MAX_US) {
-            set_state(GW_TURN_COUNTED);
-        } else if ((counted != bumped) && (now_us - bump_at >= GW_TURN_BUMP_US)) {
-            bumped = counted;
-            bump_at = now_us;
-            changes++;  // a live figure for the page
+        if (!count_after) {
+            tally(*x, now_us);
         }
         return;
     }

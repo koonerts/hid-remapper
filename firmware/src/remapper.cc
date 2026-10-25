@@ -1121,6 +1121,7 @@ void process_mapping(bool auto_repeat) {
     gw_dirgain_filter(gw_xy_in[0], gw_xy_in[1]);  // v24: the frame's X/Y, before any mapping reads them
     gw_turn_filter(gw_xy_in[0], gw_xy_in[1], now);  // v27: the cm/360 card's steady turn, after the gains
     gw_curve_filter(gw_xy_in[0], gw_xy_in[1], now, gw_mouse_dpi());  // v30: the speed curve, on hand and turn alike
+    gw_turn_count_out(gw_xy_in[0], now);  // v34: count mode after the curve (the page's hand correction)
 
     for (auto& tap_hold : tap_hold_usages) {
         if ((*tap_hold.input_state != 0) && (*(tap_hold.input_state + PREV_STATE_OFFSET) == 0)) {

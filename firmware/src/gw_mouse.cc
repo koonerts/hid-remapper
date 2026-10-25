@@ -1670,7 +1670,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 33
+#define GW_FW_VERSION 34
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1687,7 +1687,7 @@ static void rs_tick(uint32_t now) {
 #define LINK_SET_DIRGAIN 0x0E      // v24: [on, 8 gains uint16 per mille] sensitivity per direction (gw_dirgain.cc), RAM only
 #define LINK_SET_CURVE 0x10        // v30: [on, tau ms, dpi fallback uint16, n x (speed 0.1 cm/s uint16, gain per mille uint16)] the speed curve (gw_curve.cc), RAM only
 #define LINK_CURVE_HIST_RESET 0x11  // v32: [] the speed histogram starts over (gw_curve.cc)
-#define LINK_TURN 0x0F             // v27: [total int32, counts a second uint32, hand counts uint32] a measured turn (gw_turn.cc); [] stops it; v28: [1] counts the real X
+#define LINK_TURN 0x0F             // v27: [total int32, counts a second uint32, hand counts uint32] a measured turn (gw_turn.cc); [] stops it; v28: [1] counts the real X; v34: [2] counts it after the speed curve
 
 // per-frame processing time (gw_frame_time), over a 1 s window; since v19 also how long after its tick each frame was
 // done (td_*), the SOF interrupt's time and the ticks merged (frames never processed), from tick.cc
@@ -1968,8 +1968,8 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                               (uint32_t) d[8] | (uint32_t) d[9] << 8 | (uint32_t) d[10] << 16 | (uint32_t) d[11] << 24);
             } else if (len == 0) {
                 gw_turn_stop();
-            } else if ((len == 1) && (d[0] == 1)) {
-                gw_turn_count();  // v28: count mode
+            } else if ((len == 1) && ((d[0] == 1) || (d[0] == 2))) {
+                gw_turn_count(d[0] == 2);  // v28: count mode; v34: [2] counts after the speed curve
             }
             break;
         case LINK_RADIO_STATE:
