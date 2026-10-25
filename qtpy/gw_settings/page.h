@@ -50,7 +50,7 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 #c3plot{width:100%;height:auto;display:block}#c3plot text{fill:var(--mut);font-size:11px}#c3plot .gl{stroke:var(--line)}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
-#cvplot{width:100%;height:auto;display:block;touch-action:none}#cvplot .eh{fill:var(--card);stroke:var(--acc);stroke-width:2;cursor:grab}#cvplot .eh.on{fill:var(--acc)}#cvplot text{fill:var(--mut);font-size:11px}#cvplot .gl{stroke:var(--line)}
+#cvlibbox a{color:var(--acc);text-decoration:underline dotted}#cvplot{width:100%;height:auto;display:block;touch-action:none}#cvplot .eh{fill:var(--card);stroke:var(--acc);stroke-width:2;cursor:grab}#cvplot .eh.on{fill:var(--acc)}#cvplot text{fill:var(--mut);font-size:11px}#cvplot .gl{stroke:var(--line)}
 #cvplot .cv{fill:none;stroke:var(--acc);stroke-width:2}#cvplot .pt{fill:var(--fg)}#cvplot .hl{stroke:var(--mut);stroke-dasharray:5 4}#cvplot .cvlb{fill:var(--acc);opacity:.16}#cvplot .cvld{fill:var(--warn)}#cvplot .cvld.rest{fill:var(--mut)}#cvlstrip{width:100%;height:auto;display:block}#cvlstrip text{fill:var(--mut);font-size:11px}#cvlstrip .gl{stroke:var(--line)}#cvlstrip .sp{fill:none;stroke:var(--warn);stroke-width:1.6}#cvlstrip .dp{fill:none;stroke:var(--acc);stroke-width:1.6}
 label.cvx{flex:1 1 100%}label.cvx input{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .c3s button.sq{font-size:15px}.c3s button.sq.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
