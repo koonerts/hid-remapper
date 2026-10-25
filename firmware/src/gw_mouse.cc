@@ -1670,7 +1670,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 31
+#define GW_FW_VERSION 32
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1686,6 +1686,7 @@ static void rs_tick(uint32_t now) {
 #define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
 #define LINK_SET_DIRGAIN 0x0E      // v24: [on, 8 gains uint16 per mille] sensitivity per direction (gw_dirgain.cc), RAM only
 #define LINK_SET_CURVE 0x10        // v30: [on, tau ms, dpi fallback uint16, n x (speed 0.1 cm/s uint16, gain per mille uint16)] the speed curve (gw_curve.cc), RAM only
+#define LINK_CURVE_HIST_RESET 0x11  // v32: [] the speed histogram starts over (gw_curve.cc)
 #define LINK_TURN 0x0F             // v27: [total int32, counts a second uint32, hand counts uint32] a measured turn (gw_turn.cc); [] stops it; v28: [1] counts the real X
 
 // per-frame processing time (gw_frame_time), over a 1 s window; since v19 also how long after its tick each frame was
@@ -1954,6 +1955,9 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
                 gw_dirgain_set(d[0] != 0, g);
             }
             break;
+        case LINK_CURVE_HIST_RESET:
+            gw_curve_hist_reset();
+            break;
         case LINK_SET_CURVE:
             gw_curve_link(d, len);
             break;
@@ -2061,6 +2065,20 @@ static void link_tick(uint32_t now) {
         uint8_t s[GW_LINK_STATUS_LEN];
         gw_link_status(s);
         gw_link_set_status(s);
+    }
+    // v32: the live view's blocks (read only when the QT Py selects them)
+    static uint32_t live_at = 0, hist_at = 0;
+    if ((now - live_at) >= 10000) {
+        live_at = now;
+        uint8_t b[GW_LINK_LIVE_LEN];
+        gw_curve_live(b);
+        gw_link_set_block(1, b);
+    }
+    if ((now - hist_at) >= 100000) {
+        hist_at = now;
+        uint8_t b[GW_LINK_HIST_LEN];
+        gw_curve_hist(b);
+        gw_link_set_block(2, b);
     }
 }
 

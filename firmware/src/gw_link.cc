@@ -59,6 +59,13 @@ static uint8_t status_buf[2][GW_LINK_STATUS_LEN];
 static volatile uint8_t status_cur = 0;
 static volatile uint8_t status_reading = 0;
 static volatile uint16_t tx_i = 0;  // the block is 256 bytes since v21
+// v32: the live and histogram blocks, double-buffered the same way; sel = what the next read returns
+static uint8_t live_buf[2][GW_LINK_LIVE_LEN];
+static uint8_t hist_buf[2][GW_LINK_HIST_LEN];
+static volatile uint8_t live_cur = 0, hist_cur = 0;
+static volatile uint8_t sel = 0;
+static const uint8_t* volatile tx_buf = nullptr;
+static volatile uint16_t tx_len = 0;
 
 // In RAM: firmware/src code runs from flash (remapper_single.ld), and this runs from the I2C
 // interrupt, which stays on while HID Remapper's config or the chord table is written to flash
@@ -76,15 +83,32 @@ static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t eve
         }
         case I2C_SLAVE_REQUEST:
             if (tx_i == 0) {
-                status_reading = status_cur;
+                if (sel == 1) {
+                    tx_buf = live_buf[live_cur];
+                    tx_len = GW_LINK_LIVE_LEN;
+                } else if (sel == 2) {
+                    tx_buf = hist_buf[hist_cur];
+                    tx_len = GW_LINK_HIST_LEN;
+                } else {
+                    status_reading = status_cur;
+                    tx_buf = status_buf[status_reading];
+                    tx_len = GW_LINK_STATUS_LEN;
+                }
             }
-            i2c_write_byte_raw(i2c, (tx_i < GW_LINK_STATUS_LEN) ? status_buf[status_reading][tx_i] : 0xFF);
+            i2c_write_byte_raw(i2c, (tx_i < tx_len) ? tx_buf[tx_i] : 0xFF);
             tx_i++;
             break;
         case I2C_SLAVE_FINISH:
-            if ((rx_n > 0) && !rx_overflow && (frame_n == 0)) {
-                memcpy(frame, rx, rx_n);
-                frame_n = rx_n;
+            if ((rx_n == 2) && !rx_overflow && (rx[0] == GW_LINK_SEL)) {
+                sel = rx[1];  // v32: not a frame (those are 4 bytes at least)
+            } else {
+                if ((rx_n > 0) && !rx_overflow && (frame_n == 0)) {
+                    memcpy(frame, rx, rx_n);
+                    frame_n = rx_n;
+                }
+                if (tx_i > 0) {
+                    sel = 0;
+                }
             }
             rx_n = 0;
             rx_overflow = false;
@@ -126,6 +150,18 @@ void gw_link_set_status(const uint8_t* status) {
     status_cur = next;
 }
 
+void gw_link_set_block(uint8_t which, const uint8_t* data) {
+    uint8_t* b0 = (which == 1) ? live_buf[0] : hist_buf[0];
+    uint8_t* b1 = (which == 1) ? live_buf[1] : hist_buf[1];
+    volatile uint8_t& cur = (which == 1) ? live_cur : hist_cur;
+    uint8_t next = cur ^ 1;
+    if ((tx_i != 0) && (tx_buf == (next ? b1 : b0))) {
+        return;  // being read right now
+    }
+    memcpy(next ? b1 : b0, data, (which == 1) ? GW_LINK_LIVE_LEN : GW_LINK_HIST_LEN);
+    cur = next;
+}
+
 #else
 
 void gw_link_init() {
@@ -136,6 +172,9 @@ bool gw_link_take_frame(uint8_t* buf, uint8_t* len) {
 }
 
 void gw_link_set_status(const uint8_t* status) {
+}
+
+void gw_link_set_block(uint8_t which, const uint8_t* data) {
 }
 
 #endif
