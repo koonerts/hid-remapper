@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 53      // this firmware's number, shown in /api/status
+#define QT_FW 54      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -2607,6 +2607,7 @@ static String cvlib_json_one(uint8_t id) {
 
 // GET /api/curves: the library; POST ?use=id (make it the active curve) | ?cand=id (0 = none) | ?del=id | ?id=&name= (fw49)
 // | ?add=1&name=&sp=&g=&tau=&s10=[&setcand=1]: a curve from the page's editor into the library, not running (answers its id)
+// | ?id=&s10= (fw54): its linear cm/360 x10
 static void h_curves() {
     touch();
     if (server.method() == HTTP_GET) {
@@ -2695,6 +2696,20 @@ static void h_curves() {
             cv_cand = 0;
         }
         cvlib_save();
+        return ok_json(true);
+    }
+    if (server.hasArg("s10")) {  // fw54: ?id=&s10=: the XIM's linear cm/360 (x10) the curve goes with
+        long v = server.arg("s10").toInt();
+        if ((v < 0) || (v > 65535)) {
+            return ok_json(false, "linear cm/360 out of range");
+        }
+        c.s10 = (uint16_t) v;
+        if (id == cv_id) {
+            cv_src = String("lib:") + String(c.name) + (c.s10 ? ";S=" + String(c.s10 / 10.0f, 1) : String(""));
+            prefs.putString("cvsrc", cv_src);
+        }
+        cvlib_save();
+        log_edit(EK_CURVE, String("linear ") + String(c.name) + " " + String(c.s10 / 10.0f, 1));
         return ok_json(true);
     }
     String nm = cvlib_clean(server.arg("name"));
