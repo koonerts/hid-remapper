@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 49      // this firmware's number, shown in /api/status
+#define QT_FW 50      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -60,6 +60,7 @@
 #define C_SET_CHORDS 0x0D  // Feather v15+: [part, total, rules] (gw_chords.h)
 #define C_SET_DIRGAIN 0x0E  // Feather v24+: [on, 8 gains uint16 per mille] sensitivity per direction (RAM only there)
 #define C_SET_CURVE 0x10    // Feather v30+: [on, tau ms, dpi fallback uint16, n x (speed 0.1 cm/s uint16, gain per mille uint16)] the speed curve
+#define C_CURVE_HIST_RESET 0x11  // Feather v32+: [] its speed histogram starts over
 #define C_TURN 0x0F        // Feather v27+: [total int32, counts a second uint32, hand counts uint32] a measured turn; [] stops it
 
 // chord table limits and action count (gw_chords.h)
@@ -2296,6 +2297,137 @@ static void cv_tick() {
     }
 }
 
+// ---- fw50: the live view (Feather v32): its hand speed every 5 ms and the time spent at each speed, read over the
+// link's selected blocks only while the page's speed curve chart asks (GET /api/live in the last 3 s)
+#define LV_SEL 0xF5   // a 2-byte write [LV_SEL, block]: the Feather's next read answers that block
+#define LV_LEN 48
+#define LH_LEN 116
+#define LV_RING 512   // samples kept here (2.5 s)
+#define LV_GAP 0xFFFF // a sample that wasn't read (a break in the trace)
+static uint32_t lv_want_at = 0;
+static uint32_t lv_read_at = 0, lh_read_at = 0;
+static uint16_t lv_ring[LV_RING];
+static uint32_t lv_n = 0;  // samples kept so far (the Feather's 16-bit counter, extended here)
+static uint16_t lv_raw = 0;
+static bool lv_have = false;
+static uint8_t lv_blk[LV_LEN];
+static uint8_t lh_blk[LH_LEN];
+static bool lh_have = false;
+static uint32_t lv_reads = 0, lv_fails = 0;
+
+static bool live_supported() {
+    return st_ok && st_ext && (st[56] >= 32);
+}
+
+static bool read_sel(uint8_t which, uint8_t* b, uint8_t len) {
+    Wire1.beginTransmission(LINK_ADDR);
+    Wire1.write(LV_SEL);
+    Wire1.write(which);
+    if (Wire1.endTransmission() != 0) {
+        return false;
+    }
+    uint8_t n = Wire1.requestFrom((uint8_t) LINK_ADDR, len);
+    if (n != len) {
+        while (Wire1.available()) {
+            Wire1.read();
+        }
+        return false;
+    }
+    for (uint8_t i = 0; i < len; i++) {
+        b[i] = Wire1.read();
+    }
+    return crc8(b, len - 1) == b[len - 1];
+}
+
+static void lv_push(uint16_t v) {
+    lv_ring[lv_n % LV_RING] = v;
+    lv_n++;
+}
+
+static void live_tick() {
+    bool want = lv_want_at && (millis() - lv_want_at < 3000);
+    if (!want || !link_up || !live_supported()) {
+        if (lv_have) {
+            lv_have = false;  // the next start is a break in the trace
+            lv_push(LV_GAP);
+        }
+        return;
+    }
+    if (cq_n > 0) {
+        return;  // a command waits for its ack in the status
+    }
+    if (millis() - lv_read_at >= 40) {
+        lv_read_at = millis();
+        uint8_t b[LV_LEN];
+        if (read_sel(1, b, LV_LEN) && (b[0] == 'L')) {
+            lv_reads++;
+            uint16_t raw = b[2] | b[3] << 8;
+            uint16_t d = lv_have ? (uint16_t) (raw - lv_raw) : 16;
+            if (d > 64) {
+                lv_push(LV_GAP);  // a long break, or the Feather restarted
+                d = 16;
+            }
+            for (uint16_t k = d; k > 0; k--) {  // oldest first; the block holds the newest 16
+                lv_push((k <= 16) ? (uint16_t) (b[8 + 2 * k] | b[9 + 2 * k] << 8) : LV_GAP);
+            }
+            lv_raw = raw;
+            lv_have = true;
+            memcpy(lv_blk, b, LV_LEN);
+        } else {
+            lv_fails++;
+        }
+    }
+    if (millis() - lh_read_at >= 500) {
+        lh_read_at = millis();
+        uint8_t b[LH_LEN];
+        if (read_sel(2, b, LH_LEN) && (b[0] == 'H') && (b[1] == 26)) {
+            memcpy(lh_blk, b, LH_LEN);
+            lh_have = true;
+        }
+    }
+}
+
+static uint32_t le32(const uint8_t* p) {
+    return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t) p[3] << 24;
+}
+
+// GET /api/live?since=N (fw50): the samples after N (else the last second), the speed and gain now, the histogram;
+// POST /api/live?reset=1: the histogram starts over
+static void h_live() {
+    touch();
+    if (server.method() == HTTP_POST) {
+        uint8_t z = 0;
+        return ok_json((server.arg("reset") == "1") && live_supported() && queue_cmd(C_CURVE_HIST_RESET, &z, 0));
+    }
+    lv_want_at = millis() | 1;
+    String j = "{\"sup\":" + String(live_supported() ? "true" : "false") + ",\"fw\":" + String(st_ok ? st[56] : 0);
+    uint32_t since = server.hasArg("since") ? strtoul(server.arg("since").c_str(), nullptr, 10) : 0;
+    uint32_t from = (since && (since <= lv_n) && (lv_n - since < LV_RING)) ? since : ((lv_n > 200) ? lv_n - 200 : 0);
+    j += ",\"n\":" + String(lv_n) + ",\"from\":" + String(from) + ",\"every\":5,\"reads\":" + String(lv_reads) + ",\"fails\":" + String(lv_fails);
+    if (lv_have) {
+        const uint8_t* b = lv_blk;
+        j += ",\"on\":" + String((b[1] & 1) ? "true" : "false") + ",\"mv\":" + String((b[1] & 4) ? "true" : "false") +
+             ",\"dpi\":" + String(b[4] | b[5] << 8) + ",\"g\":" + String(b[6] | b[7] << 8) + ",\"v\":" + String(b[8] | b[9] << 8);
+    }
+    j += ",\"s\":[";
+    for (uint32_t k = from; k < lv_n; k++) {
+        uint16_t v = lv_ring[k % LV_RING];
+        if (k > from) {
+            j += ',';
+        }
+        j += (v == LV_GAP) ? String("-1") : String(v);
+    }
+    j += "]";
+    if (lh_have) {
+        j += ",\"h\":{\"r\":" + String(lh_blk[2]) + ",\"ms\":" + String(le32(lh_blk + 4)) + ",\"b\":[";
+        for (uint8_t k = 0; k < 26; k++) {
+            j += (k ? "," : "") + String(le32(lh_blk + 8 + 4 * k));
+        }
+        j += "]}";
+    }
+    server.send(200, "application/json", j + "}");
+}
+
 // POST /api/cvtemp?off=1 | keep=1 | restore=1 (fw48): BallSheet's curve-off runs, see cvt_off
 static void h_cvtemp() {
     touch();
@@ -3375,6 +3507,8 @@ void setup() {
     server.on("/api/c360", HTTP_POST, h_c360);  // fw43
     server.on("/api/curve", HTTP_POST, h_curve);  // fw46
     server.on("/api/cvtemp", HTTP_POST, h_cvtemp);  // fw48
+  server.on("/api/live", HTTP_GET, h_live);  // fw50
+  server.on("/api/live", HTTP_POST, h_live);
     server.on("/api/curves", HTTP_GET, h_curves);  // fw49
     server.on("/api/curves", HTTP_POST, h_curves);
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
@@ -3413,6 +3547,7 @@ void loop() {
     osd_tick();
     dg_tick();
     cv_tick();
+    live_tick();
     tdpi_tick();
     if (ntp_want) {
         ntp_want = false;

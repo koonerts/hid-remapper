@@ -51,7 +51,7 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 #c3plot .cv{fill:none;stroke:var(--acc);stroke-width:2}#c3plot .pt{fill:var(--acc)}#c3plot .pl{fill:var(--fg);font-weight:600}
 #c3plot .hl{stroke:var(--mut);stroke-dasharray:5 4}
 #cvplot{width:100%;height:auto;display:block;touch-action:none}#cvplot .eh{fill:var(--card);stroke:var(--acc);stroke-width:2;cursor:grab}#cvplot .eh.on{fill:var(--acc)}#cvplot text{fill:var(--mut);font-size:11px}#cvplot .gl{stroke:var(--line)}
-#cvplot .cv{fill:none;stroke:var(--acc);stroke-width:2}#cvplot .pt{fill:var(--fg)}#cvplot .hl{stroke:var(--mut);stroke-dasharray:5 4}
+#cvplot .cv{fill:none;stroke:var(--acc);stroke-width:2}#cvplot .pt{fill:var(--fg)}#cvplot .hl{stroke:var(--mut);stroke-dasharray:5 4}#cvplot .cvlb{fill:var(--acc);opacity:.16}#cvplot .cvld{fill:var(--warn)}#cvplot .cvld.rest{fill:var(--mut)}#cvlstrip{width:100%;height:auto;display:block}#cvlstrip text{fill:var(--mut);font-size:11px}#cvlstrip .gl{stroke:var(--line)}#cvlstrip .sp{fill:none;stroke:var(--warn);stroke-width:1.6}#cvlstrip .dp{fill:none;stroke:var(--acc);stroke-width:1.6}
 label.cvx{flex:1 1 100%}label.cvx input{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .c3s button.sq{font-size:15px}.c3s button.sq.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
 .chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}
@@ -254,7 +254,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="cvhosts"></div></div>
 <div class="row c3b"><label>Name<input type="text" id="cvname" maxlength="47" placeholder="e.g. hip 2-line, ends 75.5" style="width:16em"></label><button class="p" id="cvsave" onclick="cvSave()">Save</button><button id="cvdel" onclick="cvDel()">Remove</button></div>
 <p class="c3st" id="cvnow"></p><div id="cvlibbox"></div></section>
-<div><div id="cveditbar" hidden><div class="row c3b" style="margin-top:0"><label>Name<input type="text" id="cvedname" maxlength="47" style="width:15em"></label><button class="p" onclick="cvEdSave()">Save as candidate</button><button onclick="cvEdSave(1)" title="Save it and make it the running curve right away (no A/B first)">Save and use now</button><button onclick="cvEdCancel()">Cancel</button></div><p class="mut" id="cvedinfo" style="margin:6px 0"></p><p class="mut" style="margin:0 0 6px">Drag a point: higher on the chart = more cm/360 (slower there), sideways = its speed. Click one, then the arrow keys move it the same way (Shift = bigger steps); Delete removes it; double-click the chart adds one (10 at most).</p></div><div class="mut" id="cvhovtxt" style="min-height:1.4em;font-variant-numeric:tabular-nums"></div><svg id="cvplot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed with the curve"></svg><p class="mut" style="margin:6px 0 0" id="cvleg"></p></div>
+<div><div id="cveditbar" hidden><div class="row c3b" style="margin-top:0"><label>Name<input type="text" id="cvedname" maxlength="47" style="width:15em"></label><button class="p" onclick="cvEdSave()">Save as candidate</button><button onclick="cvEdSave(1)" title="Save it and make it the running curve right away (no A/B first)">Save and use now</button><button onclick="cvEdCancel()">Cancel</button></div><p class="mut" id="cvedinfo" style="margin:6px 0"></p><p class="mut" style="margin:0 0 6px">Drag a point: higher on the chart = more cm/360 (slower there), sideways = its speed. Click one, then the arrow keys move it the same way (Shift = bigger steps); Delete removes it; double-click the chart adds one (10 at most).</p></div><div class="mut" id="cvhovtxt" style="min-height:1.4em;font-variant-numeric:tabular-nums"></div><svg id="cvplot" viewBox="0 0 360 176" role="img" aria-label="cm/360 by turning speed with the curve"></svg><p class="mut" style="margin:6px 0 0" id="cvleg"></p><div id="cvlbox"><div class="row c3b" style="align-items:center"><label class="chk"><input type="checkbox" id="cvlon" onchange="cvlSet()"> Live: your movements on the curve</label><button id="cvlreset" onclick="cvlReset()" title="Start the time-at-each-speed counts over">Reset counts</button></div><div class="mut" id="cvltxt" style="min-height:2.8em;margin-top:6px;font-variant-numeric:tabular-nums"></div><svg id="cvlstrip" viewBox="0 0 360 112" role="img" aria-label="hand speed and effective DPI over the last 4 seconds"></svg></div></div>
 </div></div>
 <details class="card wide" id="cbsaved" hidden><summary><div><h2>Calibration runs <span class="mut" id="cbsavedn"></span></h2><div class="mut" id="cbsrc"></div></div></summary><div id="cbsavedlist"></div></details>
 </div></section>
@@ -1105,6 +1105,47 @@ function cvEdUp(){if(cvDrag<0)return;cvDrag=-1;if(cvEd)cvEd.rng=null;cvEdDraw()}
 function cvEdDbl(ev){if(!cvEd||ev.target.dataset.i!==undefined||cvEd.T.length>=10)return;const[x]=cvXY(ev),[sp]=cvFromXY(x,0),T=cvEd.T,s=Math.round(sp);if(T.some(q=>Math.abs(q[0]-s)<2))return;
 T.push([s,Math.round(cvGain(T,s/10)*1000)]);T.sort((a,b)=>a[0]-b[0]);cvEd.sel=T.findIndex(q=>q[0]===s);cvEdDraw()}
 let cvHover=null;
+// fw50 + Feather v32: the live view. The Feather's hand speed every 5 ms (as its curve reads it) and the time spent at
+// each speed (counted there at full rate, in game too); polled only while this card is on screen and the box is ticked
+let cvl={on:true,n:0,S:[],j:null,busy:false};try{cvl.on=localStorage.getItem('gw_cvl')!=='0'}catch(e){}
+function cvlSet(){cvl.on=$('cvlon').checked;try{localStorage.setItem('gw_cvl',cvl.on?'1':'0')}catch(e){}cvl.S=[];cvl.n=0;cvlDraw()}
+function cvlReset(){post('/api/live?reset=1').then(r=>say(r,'Counts start over'))}
+function cvlPoll(){const b=$('cvlbox');if(cvl.busy||!cvl.on||document.hidden||!b||!b.offsetParent)return;cvl.busy=true;
+fetch(tq('/api/live'+(cvl.n?'?since='+cvl.n:''))).then(r=>r.json()).then(j=>{cvl.busy=false;cvlTake(j)}).catch(()=>{cvl.busy=false;cvl.j=null;cvlDraw()})}
+setInterval(cvlPoll,100);
+function cvlTake(j){cvl.j=j;if(j.sup&&j.s){if(cvl.n&&j.from!==cvl.n)cvl.S.push(null);j.s.forEach(v=>cvl.S.push(v<0?null:v/10));cvl.n=j.n;if(cvl.S.length>800)cvl.S=cvl.S.slice(-800)}cvlDraw()}
+// the running table (what the effective DPI comes from)
+function cvlTable(){const c=S&&S.cv;return c&&c.n>=2?c.sp.map((s,k)=>[s,c.g[k]]):null}
+// where a share p (0-1) of the counted time lies, interpolated in the bins' log spacing
+function cvlPct(b,p){const tot=b.reduce((a,x)=>a+x,0);if(!tot)return 0;let acc=0;for(let k=0;k<b.length;k++){if(acc+b[k]>=p*tot){const fr=b[k]?(p*tot-acc)/b[k]:0;if(k===0)return 5*fr;if(k===25)return 160;return 5*Math.pow(32,(k-1+fr)/24)}acc+=b[k]}return 160}
+function cvlFmt(v){return v<10?v.toFixed(1):v.toFixed(0)}
+function cvlDur(ms){const s=Math.round(ms/1000);return s<60?s+' s':Math.floor(s/60)+' min '+(s%60)+' s'}
+function cvlDraw(){const box=$('cvlbox');if(!box)return;$('cvlon').checked=cvl.on;const svg=$('cvplot'),old=$('cvlg');if(old)old.remove();
+const j=cvl.j,c=S&&S.cv,blind=!!(c&&(c.temp||c.tcand)),strip=$('cvlstrip'),tx=$('cvltxt');$('cvlreset').disabled=!(cvl.on&&j&&j.sup);strip.style.display=cvl.on&&j&&j.sup&&!blind?'':'none';
+if(!cvl.on){tx.textContent='Live view off.';return}
+if(!j){tx.textContent='Waiting for the QT Py\u2026';return}
+if(!j.sup){tx.textContent='The live view needs Feather firmware v32'+(j.fw?' (it has v'+j.fw+')':'')+'.';return}
+if(blind){tx.textContent='Hidden while BallSheet runs a blind A/B (it would show which curve is on).';return}
+const T=cvlTable(),on=!!j.on,dpi=j.dpi||0,v=(j.v||0)/10,g=on&&T?cvGain(T,v):1;
+let l1=dpi?(j.mv?'Now '+cvlFmt(v)+' cm/s':'At rest')+' \u00b7 gain '+g.toFixed(2)+' \u2192 '+Math.round(dpi*g).toLocaleString()+' effective DPI (mouse '+dpi.toLocaleString()+' DPI)'+(on?'':' \u00b7 the curve isn\'t applying on this host'):'The Feather doesn\'t know the mouse\'s DPI yet, so it can\'t tell the speed.';
+let l2='';const h=j.h;if(h&&h.ms){const b=h.b,tot=b.reduce((a,x)=>a+x,0)||1,lo=b[0]/tot*100,hi=b[25]/tot*100;
+l2='Moving '+cvlDur(h.ms)+' since the counts started: half of it between '+cvlFmt(cvlPct(b,.25))+' and '+cvlFmt(cvlPct(b,.75))+' cm/s (median '+cvlFmt(cvlPct(b,.5))+')'+(lo>=0.5?', '+lo.toFixed(0)+'% under 5':'')+(hi>=0.5?', '+hi.toFixed(0)+'% over 160':'')+'.'}else if(h)l2='No movement counted yet: move the mouse (it counts in game too).';
+tx.innerHTML=esc(l1)+'<br>'+esc(l2);
+// on the chart: the time at each speed as bars along the bottom, the last second of movement as fading dots on the curve
+const H=cvHover;if(H&&H.T&&svg.innerHTML){const f=x=>x.toFixed(1),lx=s=>H.X0+Math.log(Math.min(160,Math.max(5,s))/5)/Math.log(32)*(H.X1-H.X0),yv=s=>{const q=cvGain(H.T,s);return H.Sx?H.Sx/q:q*100},ly=q=>H.Y1-(q-H.lo)/(H.hi-H.lo)*(H.Y1-H.Y0);
+let s='<g id="cvlg" pointer-events="none">';if(h&&h.ms){const b=h.b,mx=Math.max(...b.slice(1,25))||1;for(let k=1;k<25;k++){if(!b[k])continue;const x0=H.X0+(k-1)/24*(H.X1-H.X0),w=(H.X1-H.X0)/24,ht=b[k]/mx*42;s+='<rect class="cvlb" x="'+f(x0+0.5)+'" y="'+f(H.Y1-ht)+'" width="'+f(w-1)+'" height="'+f(ht)+'"/>'}}
+const R=cvl.S.slice(-200);for(let i=0;i<R.length;i+=4){const q=R[i];if(q==null||q<0.5)continue;s+='<circle class="cvld" cx="'+f(lx(q))+'" cy="'+f(ly(yv(q)))+'" r="2.5" opacity="'+(0.1+0.5*i/R.length).toFixed(2)+'"/>'}
+if(dpi)s+='<circle class="cvld'+(j.mv?'':' rest')+'" cx="'+f(lx(v))+'" cy="'+f(ly(yv(v)))+'" r="5.5" stroke="var(--card)" stroke-width="1.5"/>';
+svg.insertAdjacentHTML('beforeend',s+'</g>')}
+// the strip: hand speed and effective DPI over the last 4 s
+const W=cvl.S.slice(-800),X0=42,X1=344,n=W.length,px=i=>X1-(n-1-i)/799*(X1-X0);let vm=20;W.forEach(q=>{if(q!=null&&q>vm)vm=q});vm=vm<=20?20:vm<=40?40:vm<=80?80:vm<=160?160:Math.ceil(vm/100)*100;
+const gs=on&&T?T.map(q=>q[1]/1000):[1],gl=Math.min(...gs),gh=Math.max(...gs),dl=dpi*gl*(gl===gh?0.9:1),dh=dpi*gh*(gl===gh?1.1:1);
+const line=(fy,cls)=>{let o='',seg=[];const end=()=>{if(seg.length>1)o+='<polyline class="'+cls+'" points="'+seg.join(' ')+'"/>';seg=[]};W.forEach((q,i)=>{if(q==null){end();return}seg.push(px(i).toFixed(1)+','+fy(q).toFixed(1))});end();return o};
+const sy=q=>48-Math.min(q,vm)/vm*40,dy=q=>{const e=dpi*(on&&T?cvGain(T,q):1);return 104-(dh>dl?(e-dl)/(dh-dl):0.5)*40};
+let o='<text x="'+(X0-6)+'" y="12" text-anchor="end">'+vm+'</text><text x="'+(X0-6)+'" y="50" text-anchor="end">0</text><line class="gl" x1="'+X0+'" y1="48" x2="'+X1+'" y2="48"/>';
+o+='<text x="'+(X0-6)+'" y="68" text-anchor="end">'+Math.round(dh).toLocaleString()+'</text><text x="'+(X0-6)+'" y="106" text-anchor="end">'+Math.round(dl).toLocaleString()+'</text><line class="gl" x1="'+X0+'" y1="104" x2="'+X1+'" y2="104"/>';
+o+='<text x="'+X1+'" y="12" text-anchor="end">hand speed (cm/s), last 4 s</text><text x="'+X1+'" y="66" text-anchor="end">effective DPI (mouse DPI \u00d7 the curve\'s gain)</text>';
+if(dpi)o+=line(sy,'sp')+line(dy,'dp');strip.innerHTML=o}
 function cvHoverMove(ev){const h=cvHover,svg=$('cvplot');if(!h||!h.T)return;const r=svg.getBoundingClientRect(),x=(ev.clientX-r.left)/r.width*360;if(x<h.X0||x>h.X1)return;
 const v=5*Math.pow(32,(x-h.X0)/(h.X1-h.X0)),g=cvGain(h.T,v),fast=h.T[h.T.length-1][1]/1000,rel=(g/fast-1)*100,l=$('cvhl'),tx=$('cvhovtxt');
 l.setAttribute('x1',x.toFixed(1));l.setAttribute('x2',x.toFixed(1));l.setAttribute('visibility','visible');
