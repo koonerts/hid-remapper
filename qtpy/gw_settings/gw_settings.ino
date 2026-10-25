@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 56      // this firmware's number, shown in /api/status
+#define QT_FW 57      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -193,6 +193,17 @@ static uint32_t auto_sig = 0;     // this power-on's host, once known
 static uint8_t auto_want = 0xFF;  // the stage (0-4) to set, 0xFF = nothing to do
 static uint8_t auto_tries = 0;
 static uint32_t auto_at = 0;
+// fw57: the auto stage's timeline this power-on (ms since the QT Py started, which is about when the ATEN switched),
+// for /api/hosts: 1 capture read, 2 host known, 3 Feather answering, 4 Warg there, 5 stage read sent, 6 answer (stage),
+// 7 read unanswered, 8 stage written (stage), 9 the Feather took it, 10 confirmed
+struct AutoEv { uint32_t ms; uint8_t code; int8_t v; };
+static AutoEv auto_tl[20];
+static uint8_t auto_tl_n = 0;
+static void atl(uint8_t code, int v = 0) {
+    if (auto_tl_n < 20) {
+        auto_tl[auto_tl_n++] = { millis(), code, (int8_t) v };
+    }
+}
 // fw34: what the automatic stage did, kept across a QT Py-only restart (RTC memory survives a software reset, not a power
 // cut). A restart keeps a stage that was already set for this host (it may have been changed by hand since) and still
 // sets one that wasn't (fw33 kept whatever was there: after the signature fix, FLOW would have stayed on XIM's stage).
@@ -658,6 +669,7 @@ static void hcap_take(const uint8_t* u) {
         }
     }
     if (!same) {
+        atl(1, u[3]);
         memmove(hcap + 1, hcap, sizeof(HostCap) * (HCAP_KEEP - 1));
         if (hcap_n < HCAP_KEEP) {
             hcap_n++;
@@ -1703,6 +1715,7 @@ static bool auto_probe() {  // the Feather has one probe slot: not while the DPI
         return false;
     }
     auto_at = millis();
+    atl(5);
     return true;
 }
 
@@ -1747,8 +1760,18 @@ static void auto_tick() {
                 auto_at = 0;
                 auto_from = 0xFF;
                 auto_since = millis();
+                atl(2, auto_state);
             }
         }
+    }
+    static bool seen_link = false, seen_warg = false;
+    if (!seen_link && link_up && st_ok) {
+        seen_link = true;
+        atl(3);
+    }
+    if (!seen_warg && st_ok && (st[3] & 1)) {
+        seen_warg = true;
+        atl(4);
     }
     auto_rtc.magic = AUTO_RTC_MAGIC;  // fw34: for a QT Py-only restart
     auto_rtc.boots = b_boots;
@@ -1773,16 +1796,19 @@ static void auto_tick() {
         int v = auto_answer();
         if (v < 0) {
             if (millis() - auto_at > 3000) {  // no answer (asleep?): read again later (state 0), write nothing
+                atl(7);
                 auto_lost++;
                 auto_state = 0;
             }
             return;
         }
+        atl(6, v);
         if (auto_from == 0xFF) {
             auto_from = (uint8_t) v;  // the mouse's stage before any write
         }
         if (v == auto_want) {
             auto_state = 2;
+            atl(10);
             if (auto_from != auto_want) {  // fw33: only a real change goes into the log (it holds 20)
                 HostProf* p = hprof_at(hprof_find(auto_sig));
                 log_edit_as(EK_AUTO_STAGE, String(p ? p->name : "") + "=" + String(auto_want), 7, 0);
@@ -1797,6 +1823,7 @@ static void auto_tick() {
         }
         uint8_t b = auto_want;
         if (queue_cmd(C_SET_STAGE, &b, 1)) {
+            atl(8, b);
             auto_tries++;
             auto_at = millis();
             auto_state = 1;
@@ -1806,6 +1833,7 @@ static void auto_tick() {
     // 1: written; once the Feather took it, read the mouse back
     if (st[4] == auto_want) {
         if (auto_probe()) {
+            atl(9);
             auto_state = 5;
         }
     } else if ((cq_n == 0) && (millis() - auto_at >= 1500)) {
@@ -1823,7 +1851,11 @@ static void h_hosts() {
     j += "{\"boot\":" + String((uint16_t) b_boots) + ",\"now\":" + String(now_unix());
     snprintf(h, sizeof(h), "%08lx", (unsigned long) auto_sig);
     j += ",\"auto\":{\"sig\":\"" + String(h) + "\",\"stage\":" + String(auto_want == 0xFF ? 0 : auto_want + 1) + ",\"state\":" +
-         String(auto_state) + ",\"tries\":" + String(auto_tries) + "},\"profiles\":[";
+         String(auto_state) + ",\"tries\":" + String(auto_tries) + ",\"tl\":[";  // fw57: [ms, code, value]
+    for (uint8_t k = 0; k < auto_tl_n; k++) {
+        j += (k ? ",[" : "[") + String(auto_tl[k].ms) + "," + String(auto_tl[k].code) + "," + String(auto_tl[k].v) + "]";
+    }
+    j += "]},\"profiles\":[";
     for (uint8_t k = 0; k < hprof_n; k++) {
         snprintf(h, sizeof(h), "%08lx", (unsigned long) hprof[k].sig);
         j += (k ? ",{\"sig\":\"" : "{\"sig\":\"") + String(h) + "\",\"stage\":" + String(hprof[k].stage) + ",\"name\":\"" + String(hprof[k].name) + "\"}";
