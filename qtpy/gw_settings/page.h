@@ -968,8 +968,10 @@ const n=$('c3cidnote'),v=Number(s.value);n.hidden=v===a;n.textContent=a===255&&v
 function c3CtxSet(){try{localStorage.setItem('gw_c3ctx',$('c3ctx').value)}catch(e){}if(!c3.phase){c3.n=0;c3.hist=[]}c3.lk='';cvKey='';c3Draw();cvDraw()}
 function c3Pts(){const L=c3L(),by={},d0=L.length?L[0][3]:0;L.forEach(r=>{if(r[2]>0&&r[3]===d0&&!(r[2] in by))by[r[2]]=r});return Object.values(by).sort((a,b)=>a[2]-b[2]).map(r=>[r[2]/10,r[1]/100])}
 // where a check at sp cm/s starts: your curve there (between the two nearest speeds, in log speed; held at the ends), else your by-hand count
-function c3At(sp){const P=c3Pts();if(!P.length){const h=c3L().find(r=>!r[2]);return h?[h[1]/100,'your by-hand count']:[0,'']}
-if(sp<=P[0][0])return[P[0][1],P[0][0]===sp?'your result at '+sp+' cm/s':'your slowest result ('+P[0][0]+' cm/s)'];const z=P[P.length-1];if(sp>=z[0])return[z[1],z[0]===sp?'your result at '+sp+' cm/s':'your fastest result ('+z[0]+' cm/s)'];
+// 10-25: outside your results (or with none) the selected curve's prediction (its linear cm/360 / its gain there), not
+// the nearest result held flat: a new curve's only result at 5 cm/s made 80 cm/s start from 371
+function c3At(sp){const P=c3Pts(),pr=c3Pred(sp),pt=pr>0?[pr,'the curve\'s prediction at '+sp+' cm/s (no result there yet)']:null;if(!P.length){if(pt)return pt;const h=c3L().find(r=>!r[2]);return h?[h[1]/100,'your by-hand count']:[0,'']}
+if(sp<=P[0][0])return P[0][0]===sp?[P[0][1],'your result at '+sp+' cm/s']:pt||[P[0][1],'your slowest result ('+P[0][0]+' cm/s)'];const z=P[P.length-1];if(sp>=z[0])return z[0]===sp?[z[1],'your result at '+sp+' cm/s']:pt||[z[1],'your fastest result ('+z[0]+' cm/s)'];
 for(let i=1;i<P.length;i++)if(sp<=P[i][0]){if(sp===P[i][0])return[P[i][1],'your result at '+sp+' cm/s'];const u=Math.log(sp/P[i-1][0])/Math.log(P[i][0]/P[i-1][0]);return[P[i-1][1]+(P[i][1]-P[i-1][1])*u,'your curve between '+P[i-1][0]+' and '+P[i][0]+' cm/s']}return[z[1],'']}
 function c3From(){return c3At(Number($('c3sp').value))[0]}
 // the curve: fixed-speed results by speed (log axis), your by-hand count dashed
@@ -992,7 +994,7 @@ function c3Reset(){if(c3.hand){post('/api/turn?stop=1');c3.hand=null}c3.mk=null;
 if(c3.cur){c3.cur.rule='start over';c3LogPush()}c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.shortSent=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3.pend=0;c3.lost=null;if(c3.press){clearTimeout(c3.press.timer);c3.press=null}c3Persist();c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=c3From(),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
 if(!S.turn||!S.turn.sup||!cpc||c3.phase||c3.waitRun>=0)return;if(sp!==c3.sp){c3.n=0;c3.hist=[]}c3.sp=sp;c3.tn=tn;  // another speed starts again from your curve there
-if(!c3.n){if(!(e>=2&&e<=300)){toast('Count your own turns first: the check starts from that result',true);return}c3.n=Math.round(e*cpc)}
+if(!c3.n){if(!(e>=2&&e<=2000)){toast('Count your own turns first: the check starts from that result',true);return}c3.n=Math.round(e*cpc)}
 c3.shortSent=Math.round(c3.n*Number($('c3short').value)/360);const total=c3.n*tn-c3.shortSent,dur=total/(sp*cpc)*1000,lim=S.fw>=29?118000:28000;if(dur>lim){toast('Too long for one turn ('+(S.fw>=29?'2 min':'30 s')+' at most): a faster speed or fewer turns',true);return}
 c3.run=(S.turn.run+1)&255;c3.phase='turn';c3.at=Date.now();c3.dur=dur;c3.msg='Turning'+(tn>1?' '+tn+' times':'')+'… hands off the mouse.';c3Draw();
 const r=await post('/api/turn?n='+total+'&r='+Math.round(sp*cpc)+'&hand='+Math.round(cpc*0.2));if(!r||!r.ok){c3.phase='';c3.msg='The QT Py refused: '+(r&&r.err||'no answer')+'.';c3Draw()}}
