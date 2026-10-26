@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 59      // this firmware's number, shown in /api/status
+#define QT_FW 60      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -285,6 +285,18 @@ struct __attribute__((packed)) CurveLib {  // 93 bytes (fw49 first had 16-byte n
 static CurveLib cvlib[CVLIB_N];
 static_assert(sizeof(CurveLib) == 93, "the boot conversion assumes this layout");
 static uint8_t cv_id = 0, cv_cand = 0;  // the active curve's id, the candidate's; 0 = none
+// fw60: each library curve's own direction gains (the table saved while it ran), with where they came from. Use swaps
+// them in with the curve; BallSheet's candidate arm runs the candidate's. A curve without its own keeps the current ones.
+struct __attribute__((packed)) CurveGains {
+    uint8_t has;
+    uint16_t g[8];
+    uint32_t src_t;
+    char src[121];
+};
+static CurveGains cvdg[CVLIB_N];
+static void cvdg_save() {
+    prefs.putBytes("cvdg", cvdg, sizeof(cvdg));
+}
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
 // fw36: + the cursor speed the run used (BallSheet's %, 0 = not known: the page's runs, and runs from before fw36), so
@@ -1950,7 +1962,46 @@ static bool dg_wanted() {  // on for the host connected now
 }
 
 static const uint16_t* dg_eff() {  // fw42: the table the Feather should have: the temporary one during an A/B test
-    return dgt_on ? dgt_g : dg.g;
+    if (dgt_on) {
+        return dgt_g;
+    }
+    if (cvt_cand && cv_cand && cvdg[cv_cand - 1].has) {
+        return cvdg[cv_cand - 1].g;  // fw60: the candidate's arm runs the candidate's own gains
+    }
+    return dg.g;
+}
+
+// fw60: the gains in use belong to the running curve: stored with it (each save, and before another curve takes over)
+static void cvdg_stamp(uint8_t id) {
+    if (!id || (id > CVLIB_N)) {
+        return;
+    }
+    CurveGains& c = cvdg[id - 1];
+    c.has = 1;
+    memcpy(c.g, dg.g, sizeof(c.g));
+    c.src_t = dg_src_t;
+    memset(c.src, 0, sizeof(c.src));
+    strncpy(c.src, dg_src.c_str(), sizeof(c.src) - 1);
+    cvdg_save();
+}
+
+// fw60: a curve becomes the running one: its own gains (if it has them) become the gains in use
+static void cvdg_take(uint8_t id) {
+    if (!id || (id > CVLIB_N) || !cvdg[id - 1].has) {
+        return;
+    }
+    const CurveGains& c = cvdg[id - 1];
+    if (memcmp(dg.g, c.g, sizeof(dg.g))) {
+        log_edit(EK_DIRGAIN, String("with ") + String(cvlib[id - 1].name));
+    }
+    memcpy(dg.g, c.g, sizeof(dg.g));
+    dg_src = String(c.src);
+    dg_src_t = c.src_t;
+    prefs.putBytes("dgain", &dg, sizeof(dg));
+    prefs.putString("dgsrc", dg_src);
+    prefs.putULong("dgsrct", dg_src_t);
+    dg_sent_at = 0;
+    dg_force = true;
 }
 
 static bool dg_eff_want() {
@@ -2119,6 +2170,7 @@ static void h_dirgain() {
     memcpy(dg.sig, sig, sizeof(uint32_t) * n);
     prefs.putBytes("dgain", &dg, sizeof(dg));
     log_edit(EK_DIRGAIN, String(n) + (n == 1 ? " host" : " hosts"));
+    cvdg_stamp(cv_id);  // fw60
     dg_sent_at = 0;  // send now
     dg_force = true;
     ok_json(true);
@@ -2328,6 +2380,8 @@ static void cv_tick() {
         cvt_cand = false;  // fw48: BallSheet stopped checking in (before any other check: it must end even with the Feather away)
         cv_force = true;
         cv_sent_at = 0;
+        dg_force = true;  // fw60
+        dg_sent_at = 0;
     }
     if (!link_up || !cv_supported() || (cq_n > 0)) {
         return;
@@ -2546,6 +2600,8 @@ static void h_cvtemp() {
             cvt_cand = false;
             cv_force = true;
             cv_sent_at = 0;
+            dg_force = true;  // fw60: the running curve's gains back
+            dg_sent_at = 0;
         }
         return ok_json(true);
     }
@@ -2565,6 +2621,8 @@ static void h_cvtemp() {
         cvt_keep_at = millis();
         cv_force = true;
         cv_sent_at = 0;
+        dg_force = true;  // fw60: the candidate's own gains
+        dg_sent_at = 0;
         return ok_json(true);
     }
     cvt_cand = false;
@@ -2663,7 +2721,15 @@ static String cvlib_json_one(uint8_t id) {
     for (uint8_t k = 0; k < c.n; k++) {
         j += (k ? "," : "") + String(c.g[k]);
     }
-    return j + "]}";
+    j += "]";
+    if (cvdg[id - 1].has) {  // fw60: its own direction gains
+        j += ",\"dg\":[";
+        for (uint8_t k = 0; k < 8; k++) {
+            j += (k ? "," : "") + String(cvdg[id - 1].g[k]);
+        }
+        j += "]";
+    }
+    return j + "}";
 }
 
 // GET /api/curves: the library; POST ?use=id (make it the active curve) | ?cand=id (0 = none) | ?del=id | ?id=&name= (fw49)
@@ -2730,7 +2796,9 @@ static void h_curves() {
         memset(cv.g, 0, sizeof(cv.g));
         memcpy(cv.sp, c.sp, 2 * c.n);
         memcpy(cv.g, c.g, 2 * c.n);
+        cvdg_stamp(cv_id);  // fw60
         cv_id = id;
+        cvdg_take(cv_id);
         if (cv_cand == id) {
             cv_cand = 0;
         }
@@ -2753,6 +2821,8 @@ static void h_curves() {
             return ok_json(false, "that's the active curve: use another one first");
         }
         memset(&c, 0, sizeof(c));
+        memset(&cvdg[id - 1], 0, sizeof(CurveGains));  // fw60
+        cvdg_save();
         if (cv_cand == id) {
             cv_cand = 0;
         }
@@ -2844,7 +2914,12 @@ static void h_curve() {
     }
     if (n) {
         prefs.putBytes("curve", &cv, sizeof(cv));
+        uint8_t was = cv_id;
         cv_id = cvlib_add(cvlib_clean(server.arg("name")), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g);  // fw49
+        if (cv_id != was) {  // fw60: as Use
+            cvdg_stamp(was);
+            cvdg_take(cv_id);
+        }
         if (cv_cand == cv_id) {
             cv_cand = 0;
         }
@@ -3591,6 +3666,13 @@ void setup() {
             dg.g[k] = 1000;
         }
         dg.n = 0;
+    }
+    if (prefs.getBytes("cvdg", cvdg, sizeof(cvdg)) != sizeof(cvdg)) {  // fw60: per-curve gains; first boot: the running curve's are the ones in use
+        memset(cvdg, 0, sizeof(cvdg));
+        cvdg_stamp(cv_id);
+        if (!cv_id) {
+            cvdg_save();
+        }
     }
     if (prefs.getUChar("sigv", 1) < 2) {  // fw34: hosts saved under the v1 signature
         sig_migrate();
