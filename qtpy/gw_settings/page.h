@@ -821,7 +821,7 @@ tabShow(location.hash.slice(1));
 // status bar: the host the ATEN connects, its DPI stage, direction gains, battery
 // 10-25: the Gains and Curve chips toggle them for the connected host (the cards' own host buttons, same saves)
 // 10-26: Snap and Motion Sync chips: the mouse's own settings (the More mouse settings buttons, same request)
-function sbOpt(k){if(!S||!S.opt||S.opt[k]==null)return;const v=S.opt[k]?0:1;S.opt[k]=!!v;drawBar();if(typeof drawOpt==='function')drawOpt();send(k,v)}
+function sbOpt(k){if(!S||!S.opt||S.opt[k]==null)return;const prev=S.opt[k],v=prev?0:1;optSet[k]={v:!!v,t:Date.now()};S.opt[k]=!!v;drawBar();drawOpt();post('/api/opt?k='+k+'&v='+v).then(r=>{say(r,'Sent to the mouse');if(!r.ok){delete optSet[k];if(S.opt)S.opt[k]=prev;drawBar();drawOpt()}})}  // 10-26: /api/opt, as More mouse settings (send() only takes top-level settings: it dropped these)
 function sbSig(){const a=S&&S.auto;return a&&a[0]!=='00000000'?a[0]:''}
 function sbGains(){const sig=sbSig();if(!sig||!S.dg)return;const cur=S.dg.hosts||[],h=cur.includes(sig)?cur.filter(x=>x!==sig):cur.concat([sig]);S.dg.hosts=h;S.dg.on=h.includes(sig);dgKey='';drawDG();drawBar();dgPost(dgSaved(),h)}
 function sbCurve(){const sig=sbSig(),c=S&&S.cv;if(!sig||!c||!c.n||c.temp||c.tcand)return;c.on=!cvHosts().includes(sig);drawBar();cvHostTap(sig)}
