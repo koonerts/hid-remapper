@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 58      // this firmware's number, shown in /api/status
+#define QT_FW 59      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -269,6 +269,7 @@ static bool cv_force = false;  // fw47: as dg_force
 // connected now until restore=1 or 12 s after the last keep-alive, never saved
 static bool cvt_off = false;
 static uint32_t cvt_keep_at = 0;
+static uint32_t cvt_ab_at = 0;  // fw59: BallSheet runs a blind curve A/B (ab=1 on any cvtemp call, both arms): the page hides the arm
 // fw49: named curves: each saved curve table gets an id (1-16) that cm/360 results carry and BallSheet stamps on its runs,
 // so results under different curves stay apart; one may be the candidate a curve-vs-curve A/B compares the active one
 // with (BallSheet switches to it through /api/cvtemp?cand=1). NVS "cvlib", "cvid", "cvcand".
@@ -1403,7 +1404,7 @@ static void h_status() {
         bool sup = cv_supported() && ev_ok;
         j += "],\"src\":\"" + cv_src + "\",\"sup\":" + String(cv_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[60] & 1) ? "true" : "false") +
              ",\"got\":" + String(sup && (evb[60] & 2) ? "true" : "false") + ",\"want\":" + String(cv_wanted() ? "true" : "false") +
-             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + ",\"id\":" + String(cv_id) + ",\"cand\":" + String(cv_cand) + ",\"tcand\":" + String(cvt_cand ? "true" : "false") +
+             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + ",\"id\":" + String(cv_id) + ",\"cand\":" + String(cv_cand) + ",\"tcand\":" + String(cvt_cand ? "true" : "false") + ",\"ab\":" + String((cvt_ab_at && (millis() - cvt_ab_at < 12000)) ? "true" : "false") +
              ",\"name\":\"" + String(cv_id ? cvlib[cv_id - 1].name : "") + "\",\"cand_name\":\"" + String(cv_cand ? cvlib[cv_cand - 1].name : "") + "\"}";  // fw48: temp = a BallSheet curve-off run; fw49: ids, names, tcand = its candidate block
     }
     j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
@@ -2536,6 +2537,9 @@ static void h_live() {
 // POST /api/cvtemp?off=1 | keep=1 | restore=1 (fw48): BallSheet's curve-off runs, see cvt_off
 static void h_cvtemp() {
     touch();
+    if (server.arg("ab") == "1") {
+        cvt_ab_at = millis() | 1;
+    }
     if (server.hasArg("restore")) {
         if (cvt_off || cvt_cand) {
             cvt_off = false;
