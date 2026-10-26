@@ -35,7 +35,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 60      // this firmware's number, shown in /api/status
+#define QT_FW 61      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -294,6 +294,13 @@ struct __attribute__((packed)) CurveGains {
     char src[121];
 };
 static CurveGains cvdg[CVLIB_N];
+// fw61: per library curve: when it was added, when last used or changed (Use, rename, linear, its gains), its place in
+// the page's custom order. 0 = not known (curves from before fw61, or no clock yet). NVS "cvmeta".
+struct __attribute__((packed)) CurveMeta {
+    uint32_t added, used;
+    uint8_t ord;
+};
+static CurveMeta cvmeta[CVLIB_N];
 static void cvdg_save() {
     prefs.putBytes("cvdg", cvdg, sizeof(cvdg));
 }
@@ -1961,6 +1968,21 @@ static bool dg_wanted() {  // on for the host connected now
     return false;
 }
 
+static void cvmeta_save() {
+    prefs.putBytes("cvmeta", cvmeta, sizeof(cvmeta));
+}
+
+static void cvmeta_touch(uint8_t id) {  // fw61: used or changed now
+    if (!id || (id > CVLIB_N)) {
+        return;
+    }
+    uint32_t n = now_unix();
+    if (n) {
+        cvmeta[id - 1].used = n;
+        cvmeta_save();
+    }
+}
+
 static const uint16_t* dg_eff() {  // fw42: the table the Feather should have: the temporary one during an A/B test
     if (dgt_on) {
         return dgt_g;
@@ -1983,6 +2005,7 @@ static void cvdg_stamp(uint8_t id) {
     memset(c.src, 0, sizeof(c.src));
     strncpy(c.src, dg_src.c_str(), sizeof(c.src) - 1);
     cvdg_save();
+    cvmeta_touch(id);
 }
 
 // fw60: a curve becomes the running one: its own gains (if it has them) become the gains in use
@@ -2689,6 +2712,7 @@ static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s1
                 c.s10 = s10;
             }
             c.tau = tau;
+            cvmeta_touch(k + 1);
             return k + 1;
         }
         if (!c.used && (fr < 0)) {
@@ -2708,12 +2732,22 @@ static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s1
     c.s10 = s10;
     memcpy(c.sp, sp, 2 * n);
     memcpy(c.g, g, 2 * n);
+    uint8_t last = 0;  // fw61: added now, at the end of the custom order
+    for (int k = 0; k < CVLIB_N; k++) {
+        if (cvlib[k].used && (k != fr) && (cvmeta[k].ord > last)) {
+            last = cvmeta[k].ord;
+        }
+    }
+    cvmeta[fr].added = cvmeta[fr].used = now_unix();
+    cvmeta[fr].ord = last + 1;
+    cvmeta_save();
     return fr + 1;
 }
 
 static String cvlib_json_one(uint8_t id) {
     const CurveLib& c = cvlib[id - 1];
-    String j = "{\"id\":" + String(id) + ",\"name\":\"" + String(c.name) + "\",\"n\":" + String(c.n) + ",\"tau\":" + String(c.tau) + ",\"s10\":" + String(c.s10) + ",\"sp\":[";
+    String j = "{\"id\":" + String(id) + ",\"name\":\"" + String(c.name) + "\",\"n\":" + String(c.n) + ",\"tau\":" + String(c.tau) + ",\"s10\":" + String(c.s10) +
+               ",\"added\":" + String(cvmeta[id - 1].added) + ",\"used\":" + String(cvmeta[id - 1].used) + ",\"ord\":" + String(cvmeta[id - 1].ord) + ",\"sp\":[";  // fw61
     for (uint8_t k = 0; k < c.n; k++) {
         j += (k ? "," : "") + String(c.sp[k]);
     }
@@ -2778,6 +2812,24 @@ static void h_curves() {
         server.send(200, "application/json", "{\"ok\":true,\"id\":" + String(nid) + "}");
         return;
     }
+    if (server.hasArg("order")) {  // fw61: ?order=id,id,...: the page's custom order (drag and drop), first = 1
+        String s = server.arg("order");
+        int at = 0;
+        uint8_t pos = 0;
+        while ((at < (int) s.length()) && (pos < 250)) {
+            int comma = s.indexOf(',', at);
+            long v = ((comma < 0) ? s.substring(at) : s.substring(at, comma)).toInt();
+            if ((v >= 1) && (v <= CVLIB_N) && cvlib[v - 1].used) {
+                cvmeta[v - 1].ord = ++pos;
+            }
+            if (comma < 0) {
+                break;
+            }
+            at = comma + 1;
+        }
+        cvmeta_save();
+        return ok_json(true);
+    }
     long id = server.arg(server.hasArg("use") ? "use" : server.hasArg("cand") ? "cand" : server.hasArg("del") ? "del" : "id").toInt();
     bool ok = (id >= 1) && (id <= CVLIB_N) && cvlib[id - 1].used;
     if (server.hasArg("cand") && (id == 0)) {
@@ -2799,6 +2851,7 @@ static void h_curves() {
         cvdg_stamp(cv_id);  // fw60
         cv_id = id;
         cvdg_take(cv_id);
+        cvmeta_touch(cv_id);  // fw61
         if (cv_cand == id) {
             cv_cand = 0;
         }
@@ -2823,6 +2876,8 @@ static void h_curves() {
         memset(&c, 0, sizeof(c));
         memset(&cvdg[id - 1], 0, sizeof(CurveGains));  // fw60
         cvdg_save();
+        memset(&cvmeta[id - 1], 0, sizeof(CurveMeta));  // fw61
+        cvmeta_save();
         if (cv_cand == id) {
             cv_cand = 0;
         }
@@ -2835,6 +2890,7 @@ static void h_curves() {
             return ok_json(false, "linear cm/360 out of range");
         }
         c.s10 = (uint16_t) v;
+        cvmeta_touch(id);  // fw61
         if (id == cv_id) {
             cv_src = String("lib:") + String(c.name) + (c.s10 ? ";S=" + String(c.s10 / 10.0f, 1) : String(""));
             prefs.putString("cvsrc", cv_src);
@@ -2850,6 +2906,7 @@ static void h_curves() {
     memset(c.name, 0, sizeof(c.name));
     strncpy(c.name, nm.c_str(), sizeof(c.name) - 1);
     cvlib_save();
+    cvmeta_touch(id);  // fw61
     ok_json(true);
 }
 
@@ -3666,6 +3723,13 @@ void setup() {
             dg.g[k] = 1000;
         }
         dg.n = 0;
+    }
+    if (prefs.getBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta)) {  // fw61
+        memset(cvmeta, 0, sizeof(cvmeta));
+        for (int k = 0; k < CVLIB_N; k++) {
+            cvmeta[k].ord = k + 1;
+        }
+        cvmeta_save();
     }
     if (prefs.getBytes("cvdg", cvdg, sizeof(cvdg)) != sizeof(cvdg)) {  // fw60: per-curve gains; first boot: the running curve's are the ones in use
         memset(cvdg, 0, sizeof(cvdg));
