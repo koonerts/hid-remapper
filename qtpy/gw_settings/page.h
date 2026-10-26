@@ -518,7 +518,7 @@ gs.forEach((g,k)=>{const a=k*Math.PI/4,r=dgR(g);s+='<circle class="hd" data-k="'
 $('dgsvg').innerHTML=s;
 for(let k=0;k<8;k++){const i=$('dgv'+k);if(document.activeElement!==i)i.value=gs[k].toFixed(2)}
 const hs=S.hosts||[];$('dghosts').innerHTML=hs.length?hostChips(hs,s=>d.hosts.includes(s)):'<span class="mut">no host recognised yet</span>';
-$('dghosts').querySelectorAll('button').forEach(b=>b.onclick=()=>{const cur=S.dg.hosts,on=cur.includes(b.dataset.sig),h=on?cur.filter(x=>x!==b.dataset.sig):cur.concat([b.dataset.sig]);S.dg.hosts=h;dgKey='';drawDG();dgPost(dgSaved(),h)})}  // fw33: from the hosts at tap time (two quick taps lost the first)
+$('dghosts').querySelectorAll('button[data-sig]').forEach(b=>b.onclick=()=>{const cur=S.dg.hosts,on=cur.includes(b.dataset.sig),h=on?cur.filter(x=>x!==b.dataset.sig):cur.concat([b.dataset.sig]);S.dg.hosts=h;dgKey='';drawDG();dgPost(dgSaved(),h)})}  // fw33: from the hosts at tap time (two quick taps lost the first)
 function dgPost(gs,hosts,src){const g=gs.map(g=>Math.round(g*1000));return post('/api/dirgain?g='+g.join(',')+'&hosts='+hosts.join(',')+(src!=null?'&src='+encodeURIComponent(src):'')).then(r=>{say(r,'Saved');if(r.ok&&S&&S.dg){S.dg.g=g;S.dg.hosts=hosts.slice();if(src!=null){S.dg.src=src;S.dg.src_t=Math.floor(Date.now()/1000)}}dgKey='';if(r.ok&&src!=null)cbDrawRuns();return r})}  // fw35: what was saved is the state until the next poll (a quick second change used the old one)
 function dgSave(){if(!dgEdit||!S||!S.dg)return;dgPost(dgEdit,S.dg.hosts,dgEditSrc||'hand').then(r=>{if(r.ok){dgEdit=null;dgEditSrc=''}})}
 function dgRevert(){dgEdit=null;dgEditSrc='';dgKey='';drawDG()}
@@ -1243,7 +1243,7 @@ $('cvsave').disabled=!n||!dirty&&!!c.n;$('cvdel').disabled=!c.n;$('cvfitb').disa
 $('cvnow').textContent=c.ab||c.tcand?'BallSheet is running a blind A/B: which curve is on is hidden until it ends.':!c.n?(n?'Not saved yet.':'No curve saved.'):dirty?'Changed: Save sends it to the Feather.':c.temp?'Off for now: BallSheet is running with the curve off (it comes back by itself 12 s after BallSheet stops).':c.want?(c.applied&&c.on?'On: the Feather applies it now. The XIM\'s own curve should be linear.':'Sending to the Feather…'):'Saved; off on the host connected now'+(c.hosts.length?'.':' (on for no host).');
 if(cvEd)return;if(key===cvKey)return;cvKey=key;
 $('cvhosts').innerHTML=hs.length?hostChips(hs,s=>cur.includes(s)):'<span class="mut">no host recognised yet</span>';
-$('cvhosts').querySelectorAll('button').forEach(b=>b.onclick=()=>cvHostTap(b.dataset.sig));
+$('cvhosts').querySelectorAll('button[data-sig]').forEach(b=>b.onclick=()=>cvHostTap(b.dataset.sig));
 const nm={3:'curved, 2 control points',2:'curved, 1 control point',1:'straight lines'};
 $('cvfit').textContent=cvErr?cvErr:!n?(cvP?'Set where the curve ends (cm/s of hand speed) and the smoothing.':''):(n.sc?'Matches your '+n.M.length+' fixed-speed results within '+(n.sc.rms*100).toFixed(1)+'% (rms). With the XIM linear at its sensitivity now: '+n.sc.S.toFixed(1)+' cm/360. ':'No fixed-speed results to fit to: 100% is a guess. ')+
 (cvFits&&cvFits.length>1?'Other readings: '+cvFits.slice(1).map(f=>nm[f.deg]+' '+(f.rms*100).toFixed(1)+'% at '+f.v100+' cm/s').join(', ')+'. ':'')+n.T.length+' points to the Feather, from '+(n.T[0][1]/10).toFixed(1)+'% at '+(n.T[0][0]/10)+' cm/s to '+(n.T[n.T.length-1][1]/10).toFixed(1)+'% at '+(n.T[n.T.length-1][0]/10)+' cm/s.';
