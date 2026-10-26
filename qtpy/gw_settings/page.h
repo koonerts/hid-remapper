@@ -687,12 +687,13 @@ function cbFitPool(base){const B=base||cbRuns;let rs=B.filter(r=>(r.flags&1)&&!(
 while(rs.length>2){let w=null,wf=0;rs.forEach(r=>{const f=cbFit(r,rs);if(f!==null&&f>wf){wf=f;w=r}});if(wf<=CB_FIT)break;rs=rs.filter(r=>r!==w)}
 return rs.length?rs:B.filter(r=>cbComparable(r,B[0]))}
 let cbView='need';  // 'need': the needed change per direction (comparable across runs) | 'raw': reach as measured
-function cbPooled(runs){const cur=dgSaved(),lh=[0,0,0,0,0,0,0,0],w=[0,0,0,0,0,0,0,0];
-runs.forEach(r=>{for(let k=0;k<8;k++)if(r.n[k]>=3&&r.med[k]>0&&r.g[k]>0){lh[k]+=r.n[k]*Math.log(r.med[k]/r.g[k]);w[k]+=r.n[k]}});
+function cbPooled(runs){const cur=dgSaved(),lm=[0,0,0,0,0,0,0,0],lg=[0,0,0,0,0,0,0,0],w=[0,0,0,0,0,0,0,0];
+runs.forEach(r=>{for(let k=0;k<8;k++)if(r.n[k]>=3&&r.med[k]>0&&r.g[k]>0){lm[k]+=r.n[k]*Math.log(r.med[k]/1000);lg[k]+=r.n[k]*Math.log(r.g[k]/1000);w[k]+=r.n[k]}});
 const ok=w.map(x=>x>0),m=ok.filter(Boolean).length;if(!m)return cur.slice();
-const ideal=lh.map((s,k)=>ok[k]?Math.exp(-s/w[k]):cur[k]),lg=a=>a.reduce((s,v,k)=>ok[k]?s+Math.log(v):s,0),sc=Math.exp((lg(cur)-lg(ideal))/m);
-const e=1-.2/runs.length;  // 10-26: one run: 80% of the correction (as BallSheet's This run), 2: 90%, 4: 95%
-return ideal.map((v,k)=>ok[k]?dgClamp(Math.max(cur[k]*.8,Math.min(cur[k]*1.25,cur[k]*Math.pow(v*sc/cur[k],e)))):cur[k])}
+// 10-26: 1 - 0.2 / runs of the measured correction (one run: 80%, as BallSheet's This run; 2: 90%; 4: 95%), taken from the
+// gains the runs used, not the ones in use: applying it again changes nothing (from the gains in use it crept to 100%)
+const e=1-.2/runs.length,ideal=lm.map((s,k)=>ok[k]?Math.exp(lg[k]/w[k]-e*s/w[k]):cur[k]),lgs=a=>a.reduce((s,v,k)=>ok[k]?s+Math.log(v):s,0),sc=Math.exp((lgs(cur)-lgs(ideal))/m);
+return ideal.map((v,k)=>ok[k]?dgClamp(Math.max(cur[k]*.8,Math.min(cur[k]*1.25,v*sc))):cur[k])}
 function cbPoolTick(t,on){cbLastKind='';if(!cbPoolSel)cbPoolSel=cbPoolRuns().map(r=>r.t);cbPoolSel=on?cbPoolSel.concat([t]):cbPoolSel.filter(x=>x!==t);cbDrawRuns()}
 // 10-24: whether a run had the speed curve (BallSheet sends flags bit 2 since 10-23 19:44; older runs and page runs: unknown)
 function cbCurve(r){return(r.flags&4)?'on':((r.flags&1)&&r.t>=1792799073)?'off':'?'}
@@ -721,7 +722,7 @@ function cbDelCommit(){if(!cbPend)return;const t=cbPend.t;clearTimeout(cbPend.ti
 addEventListener('pagehide',()=>{if(cbPend&&navigator.sendBeacon)navigator.sendBeacon(tq('/api/calibdel?run='+cbPend.t))});
 function cbCurveToggle(){cbCurveOnly=!cbCurveOnly;try{localStorage.setItem('gw_cbcurve',cbCurveOnly?'1':'0')}catch(e){}cbPoolSet(cbLastKind&&cbLastKind!=='none'?cbLastKind:'fit')}
 function cbPoolSet(kind){cbLastKind=kind;const B=cbBase(),ref=B[0]||cbRuns[0],use=dgSrcRuns(),fit=kind==='fit'?cbFitPool(B):[];cbPoolSel=B.filter(r=>kind==='speed'?cbComparable(r,ref):kind==='bs'?(r.flags&1)&&!(r.flags&2):kind==='use'?use.includes(r.t):kind==='fit'?fit.includes(r):kind==='all'?true:false).map(r=>r.t);cbDrawRuns()}
-function cbUsePooled(){const rs=cbPoolRuns();if(!rs.length)return;dgEdit=cbPooled(rs);dgEditSrc='pool:'+rs.map(r=>r.t).join(',');dgKey='';drawDG();toast('Pooled from '+rs.length+' run'+(rs.length>1?'s':'')+': press Save to keep it')}
+function cbUsePooled(){const rs=cbPoolRuns();if(!rs.length)return;dgApply(cbPooled(rs),'pool:'+rs.map(r=>r.t).join(','),'pooled from '+rs.length+' run'+(rs.length>1?'s':''))}
 // how much the ticked runs disagree per direction: each run's gain-corrected ideal, its overall level taken out, sample SD in %
 function cbSpread(runs){if(runs.length<2)return null;const lr=runs.map(r=>{const l=r.med.map((m,k)=>r.n[k]>=3&&m>0&&r.g[k]>0?Math.log(r.g[k]/m):null),v=l.filter(x=>x!==null),mean=v.reduce((a,b)=>a+b,0)/(v.length||1);return l.map(x=>x===null?null:x-mean)});
 return [0,1,2,3,4,5,6,7].map(k=>{const v=lr.map(l=>l[k]).filter(x=>x!==null);if(v.length<2)return null;const m=v.reduce((a,b)=>a+b,0)/v.length;return (Math.exp(Math.sqrt(v.reduce((a,b)=>a+(b-m)*(b-m),0)/(v.length-1)))-1)*100})}
@@ -751,12 +752,24 @@ for(let k=0;k<8;k++){const d=ps?ps[k]-cur[k]:0;
 h+='<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+cur[k].toFixed(2)+'</td><td>'+(ps?ps[k].toFixed(2):'–')+'</td><td>'+(ps&&Math.abs(d)>=.005?'<span class="'+(d>0?'up':'dn')+'">'+(d>0?'+':'\u2212')+Math.abs(d).toFixed(2)+'</span>':'')+'</td><td class="'+(sp&&sp[k]>3?'wn':'mut')+'">'+(sp&&sp[k]!=null?'±'+sp[k].toFixed(1)+'%':'–')+'</td>';
 V.forEach(r=>{h+=r.n[k]>=3&&r.med[k]?cell(r.med[k]/1000,r,k):'<td class="mut">–</td>'});h+='</tr>'}
 h+='<tr class="ft"><td colspan="5"></td>';
-V.forEach(r=>{h+='<td class="rbt"><span><button class="sm" onclick="cbUseRunT('+r.t+')" title="Load this run\'s own suggestion into the editor">Use</button><button class="sm" onclick="cbDel('+r.t+')" title="Delete this run (Undo for 7 s)" aria-label="Delete this run">\u00d7</button></span></td>'});
+V.forEach(r=>{h+='<td class="rbt"><span><button class="sm" onclick="cbUseRunT('+r.t+')" title="Save this run\'s own suggestion as the gains in use; Undo puts the gains before back">Apply</button><button class="sm" onclick="cbDel('+r.t+')" title="Delete this run (Undo for 7 s)" aria-label="Delete this run">\u00d7</button></span></td>'});
 h+='</tr></tbody></table></div>';
-h+='<div class="row" style="margin-top:10px"><button class="p" onclick="cbUsePooled()"'+(ps?'':' disabled')+'>Use pooled suggestion'+(pr.length?' ('+pr.length+' run'+(pr.length>1?'s':'')+')':'')+'</button><span class="mut">then Save above</span></div>';
+h+='<div class="row" style="margin-top:10px;align-items:center"><button class="p" onclick="cbUsePooled()"'+(ps?'':' disabled')+' title="Saves the pooled suggestion as the gains in use (on the hosts they are on); Undo puts the gains before back">Apply pooled'+(pr.length?' ('+pr.length+' run'+(pr.length>1?'s':'')+')':'')+'</button>'+dgUndoHtml()+'</div>';
 h+='<p class="mut">'+(cbView==='need'?'Each run column, in the needed-change view: how much more (+, it fell short) or less (\u2212, it overshot) gain each direction needed in that run, relative to the run\'s own average, so runs measured with different gains or speeds compare directly. Runs that belong together show the same pattern down their columns.':'Each run column, as measured: where its flicks stopped, as a % of the distance (\u2212 short, + over), with the gains that run used, so columns measured with different gains don\'t compare directly: use the needed-change view to compare.')+' Fit (under each run): how far its pattern is from the other ticked runs; over '+CB_FIT+'% (amber) is an outlier to untick. Ticked by default: the runs the gains in use came from, otherwise the BallSheet runs that agree with each other. Runs differ over 3% (amber): that direction needs more flicks.</p>';
 $('cbsavedlist').innerHTML=h;const nx=document.querySelector('#cbsavedlist .cbx');if(nx)nx.scrollLeft=sl}
-function cbUseRun(i){const r=cbRuns[i];if(!r)return;dgEdit=cbSug(r);dgEditSrc='run:'+r.t;dgKey='';drawDG();toast('Loaded into the editor: press Save to keep it')}setTimeout(cbLoadRuns,2000);setInterval(()=>{if(!cb&&document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
+// 10-26: Apply saves the gains at once (no editor + Save); the last apply keeps an Undo (then Redo) button, also after a
+// reload, while the gains in use are still what that apply or its undo left (any other change makes it stale: hidden)
+let dgUndo=null;try{dgUndo=JSON.parse(localStorage.getItem('gw_dgundo')||'null')}catch(e){}
+function dgUndoSave(){try{localStorage.setItem('gw_dgundo',JSON.stringify(dgUndo))}catch(e){}}
+function dgSame(a,b){return a&&b&&a.length===8&&a.every((v,k)=>Math.abs(v-b[k])<.0005)}
+function dgUndoLive(){return dgUndo&&S&&S.dg&&dgSame(dgSaved(),dgUndo.undone?dgUndo.prev.g:dgUndo.next.g)}
+function dgApply(gs,src,what){if(!S||!S.dg)return;const prev={g:dgSaved(),src:S.dg.src||''};
+dgPost(gs,S.dg.hosts,src).then(r=>{if(r&&r.ok){dgUndo={prev,next:{g:gs.slice(),src},what,at:Date.now(),undone:false};dgUndoSave();dgEdit=null;dgEditSrc='';dgKey='';drawDG();cbDrawRuns()}})}
+function dgUndoTog(){if(!dgUndoLive())return;const to=dgUndo.undone?dgUndo.next:dgUndo.prev;
+dgPost(to.g,S.dg.hosts,to.src).then(r=>{if(r&&r.ok){dgUndo.undone=!dgUndo.undone;dgUndoSave();dgKey='';drawDG();cbDrawRuns()}})}
+function dgUndoHtml(){if(!dgUndoLive())return'';const u=dgUndo,when=new Date(u.at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}),fmt=g=>g.map(v=>v.toFixed(2)).join(' ');
+return '<span class="mut">'+(u.undone?'Undone: ':'Applied ')+esc(u.what)+' at '+when+'</span><button onclick="dgUndoTog()" title="'+(u.undone?'Back to ':'Back to the gains before: ')+fmt(u.undone?u.next.g:u.prev.g)+'">'+(u.undone?'Redo':'Undo')+'</button>'}
+function cbUseRun(i){const r=cbRuns[i];if(!r)return;dgApply(cbSug(r),'run:'+r.t,'run '+cbShort(r.t)+'\'s suggestion')}setTimeout(cbLoadRuns,2000);setInterval(()=>{if(!cb&&document.visibilityState==='visible'&&Date.now()-cbRunsAt>15000)cbLoadRuns()},5000);
 function cbUse(){if(!cbLast)return;dgEdit=cbLast.sug.slice();dgEditSrc='page-run';dgKey='';drawDG();toast('Press Save to keep it')}
 function cbDiscard(){cbLast=null;$('cbres').hidden=true;dgKey='';drawDG()}
 $('cbc').addEventListener('pointermove',cbMove);$('cbc').addEventListener('pointerdown',cbDown);$('cbc').addEventListener('contextmenu',e=>e.preventDefault());document.addEventListener('contextmenu',e=>{if(Date.now()-cbEatMenu<1000)e.preventDefault()});
