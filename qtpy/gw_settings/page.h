@@ -820,6 +820,8 @@ function tabApply(){if(tabSet||!S)return;tabSet=true;if(TABS.includes(location.h
 tabShow(location.hash.slice(1));
 // status bar: the host the ATEN connects, its DPI stage, direction gains, battery
 // 10-25: the Gains and Curve chips toggle them for the connected host (the cards' own host buttons, same saves)
+// 10-26: Snap and Motion Sync chips: the mouse's own settings (the More mouse settings buttons, same request)
+function sbOpt(k){if(!S||!S.opt||S.opt[k]==null)return;const v=S.opt[k]?0:1;S.opt[k]=!!v;drawBar();if(typeof drawOpt==='function')drawOpt();send(k,v)}
 function sbSig(){const a=S&&S.auto;return a&&a[0]!=='00000000'?a[0]:''}
 function sbGains(){const sig=sbSig();if(!sig||!S.dg)return;const cur=S.dg.hosts||[],h=cur.includes(sig)?cur.filter(x=>x!==sig):cur.concat([sig]);S.dg.hosts=h;S.dg.on=h.includes(sig);dgKey='';drawDG();drawBar();dgPost(dgSaved(),h)}
 function sbCurve(){const sig=sbSig(),c=S&&S.cv;if(!sig||!c||!c.n||c.temp||c.tcand)return;c.on=!cvHosts().includes(sig);drawBar();cvHostTap(sig)}
@@ -828,6 +830,7 @@ if(a&&a[0]!=='00000000'){const x=hs.find(x=>x[0]===a[0]);b.push(ch(a[1]===3?'bad
 const d=S.stage!=null&&S.dpi&&S.dpi[S.stage];if(d)b.push(ch('','Stage '+(S.stage+1)+' · '+d[0]+(d[1]&&d[1]!==d[0]?'/'+d[1]:'')+' DPI'));
 const sig=a&&a[0]!=='00000000'?a[0]:'',hn=sig?hostName(hs.find(x=>x[0]===sig)||[sig]):'',cb=(c,s,t,f)=>sig?'<button type="button" class="chip chipb2'+(c?' '+c:'')+'" title="'+esc(t)+'" onclick="'+f+'()">'+esc(s)+'</button>':ch(c,s,t);
 if(S.dg&&S.dg.sup)b.push(cb(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off'),'Click: '+(S.dg.on?'turn the direction gains off':'turn the direction gains on')+' for '+hn,'sbGains'));{const c=S.cv;if(c&&c.sup){const nm=c.name||'',sh=nm.length>18?nm.slice(0,17)+'\u2026':nm;b.push(c.temp||c.tcand?ch('','Curve: BallSheet A/B','BallSheet is running a blind A/B: which curve is on is hidden until it ends'):c.on?cb('ok','Curve '+(sh||'on'),'The Feather applies '+(nm||'the speed curve')+' on '+hn+'. Click: turn it off there','sbCurve'):c.n?cb('','Curve off','Not applied on '+hn+'. Click: turn '+(nm||'the curve')+' on there','sbCurve'):ch('','Curve off','No speed curve saved'))}}
+{const o=S.opt||{},mc=(k,lab,why)=>o[k]==null?'':'<button type="button" class="chip chipb2'+(o[k]?' ok':'')+'" title="'+esc(why+' Click: turn it '+(o[k]?'off':'on')+' (a mouse setting, every host).')+'" onclick="sbOpt(\''+k+'\')">'+esc(lab+' '+(o[k]?'on':'off'))+'</button>';b.push(mc('snap','Snap','Angle Snap straightens nearly level movement (it hides the tilt Level your swipes measures).'),mc('sync','Motion Sync','Motion Sync lines the sensor up with the polling (adds a little delay).'))}
 const bt=S.battery;if(bt)b.push(ch(bt.pct<=15?'bad':'','Battery '+bt.pct+'%'));
 $('sbar').innerHTML=b.join('');lvAngDraw()}
 function render(){const st=$('state');
