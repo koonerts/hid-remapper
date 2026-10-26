@@ -888,10 +888,10 @@ document.querySelectorAll('#keep button').forEach(b=>{b.onclick=()=>post('/api/w
 // rise to the right needs a higher angle and a fall a lower one (the user's rule, 2026-10-18).
 const LV=$('lvc');let lv=null,lvOn=false,lvFs=false;
 function lvBegin(){if(!S||S.angle==null){$('lvr').textContent='The page doesn\'t know the mouse\'s angle yet: press Read from mouse at the top, then try again.';return}
-lv={x:0,y:0,pts:[[0,0]],sxx:0,syy:0,sxy:0,dist:0,a0:S.angle};lvOn=true;lvFs=false;$('lvb').hidden=true;
+lv={x:0,y:0,pts:[[0,0]],sxx:0,syy:0,sxy:0,dist:0,a0:S.angle,stall:0,pdx:0,ev:0};lvOn=true;lvFs=false;$('lvb').hidden=true;
 $('lvr').textContent='Measuring at '+S.angle+'°: swipe left and right a few times, then right-click or press Esc.';
 // the whole screen to swipe in (the window if full screen is refused), the pointer captured so it never hits an edge
-const w=$('lvwrap'),lock=()=>{if(lvOn&&LV.requestPointerLock)LV.requestPointerLock()};w.classList.add('full');
+const w=$('lvwrap'),lock=()=>{if(!lvOn||!LV.requestPointerLock)return;let r;try{r=LV.requestPointerLock({unadjustedMovement:true})}catch(e){}if(r&&r.catch)r.catch(()=>{try{LV.requestPointerLock()}catch(e){}});else if(!r&&!document.pointerLockElement)try{LV.requestPointerLock()}catch(e){}};w.classList.add('full');  // 10-26: raw movement where the browser has it (Chromium); Firefox ignores the option
 if(w.requestFullscreen)w.requestFullscreen().then(()=>{lvFs=true;lock()}).catch(lock);else lock();lvDraw()}
 let lvRaf=0;
 function lvStop(){if(!lvOn)return;lvOn=false;if(document.pointerLockElement===LV)document.exitPointerLock();if(document.fullscreenElement)document.exitFullscreen().catch(()=>{});$('lvwrap').classList.remove('full');lvDraw();lvResult();$('lvl').scrollIntoView({block:'nearest'})}
@@ -899,7 +899,7 @@ document.addEventListener('fullscreenchange',()=>{if(lvOn&&lvFs&&!document.fulls
 LV.addEventListener('mousedown',e=>{if(e.button===2){e.preventDefault();lvStop()}else if(e.button===0&&!lvOn)lvBegin()});
 LV.addEventListener('contextmenu',e=>e.preventDefault());
 document.addEventListener('mousemove',e=>{if(!lvOn)return;const dx=e.movementX||0,dy=e.movementY||0;if(!dx&&!dy)return;
-lv.x+=dx;lv.y+=dy;lv.pts.push([lv.x,lv.y]);lv.sxx+=dx*dx;lv.syy+=dy*dy;lv.sxy+=dx*dy;lv.dist+=Math.hypot(dx,dy);if(!lvRaf)lvRaf=requestAnimationFrame(()=>{lvRaf=0;lvDraw()})});  // fw33: once a frame (every 3rd sample redrew everything: quadratic)
+lv.ev++;if(dx===0&&dy!==0&&Math.abs(lv.pdx)>=3)lv.stall++;lv.pdx=dx;lv.x+=dx;lv.y+=dy;lv.pts.push([lv.x,lv.y]);lv.sxx+=dx*dx;lv.syy+=dy*dy;lv.sxy+=dx*dy;lv.dist+=Math.hypot(dx,dy);if(!lvRaf)lvRaf=requestAnimationFrame(()=>{lvRaf=0;lvDraw()})});  // fw33: once a frame (every 3rd sample redrew everything: quadratic)
 document.addEventListener('pointerlockchange',()=>{if(lvOn&&document.pointerLockElement!==LV)lvStop()});
 document.addEventListener('keydown',e=>{if(lvOn&&e.key==='Escape')lvStop()});
 // screen angle of the swipes (y down, so negative = rising to the right)
@@ -922,7 +922,7 @@ let h='Your swipes '+(Math.abs(tilt)<.05?'are level':dir+' by <b>'+Math.abs(tilt
 if(want===a0){h+=' That rounds to no change: keep '+a0+'°.';$('lvb').hidden=false;$('lvset').hidden=true}
 else{h+=' Suggested angle: <b>'+want+'°</b>.';
 $('lvset').hidden=false;$('lvset').textContent='Set '+want+'°';$('lvset').disabled=false;$('lvset').onclick=()=>{const b=$('lvset');b.disabled=true;b.textContent='Setting\u2026';post('/api/set?angle='+want).then(r=>{say(r,'Angle set to '+want+'°');if(r&&r.ok){m.setTo=want;b.textContent='\u2713 Set to '+want+'°';$('lvr').innerHTML=h+' <b>Set.</b> The angle is now '+want+'°: Measure again to check it.'}else{b.disabled=false;b.textContent='Set '+want+'°'}})};$('lvb').hidden=false}
-$('lvr').innerHTML=h}
+if(m.stall)h+=' <span class="wn">Sideways movement stopped dead '+m.stall+' time'+(m.stall>1?'s':'')+' mid-swipe while vertical kept going (of '+m.ev+' moves): the browser\'s capture of the pointer, not your hand; those steps skew the tilt.</span>';$('lvr').innerHTML=h}
 $('lvagain').onclick=()=>lvBegin();
 // fw43: cm/360 in game, through the XIM. Count your own turns (fw44, Feather v28 count mode): the Feather sums the X
 // that reaches the XIM between Start and Stop. Or the fixed-speed check (Feather v27 turn): the Feather turns the view
