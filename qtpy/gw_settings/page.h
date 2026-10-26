@@ -28,6 +28,7 @@ main{max-width:1080px;margin:0 auto;padding:4px 16px 72px}
 .cbm tr.ft td{border-bottom:0;padding-top:8px}.cbm tr.ft button{padding:3px 8px;font-size:12.5px}
 .chipb{font-size:12px;padding:2px 10px;border-radius:99px;color:var(--mut)}.chipb.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
 .cols>.wide{grid-column:1/-1}
+.cbm td.rbt{text-align:center;white-space:nowrap}.cbm td.rbt span{display:inline-flex;gap:6px}
 #undobar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:70;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 10px 8px 14px;display:flex;align-items:center;gap:12px;box-shadow:0 6px 24px rgba(0,0,0,.35)}#undobar[hidden]{display:none}
 .jump{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0}.jump button{font-size:12.5px;padding:4px 10px;border-radius:99px}
 .card{scroll-margin-top:120px}.hdr{display:flex;align-items:center;gap:10px}
@@ -749,7 +750,7 @@ for(let k=0;k<8;k++){const d=ps?ps[k]-cur[k]:0;
 h+='<tr><td>'+DGA[k]+' '+DGN[k]+'</td><td>'+cur[k].toFixed(2)+'</td><td>'+(ps?ps[k].toFixed(2):'–')+'</td><td>'+(ps&&Math.abs(d)>=.005?'<span class="'+(d>0?'up':'dn')+'">'+(d>0?'+':'\u2212')+Math.abs(d).toFixed(2)+'</span>':'')+'</td><td class="'+(sp&&sp[k]>3?'wn':'mut')+'">'+(sp&&sp[k]!=null?'±'+sp[k].toFixed(1)+'%':'–')+'</td>';
 V.forEach(r=>{h+=r.n[k]>=3&&r.med[k]?cell(r.med[k]/1000,r,k):'<td class="mut">–</td>'});h+='</tr>'}
 h+='<tr class="ft"><td colspan="5"></td>';
-V.forEach(r=>{h+='<td><button onclick="cbUseRunT('+r.t+')" title="Load this run\'s own suggestion into the editor">Use</button> <button onclick="cbDel('+r.t+')" title="Delete this run (Undo for 7 s)">\u00d7</button></td>'});
+V.forEach(r=>{h+='<td class="rbt"><span><button class="sm" onclick="cbUseRunT('+r.t+')" title="Load this run\'s own suggestion into the editor">Use</button><button class="sm" onclick="cbDel('+r.t+')" title="Delete this run (Undo for 7 s)" aria-label="Delete this run">\u00d7</button></span></td>'});
 h+='</tr></tbody></table></div>';
 h+='<div class="row" style="margin-top:10px"><button class="p" onclick="cbUsePooled()"'+(ps?'':' disabled')+'>Use pooled suggestion'+(pr.length?' ('+pr.length+' run'+(pr.length>1?'s':'')+')':'')+'</button><span class="mut">then Save above</span></div>';
 h+='<p class="mut">'+(cbView==='need'?'Each run column, in the needed-change view: how much more (+, it fell short) or less (\u2212, it overshot) gain each direction needed in that run, relative to the run\'s own average, so runs measured with different gains or speeds compare directly. Runs that belong together show the same pattern down their columns.':'Each run column, as measured: where its flicks stopped, as a % of the distance (\u2212 short, + over), with the gains that run used, so columns measured with different gains don\'t compare directly: use the needed-change view to compare.')+' Fit (under each run): how far its pattern is from the other ticked runs; over '+CB_FIT+'% (amber) is an outlier to untick. Ticked by default: the runs the gains in use came from, otherwise the BallSheet runs that agree with each other. Runs differ over 3% (amber): that direction needs more flicks.</p>';
