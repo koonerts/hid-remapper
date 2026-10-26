@@ -691,7 +691,8 @@ function cbPooled(runs){const cur=dgSaved(),lh=[0,0,0,0,0,0,0,0],w=[0,0,0,0,0,0,
 runs.forEach(r=>{for(let k=0;k<8;k++)if(r.n[k]>=3&&r.med[k]>0&&r.g[k]>0){lh[k]+=r.n[k]*Math.log(r.med[k]/r.g[k]);w[k]+=r.n[k]}});
 const ok=w.map(x=>x>0),m=ok.filter(Boolean).length;if(!m)return cur.slice();
 const ideal=lh.map((s,k)=>ok[k]?Math.exp(-s/w[k]):cur[k]),lg=a=>a.reduce((s,v,k)=>ok[k]?s+Math.log(v):s,0),sc=Math.exp((lg(cur)-lg(ideal))/m);
-return ideal.map((v,k)=>ok[k]?dgClamp(Math.max(cur[k]*.8,Math.min(cur[k]*1.25,v*sc))):cur[k])}
+const e=1-.2/runs.length;  // 10-26: one run: 80% of the correction (as BallSheet's This run), 2: 90%, 4: 95%
+return ideal.map((v,k)=>ok[k]?dgClamp(Math.max(cur[k]*.8,Math.min(cur[k]*1.25,cur[k]*Math.pow(v*sc/cur[k],e)))):cur[k])}
 function cbPoolTick(t,on){cbLastKind='';if(!cbPoolSel)cbPoolSel=cbPoolRuns().map(r=>r.t);cbPoolSel=on?cbPoolSel.concat([t]):cbPoolSel.filter(x=>x!==t);cbDrawRuns()}
 // 10-24: whether a run had the speed curve (BallSheet sends flags bit 2 since 10-23 19:44; older runs and page runs: unknown)
 function cbCurve(r){return(r.flags&4)?'on':((r.flags&1)&&r.t>=1792799073)?'off':'?'}
