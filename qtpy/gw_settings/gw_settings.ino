@@ -2551,7 +2551,7 @@ static void h_cvtemp() {
     }
     if (server.hasArg("keep")) {
         cvt_keep_at = millis();
-        return ok_json(cvt_off || cvt_cand);
+        return ok_json(cvt_off || cvt_cand || (server.arg("ab") == "1"));  // fw59: an A/B's keep-alive in the active curve's arm is fine too
     }
     if (!from_current_page()) {
         return;
