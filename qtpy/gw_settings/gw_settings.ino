@@ -23,6 +23,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <esp_system.h>
+#include <nvs.h>  // fw62: nvs_get_stats (diag)
 #include <FFat.h>
 
 #include "page_gz.h"  // fw35: the page gzipped (page_gz.ps1 makes it from page.h; the build checks it is current)
@@ -35,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 61      // this firmware's number, shown in /api/status
+#define QT_FW 62      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -87,6 +88,7 @@ static bool feather_init_done = false;  // tuning/palette pushed since the Feath
 static uint32_t d_polls = 0, d_ok = 0, d_short = 0, d_bad = 0, d_i2c_resets = 0;
 static uint32_t d_rc_fail = 0, d_rc_ms = 0;  // fw33: full-block reads that failed, and the longest one (ms)
 static uint32_t d_rc256 = 0, d_rc512 = 0;   // fw35: block reads by size
+static uint32_t d_nvs_fail = 0;              // fw62: putBytes that didn't write the whole blob (NVS full?)
 static uint8_t d_last_n = 0, d_b0 = 0, d_b1 = 0;
 static bool last_answered = false;  // the last read returned a full block, valid or not
 // the Feather's chord table (status bytes 128-191), as last read
@@ -200,6 +202,9 @@ struct AutoEv { uint32_t ms; uint8_t code; int8_t v; };
 static AutoEv auto_tl[20];
 static uint8_t auto_tl_n = 0;
 static void atl(uint8_t code, int v = 0) {
+    if (auto_tl_n && (auto_tl[auto_tl_n - 1].code == code) && (auto_tl[auto_tl_n - 1].v == (int8_t) v)) {
+        return;  // fw62: the same answer read again (a failed queue retries) fills no slots
+    }
     if (auto_tl_n < 20) {
         auto_tl[auto_tl_n++] = { millis(), code, (int8_t) v };
     }
@@ -294,6 +299,9 @@ struct __attribute__((packed)) CurveGains {
     char src[121];
 };
 static CurveGains cvdg[CVLIB_N];
+static CurveGains cvdg0;  // fw62: the gains in use while no library curve runs (cv_id 0), so a Use doesn't replace them for good; NVS "cvdg0"
+// a macro: the Arduino build puts its function prototypes above this struct
+#define cvdg_slot(id) ((id) == 0 ? &cvdg0 : ((id) <= CVLIB_N ? &cvdg[(id) - 1] : (CurveGains*) nullptr))
 // fw61: per library curve: when it was added, when last used or changed (Use, rename, linear, its gains), its place in
 // the page's custom order. 0 = not known (curves from before fw61, or no clock yet). NVS "cvmeta".
 struct __attribute__((packed)) CurveMeta {
@@ -302,7 +310,9 @@ struct __attribute__((packed)) CurveMeta {
 };
 static CurveMeta cvmeta[CVLIB_N];
 static void cvdg_save() {
-    prefs.putBytes("cvdg", cvdg, sizeof(cvdg));
+    if (prefs.putBytes("cvdg", cvdg, sizeof(cvdg)) != sizeof(cvdg)) {
+        d_nvs_fail++;
+    }
 }
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
@@ -1497,7 +1507,14 @@ static void h_status() {
     j += ",\"qt_fw\":" + String(QT_FW) + ",\"page\":{\"fs\":" + String(page_fs ? "true" : "false") + ",\"t\":" + String(page_fs_t) + ",\"len\":" + String(page_fs_len) + "}";  // fw41
     j += ",\"diag\":{\"polls\":" + String(d_polls) + ",\"ok\":" + String(d_ok) + ",\"short\":" + String(d_short) +
          ",\"bad\":" + String(d_bad) + ",\"i2c_resets\":" + String(d_i2c_resets) + ",\"last_n\":" + String(d_last_n) + ",\"b0\":" + String(d_b0) + ",\"b1\":" + String(d_b1) +
-         ",\"rc_fail\":" + String(d_rc_fail) + ",\"rc_ms\":" + String(d_rc_ms) + ",\"rc256\":" + String(d_rc256) + ",\"rc512\":" + String(d_rc512) + ",\"up_s\":" + String(millis() / 1000) + "}";
+         ",\"rc_fail\":" + String(d_rc_fail) + ",\"rc_ms\":" + String(d_rc_ms) + ",\"rc256\":" + String(d_rc256) + ",\"rc512\":" + String(d_rc512) + ",\"up_s\":" + String(millis() / 1000);
+    {  // fw62: the NVS partition's entries (32 bytes each): used, free, total; and saves that failed
+        nvs_stats_t ns;
+        if (nvs_get_stats(NULL, &ns) == ESP_OK) {
+            j += ",\"nvs\":[" + String(ns.used_entries) + "," + String(ns.free_entries) + "," + String(ns.total_entries) + "]";
+        }
+        j += ",\"nvs_fail\":" + String(d_nvs_fail) + "}";
+    }
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
     j += (radio == Radio::STA) ? "sta" : (radio == Radio::AP) ? "ap" : (radio == Radio::JOINING) ? "joining" : "off";
@@ -1969,7 +1986,9 @@ static bool dg_wanted() {  // on for the host connected now
 }
 
 static void cvmeta_save() {
-    prefs.putBytes("cvmeta", cvmeta, sizeof(cvmeta));
+    if (prefs.putBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta)) {
+        d_nvs_fail++;
+    }
 }
 
 static void cvmeta_touch(uint8_t id) {  // fw61: used or changed now
@@ -1995,27 +2014,32 @@ static const uint16_t* dg_eff() {  // fw42: the table the Feather should have: t
 
 // fw60: the gains in use belong to the running curve: stored with it (each save, and before another curve takes over)
 static void cvdg_stamp(uint8_t id) {
-    if (!id || (id > CVLIB_N)) {
+    CurveGains* s = cvdg_slot(id);  // fw62: id 0 = no library curve runs: its own slot
+    if (!s) {
         return;
     }
-    CurveGains& c = cvdg[id - 1];
+    CurveGains& c = *s;
     c.has = 1;
     memcpy(c.g, dg.g, sizeof(c.g));
     c.src_t = dg_src_t;
     memset(c.src, 0, sizeof(c.src));
     strncpy(c.src, dg_src.c_str(), sizeof(c.src) - 1);
-    cvdg_save();
-    cvmeta_touch(id);
+    if (id) {
+        cvdg_save();
+    } else if (prefs.putBytes("cvdg0", &cvdg0, sizeof(cvdg0)) != sizeof(cvdg0)) {
+        d_nvs_fail++;
+    }
 }
 
 // fw60: a curve becomes the running one: its own gains (if it has them) become the gains in use
 static void cvdg_take(uint8_t id) {
-    if (!id || (id > CVLIB_N) || !cvdg[id - 1].has) {
+    const CurveGains* s = cvdg_slot(id);  // fw62: id 0 = the gains kept while no library curve ran
+    if (!s || !s->has) {
         return;
     }
-    const CurveGains& c = cvdg[id - 1];
+    const CurveGains& c = *s;
     if (memcmp(dg.g, c.g, sizeof(dg.g))) {
-        log_edit(EK_DIRGAIN, String("with ") + String(cvlib[id - 1].name));
+        log_edit(EK_DIRGAIN, String("with ") + (id ? String(cvlib[id - 1].name) : String("no curve")));
     }
     memcpy(dg.g, c.g, sizeof(dg.g));
     dg_src = String(c.src);
@@ -2194,6 +2218,7 @@ static void h_dirgain() {
     prefs.putBytes("dgain", &dg, sizeof(dg));
     log_edit(EK_DIRGAIN, String(n) + (n == 1 ? " host" : " hosts"));
     cvdg_stamp(cv_id);  // fw60
+    cvmeta_touch(cv_id);  // fw62: its gains changed (stamping alone, as on a switch, isn't using it)
     dg_sent_at = 0;  // send now
     dg_force = true;
     ok_json(true);
@@ -2653,6 +2678,8 @@ static void h_cvtemp() {
     cvt_keep_at = millis();
     cv_force = true;
     cv_sent_at = 0;  // send now
+    dg_force = true;  // fw62: from the candidate's arm its gains go back too
+    dg_sent_at = 0;
     ok_json(true);
 }
 
@@ -2736,6 +2763,19 @@ static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s1
     for (int k = 0; k < CVLIB_N; k++) {
         if (cvlib[k].used && (k != fr) && (cvmeta[k].ord > last)) {
             last = cvmeta[k].ord;
+        }
+    }
+    if (last >= 200) {  // fw62: renumber 1..n in the same order before it can wrap
+        last = 0;
+        for (uint8_t want = 1; want; want++) {
+            for (int k = 0; k < CVLIB_N; k++) {
+                if (cvlib[k].used && (k != fr) && (cvmeta[k].ord == want)) {
+                    cvmeta[k].ord = ++last;
+                }
+            }
+            if (want == 255) {
+                break;
+            }
         }
     }
     cvmeta[fr].added = cvmeta[fr].used = now_unix();
@@ -2982,7 +3022,9 @@ static void h_curve() {
         }
     } else {
         prefs.remove("curve");
+        cvdg_stamp(cv_id);  // fw62
         cv_id = 0;
+        cvdg_take(0);
     }
     cvlib_save();
     log_edit(EK_CURVE, n ? String(hn) + (hn == 1 ? " host" : " hosts") : String("off"));
@@ -3712,6 +3754,16 @@ void setup() {
         cv.hn = 0;
         cv.tau = 8;
     }
+    if (prefs.getBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta)) {  // fw61; fw62: before the migration below (it saves cvmeta)
+        memset(cvmeta, 0, sizeof(cvmeta));
+        for (int k = 0; k < CVLIB_N; k++) {
+            cvmeta[k].ord = k + 1;
+        }
+        cvmeta_save();
+    }
+    if (prefs.getBytes("cvdg0", &cvdg0, sizeof(cvdg0)) != sizeof(cvdg0)) {  // fw62
+        memset(&cvdg0, 0, sizeof(cvdg0));
+    }
     if ((cv.n >= 2) && !cv_id) {  // fw49: the curve saved before named curves becomes the library's first
         cv_id = cvlib_add(String(""), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g);
         cvlib_save();
@@ -3723,13 +3775,6 @@ void setup() {
             dg.g[k] = 1000;
         }
         dg.n = 0;
-    }
-    if (prefs.getBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta)) {  // fw61
-        memset(cvmeta, 0, sizeof(cvmeta));
-        for (int k = 0; k < CVLIB_N; k++) {
-            cvmeta[k].ord = k + 1;
-        }
-        cvmeta_save();
     }
     if (prefs.getBytes("cvdg", cvdg, sizeof(cvdg)) != sizeof(cvdg)) {  // fw60: per-curve gains; first boot: the running curve's are the ones in use
         memset(cvdg, 0, sizeof(cvdg));

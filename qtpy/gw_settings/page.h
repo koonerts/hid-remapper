@@ -714,7 +714,7 @@ function cbSelSet(v){cbCurveSel=v;try{localStorage.setItem('gw_cbsel',v)}catch(e
 function cbSelOpts(){const a=(S&&S.cv&&S.cv.id)||0,L=cbRunsLive(),cnt=f=>L.filter(f).length,nm=id=>((cvLib&&cvLib.curves.find(x=>x.id===id))||{}).name||('curve #'+id);
 const o=[['run','running curve'+(a?' ('+nm(a)+')':''),cnt(r=>cbCurve(r)==='on'&&!!a&&cbCid(r)===a)]];
 [...new Set(L.filter(r=>cbCurve(r)==='on'&&cbCid(r)).map(cbCid))].filter(id=>id!==a).forEach(id=>o.push([String(id),nm(id),cnt(r=>cbCurve(r)==='on'&&cbCid(r)===id)]));
-o.push(['off','curve off',cnt(r=>cbCurve(r)==='off')],['unk','curve not recorded',cnt(r=>cbCurve(r)==='?'||(cbCurve(r)==='on'&&!cbCid(r)))],['all','all runs',L.length]);
+if(/^\d+$/.test(String(cbCurveSel))&&!o.some(x=>x[0]===String(cbCurveSel)))o.push([String(cbCurveSel),nm(Number(cbCurveSel)),0]);o.push(['off','curve off',cnt(r=>cbCurve(r)==='off')],['unk','curve not recorded',cnt(r=>cbCurve(r)==='?'||(cbCurve(r)==='on'&&!cbCid(r)))],['all','all runs',L.length]);
 return o.filter(x=>x[2]||x[0]===cbCurveSel||x[0]==='run'||x[0]==='all').map(x=>'<option value="'+x[0]+'"'+(x[0]===String(cbCurveSel)?' selected':'')+'>'+esc(x[1])+' ('+x[2]+')</option>').join('')}
 function cbUseRunT(t){cbUseRun(cbRuns.findIndex(r=>r.t===t))}
 function undoBar(msg,undo){let b=$('undobar');if(!b){b=document.createElement('div');b.id='undobar';document.body.appendChild(b)}if(!msg){b.hidden=true;return}b.innerHTML='<span>'+esc(msg)+'</span> <button type="button">Undo</button>';b.hidden=false;b.querySelector('button').onclick=()=>{b.hidden=true;undo()}}
@@ -727,7 +727,7 @@ function cbUsePooled(){const rs=cbPoolRuns();if(!rs.length)return;dgApply(cbPool
 function cbSpread(runs){if(runs.length<2)return null;const lr=runs.map(r=>{const l=r.med.map((m,k)=>r.n[k]>=3&&m>0&&r.g[k]>0?Math.log(r.g[k]/m):null),v=l.filter(x=>x!==null),mean=v.reduce((a,b)=>a+b,0)/(v.length||1);return l.map(x=>x===null?null:x-mean)});
 return [0,1,2,3,4,5,6,7].map(k=>{const v=lr.map(l=>l[k]).filter(x=>x!==null);if(v.length<2)return null;const m=v.reduce((a,b)=>a+b,0)/v.length;return (Math.exp(Math.sqrt(v.reduce((a,b)=>a+(b-m)*(b-m),0)/(v.length-1)))-1)*100})}
 let cbDelArm=0,cbDelAt=0;
-function cbDel(t){if(cbPend)cbDelCommit();if(!cbRuns.some(r=>r.t===t))return;cbPend={t,timer:setTimeout(cbDelCommit,7000)};if(cbPoolSel)cbPoolSel=cbPoolSel.filter(x=>x!==t);cbDrawRuns();undoBar('Run '+cbShort(t)+' deleted',()=>{if(cbPend&&cbPend.t===t){clearTimeout(cbPend.timer);cbPend=null;cbDrawRuns()}})}
+function cbDel(t){if(cbPend)cbDelCommit();if(!cbRuns.some(r=>r.t===t))return;cbPend={t,timer:setTimeout(cbDelCommit,7000)};const wasTicked=!!(cbPoolSel&&cbPoolSel.includes(t));if(cbPoolSel)cbPoolSel=cbPoolSel.filter(x=>x!==t);cbDrawRuns();undoBar('Run '+cbShort(t)+' deleted',()=>{if(cbPend&&cbPend.t===t){clearTimeout(cbPend.timer);cbPend=null;if(wasTicked&&cbPoolSel&&!cbPoolSel.includes(t))cbPoolSel.push(t);cbDrawRuns()}})}
 let cbRunsKey='';function cbLoadRuns(){cbRunsAt=Date.now();fetchJ(tq('/api/calib')).then(j=>{const k=JSON.stringify(j.runs||[]);if(k===cbRunsKey)return;cbRunsKey=k;cbRuns=j.runs||[];if(!cb)cbDrawRuns()}).catch(()=>{})}
 // QT Py fw39: the saved runs as ONE table: a row per direction; the gains in use, the pooled suggestion (and its change),
 // how much the ticked runs disagree, then a column per run with where its flicks stopped (- short, + over)
@@ -762,9 +762,9 @@ $('cbsavedlist').innerHTML=h;const nx=document.querySelector('#cbsavedlist .cbx'
 let dgUndo=null;try{dgUndo=JSON.parse(localStorage.getItem('gw_dgundo')||'null')}catch(e){}
 function dgUndoSave(){try{localStorage.setItem('gw_dgundo',JSON.stringify(dgUndo))}catch(e){}}
 function dgSame(a,b){return a&&b&&a.length===8&&a.every((v,k)=>Math.abs(v-b[k])<.0005)}
-function dgUndoLive(){return dgUndo&&S&&S.dg&&dgSame(dgSaved(),dgUndo.undone?dgUndo.prev.g:dgUndo.next.g)}
+function dgUndoLive(){return dgUndo&&S&&S.dg&&(dgUndo.cid==null||dgUndo.cid===((S.cv&&S.cv.id)||0))&&dgSame(dgSaved(),dgUndo.undone?dgUndo.prev.g:dgUndo.next.g)}  // 10-26 audit: only under the curve it was applied with
 function dgApply(gs,src,what){if(!S||!S.dg)return;const prev={g:dgSaved(),src:S.dg.src||''};
-dgPost(gs,S.dg.hosts,src).then(r=>{if(r&&r.ok){dgUndo={prev,next:{g:gs.slice(),src},what,at:Date.now(),undone:false};dgUndoSave();dgEdit=null;dgEditSrc='';dgKey='';drawDG();cbDrawRuns()}})}
+dgPost(gs,S.dg.hosts,src).then(r=>{if(r&&r.ok){dgUndo={prev,next:{g:gs.slice(),src},what,at:Date.now(),undone:false,cid:(S.cv&&S.cv.id)||0};dgUndoSave();dgEdit=null;dgEditSrc='';dgKey='';drawDG();cbDrawRuns()}})}
 function dgUndoTog(){if(!dgUndoLive())return;const to=dgUndo.undone?dgUndo.next:dgUndo.prev;
 dgPost(to.g,S.dg.hosts,to.src).then(r=>{if(r&&r.ok){dgUndo.undone=!dgUndo.undone;dgUndoSave();dgKey='';drawDG();cbDrawRuns()}})}
 function dgUndoHtml(){if(!dgUndoLive())return'';const u=dgUndo,when=new Date(u.at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}),fmt=g=>g.map(v=>v.toFixed(2)).join(' ');
@@ -876,13 +876,13 @@ function drawBar(){const b=[],a=S.auto,hs=S.hosts||[],ch=(c,s,t)=>'<span class="
 if(a&&a[0]!=='00000000'){const x=hs.find(x=>x[0]===a[0]);b.push(ch(a[1]===3?'bad':'',x?hostName(x):'Host',hAutoLine()))}
 const d=S.stage!=null&&S.dpi&&S.dpi[S.stage];if(d)b.push(ch('','Stage '+(S.stage+1)+' · '+d[0]+(d[1]&&d[1]!==d[0]?'/'+d[1]:'')+' DPI'));
 const sig=a&&a[0]!=='00000000'?a[0]:'',hn=sig?hostName(hs.find(x=>x[0]===sig)||[sig]):'',cb=(c,s,t,f)=>sig?'<button type="button" class="chip chipb2'+(c?' '+c:'')+'" title="'+esc(t)+'" onclick="'+f+'()">'+esc(s)+'</button>':ch(c,s,t);
-if(S.dg&&S.dg.sup)b.push(cb(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off'),'Click: '+(S.dg.on?'turn the direction gains off':'turn the direction gains on')+' for '+hn,'sbGains'));{const c=S.cv;if(c&&c.sup){const nm=c.name||'',sh=nm.length>18?nm.slice(0,17)+'\u2026':nm;b.push(c.temp||c.tcand||c.ab?ch('','Curve: BallSheet A/B','BallSheet is running a blind A/B: which curve is on is hidden until it ends'):c.on?cb('ok','Curve '+(sh||'on'),'The Feather applies '+(nm||'the speed curve')+' on '+hn+'. Click: turn it off there','sbCurve'):c.n?cb('','Curve off','Not applied on '+hn+'. Click: turn '+(nm||'the curve')+' on there','sbCurve'):ch('','Curve off','No speed curve saved'))}}
+const blindAB=!!(S.cv&&(S.cv.ab||S.cv.temp||S.cv.tcand));if(S.dg&&S.dg.sup)b.push(blindAB?ch('','Gains: BallSheet A/B','BallSheet is running a blind A/B: the gains in use are hidden until it ends'):cb(S.dg.on?'ok':'','Gains '+(S.dg.on?'on':'off'),'Click: '+(S.dg.on?'turn the direction gains off':'turn the direction gains on')+' for '+hn,'sbGains'));{const c=S.cv;if(c&&c.sup){const nm=c.name||'',sh=nm.length>18?nm.slice(0,17)+'\u2026':nm;b.push(c.temp||c.tcand||c.ab?ch('','Curve: BallSheet A/B','BallSheet is running a blind A/B: which curve is on is hidden until it ends'):c.on?cb('ok','Curve '+(sh||'on'),'The Feather applies '+(nm||'the speed curve')+' on '+hn+'. Click: turn it off there','sbCurve'):c.n?cb('','Curve off','Not applied on '+hn+'. Click: turn '+(nm||'the curve')+' on there','sbCurve'):ch('','Curve off','No speed curve saved'))}}
 {const o=S.opt||{},mc=(k,lab,why)=>o[k]==null?'':'<button type="button" class="chip chipb2'+(o[k]?' ok':'')+'" title="'+esc(why+' Click: turn it '+(o[k]?'off':'on')+' (a mouse setting, every host).')+'" onclick="sbOpt(\''+k+'\')">'+esc(lab+' '+(o[k]?'on':'off'))+'</button>';b.push(mc('snap','Snap','Angle Snap straightens nearly level movement (it hides the tilt Level your swipes measures).'),mc('sync','Motion Sync','Motion Sync lines the sensor up with the polling (adds a little delay).'))}
 const bt=S.battery;if(bt)b.push(ch(bt.pct<=15?'bad':'','Battery '+bt.pct+'%'));
-$('sbar').innerHTML=b.join('');lvAngDraw();cbFollow()}
+{const h=b.join(''),sb=$('sbar');if(sb.dataset.h!==h){sb.innerHTML=h;sb.dataset.h=h}}lvAngDraw();cbFollow()}
 // 10-26: Calibration runs follow the running curve and the gains in use (Use on a curve swaps both): re-tick among the new
 // curve's runs and redraw when either changes (nothing redrew it before)
-let cbFollowKey='';function cbFollow(){if(!S||!S.cv||!S.dg)return;const k=(S.cv.id||0)+'|'+S.dg.g.join(',');if(k===cbFollowKey)return;const first=!cbFollowKey,curveNow=cbFollowKey.split('|')[0]!==String(S.cv.id||0);cbFollowKey=k;if(first||cb||!cbRuns.length)return;if(curveNow){cbPoolSel=null;cbLastKind=''}cbDrawRuns()}
+let cbFollowKey='';function cbFollow(){if(!S||!S.cv||!S.dg)return;const k=(S.cv.id||0)+'|'+S.dg.g.join(',');if(k===cbFollowKey)return;const first=!cbFollowKey,curveNow=cbFollowKey.split('|')[0]!==String(S.cv.id||0);cbFollowKey=k;if(cb||!cbRuns.length)return;if(curveNow&&!first&&cbCurveSel==='run'){cbPoolSel=null;cbLastKind=''}cbDrawRuns()}  // 10-26 audit: also the first time (a draw before the status showed nothing)
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
 else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
@@ -1011,7 +1011,7 @@ function c3L(){const ci=c3Cid();return(S&&S.c360||[]).filter(r=>(r[4]||0)===c3Ct
 // which curve's results show: the user's pick, else the curve the Feather runs; 0 = from before curve ids (QT Py fw49)
 let c3CidPick=null;try{const v=localStorage.getItem('gw_c3cid');if(v!=null&&v!=='')c3CidPick=Number(v)}catch(e){}
 // what a new result is saved under: the running curve's id, or 255 = the curve off on this host (the XIM's linear cm/360)
-function c3SaveCid(){const c=S&&S.cv;return c&&c.sup&&c.got&&!c.on?255:(c&&c.id)||0}
+function c3SaveCid(){const c=S&&S.cv;return c&&c.sup&&c.got&&!c.on&&!(c.ab||c.temp||c.tcand)?255:(c&&c.id)||0}  // 10-26 audit: not during a blind A/B (its off arm would show)
 function c3Lin(){return Number(cvSrcParse(S&&S.cv&&S.cv.src).S)||0}
 function c3Has0(){return(S&&S.c360||[]).some(r=>(r[4]||0)===c3Ctx()&&!(r[5]||0))}
 function c3Cid(){const a=c3SaveCid();if(c3CidPick===0&&!c3Has0())c3CidPick=null;return c3CidPick!=null?c3CidPick:a}  // 10-26: the running curve's results (none yet: its prediction), no longer the ones from before curve ids (mixed curves)
@@ -1047,7 +1047,7 @@ const pr=c3Pred(q.p[0]),dd=pr?(q.p[1]/pr-1)*100:0;s+='<circle class="pt" cx="'+f
 function c3Reset(){if(c3.hand){post('/api/turn?stop=1');c3.hand=null}c3.mk=null;if(c3.held||c3.segBusy){post('/api/turn?stop=1');c3.waitRun=c3.seg;c3.waitAt=Date.now()}  // audit 10-23: the next Turn waits for that run's end
 if(c3.cur){c3.cur.rule='start over';c3LogPush()}c3.n=0;c3.phase='';c3.msg='';c3.corr=0;c3.shortSent=0;c3.hist=[];c3.held=0;c3.segBusy=false;c3.pend=0;c3.lost=null;if(c3.press){clearTimeout(c3.press.timer);c3.press=null}c3Persist();c3Draw()}
 async function c3Turn(){const cpc=c3Cpc(),e=c3From(),sp=Number($('c3sp').value),tn=Number($('c3tn').value);
-if(!S.turn||!S.turn.sup||!cpc||c3.phase||c3.waitRun>=0)return;if(sp!==c3.sp){c3.n=0;c3.hist=[]}c3.sp=sp;c3.tn=tn;  // another speed starts again from your curve there
+if(!S.turn||!S.turn.sup||!cpc||c3.phase||c3.waitRun>=0)return;if(sp!==c3.sp){c3.n=0;c3.hist=[]}if(c3.n&&c3.ncpc&&Math.abs(c3.ncpc-cpc)>0.5){c3.n=Math.round(c3.n*cpc/c3.ncpc);c3.hist=[]}c3.ncpc=cpc;c3.sp=sp;c3.tn=tn;  // 10-26 audit: another DPI: the next try in its counts  // another speed starts again from your curve there
 if(!c3.n){if(!(e>=2&&e<=2000)){toast('Count your own turns first: the check starts from that result',true);return}c3.n=Math.round(e*cpc)}
 c3.shortSent=Math.round(c3.n*Number($('c3short').value)/360);const total=c3.n*tn-c3.shortSent,dur=total/(sp*cpc)*1000,lim=S.fw>=29?118000:28000;if(dur>lim){toast('Too long for one turn ('+(S.fw>=29?'2 min':'30 s')+' at most): a faster speed or fewer turns',true);return}
 c3.run=(S.turn.run+1)&255;c3.phase='turn';c3.at=Date.now();c3.dur=dur;c3.msg='Turning'+(tn>1?' '+tn+' times':'')+'… hands off the mouse.';c3Draw();
@@ -1085,7 +1085,7 @@ const r=await post('/api/turn?n='+n+'&r='+Math.max(10,Math.round(v*cpc))+'&hand=
 // the samples per speed (switching the speed and back keeps them); the selected speed by default
 function c3SelSp(){return Number($('c3sp').value)}
 function c3ImpKey(sp){return c3Ctx()+':'+sp+':'+c3SaveCid()+'@'+Math.round(c3Cpc()*2.54)}
-function c3Imp(sp){const k=c3ImpKey(sp),o=c3Ctx()+':'+sp;if(!c3.impBy[k]&&c3.impBy[o]){c3.impBy[k]=c3.impBy[o];delete c3.impBy[o]}return c3.impBy[k]||(c3.impBy[k]=[])}  // per context, speed, curve (what it's saved under) and DPI (10-26: counts at another DPI or under another curve don't average in)
+function c3Imp(sp){if(!c3Cpc())return[];const k=c3ImpKey(sp),o=c3Ctx()+':'+sp;if(!c3.impBy[k]&&c3.impBy[o]){c3.impBy[k]=c3.impBy[o];delete c3.impBy[o]}return c3.impBy[k]||(c3.impBy[k]=[])}  // per context, speed, curve (what it's saved under) and DPI (10-26: counts at another DPI or under another curve don't average in)
 function c3Avg(sp){const a=c3Imp(sp==null?c3SelSp():sp),n=a.length;if(!n)return null;const m=a.reduce((s,v)=>s+v,0)/n;if(n<2)return{n,m,ci:0};
 const sd=Math.sqrt(a.reduce((s,v)=>s+(v-m)*(v-m),0)/(n-1)),tq=[0,0,12.7,4.3,3.18,2.78,2.57,2.45,2.36,2.31,2.26][n]||2.1;return{n,m,ci:tq*sd/Math.sqrt(n),sd}}
 // fw55 + Feather v34: correct by hand. The Feather counts what leaves after the speed curve (linear to the angle from
@@ -1286,7 +1286,7 @@ if(Sx)M.forEach(m=>{const pr=Sx/cvGain(T,m[0]),d=(m[1]/pr-1)*100;s+='<circle cla
 s+='<line id="cvhl" class="gl" x1="0" y1="'+Y0+'" x2="0" y2="'+Y1+'" visibility="hidden"/>';
 if(E)E.T.forEach((q,i)=>{const yv=Sx?Sx/(q[1]/1000):q[1]/10;s+='<circle class="eh'+(i===E.sel?' on':'')+'" data-i="'+i+'" cx="'+f(lx(q[0]/10))+'" cy="'+f(ly(yv))+'" r="6"><title>'+(q[0]/10)+' cm/s, gain '+(q[1]/1000).toFixed(3)+'</title></circle>'});svg.innerHTML=s;
 cvHover={T,Sx,X0,X1,Y0,Y1,lo,hi};if(!svg.dataset.hv){svg.dataset.hv=1;svg.addEventListener('mousemove',cvHoverMove);svg.addEventListener('pointerdown',cvEdDown);svg.addEventListener('pointermove',cvEdMove);svg.addEventListener('pointerup',cvEdUp);svg.addEventListener('pointercancel',cvEdUp);svg.addEventListener('dblclick',cvEdDbl);svg.addEventListener('mouseleave',()=>{const e=$('cvhl');if(e)e.setAttribute('visibility','hidden');$('cvhovtxt').textContent=''})}
-$('cvleg').textContent=Sx?'Line: cm/360 with the curve on the Feather and the XIM linear at '+Sx.toFixed(1)+'. Dots: your newest fixed-speed results'+(typeof c3Cid==='function'&&S.cv&&c3Cid()!==(S.cv.id||0)?(c3Cid()===0?' from before curve ids (measured under various curves, not this one).':c3Cid()===255?' with the curve off.':' under another curve ('+esc(((cvLib&&cvLib.curves.find(x=>x.id===c3Cid()))||{}).name||'#'+c3Cid())+').'):'.'):'The curve as a share of the XIM\'s linear sensitivity (cm/360 needs fixed-speed results).'}
+$('cvleg').textContent=Sx?'Line: cm/360 with the curve on the Feather and the XIM linear at '+Sx.toFixed(1)+'. Dots: your newest fixed-speed results'+(typeof c3Cid==='function'&&S.cv&&c3Cid()!==(S.cv.id||0)?(c3Cid()===0?' from before curve ids (measured under various curves, not this one).':c3Cid()===255?' with the curve off.':' under another curve ('+(((cvLib&&cvLib.curves.find(x=>x.id===c3Cid()))||{}).name||'#'+c3Cid())+').'):'.'):'The curve as a share of the XIM\'s linear sensitivity (cm/360 needs fixed-speed results).'}
 function cvDraw(){if(!S||!$('cvcard'))return;const c=S.cv;if(c&&cvLib&&(c.id!==cvLib.active||c.cand!==cvLib.cand)&&!cvLib.busy){cvLib.busy=1;cvLibLoad()}
 if(!cvLoaded&&c){cvLoaded=true;if(c.src&&!/^lib:/.test(c.src)&&!$('cvx').value){const o=cvSrcParse(c.src);$('cvx').value=o.x||'';if(o.v)$('cvv').value=o.v;if(o.d)$('cvdeg').value=o.d;$('cvtau').value=c.tau||8;if(o.x){cvImport();return}}}
 $('cvoff').hidden=!!(c&&c.sup);$('cvoff').textContent=c?'The Feather needs firmware v30 for this'+(S.fw?' (it has v'+S.fw+')':'')+'; you can prepare and save the curve meanwhile.':'The QT Py needs firmware 46 for this.';if(!c)return;
@@ -1307,10 +1307,10 @@ cvPlot(n)}
 function c3LogPush(){const c=c3.cur;if(!c)return;c3.cur=null;c3.log.unshift(c);c3.log.length=Math.min(c3.log.length,60);c3Persist();c3LogDraw()}
 // 10-24: the tries log, the samples per speed and the try in progress are kept in this browser (localStorage), so a reload
 // or a QT Py update keeps them; per browser, not on the QT Py
-function c3Persist(){try{localStorage.setItem('gw_c3',JSON.stringify({log:c3.log,impBy:c3.impBy,n:c3.n,sp:c3.sp,tn:c3.tn,ctx:c3Ctx()}))}catch(e){}}
+function c3Persist(){try{localStorage.setItem('gw_c3',JSON.stringify({log:c3.log,impBy:c3.impBy,n:c3.n,ncpc:c3.ncpc||c3Cpc(),sp:c3.sp,tn:c3.tn,ctx:c3Ctx()}))}catch(e){}}
 function c3Restore(){try{const cx=localStorage.getItem('gw_c3ctx');if(cx!=null&&$('c3ctx'))$('c3ctx').value=cx}catch(e){}try{const o=JSON.parse(localStorage.getItem('gw_c3')||'null');if(!o)return;c3.log=Array.isArray(o.log)?o.log:[];c3.impBy=o.impBy&&typeof o.impBy==='object'?o.impBy:{};
-if(o.sp>0&&o.n>0&&(o.ctx||0)===c3Ctx()){c3.n=o.n;c3.sp=o.sp;c3.tn=o.tn||1;const s=$('c3sp');if([...s.options].some(x=>Number(x.value)===o.sp))s.value=String(o.sp)}}catch(e){}}
-function c3LogClear(){const sel=c3SelSp();c3.log=c3.log.filter(c=>!(c.sp===sel&&(c.ctx||0)===c3Ctx()));c3.impBy[c3ImpKey(sel)]=[];if(c3.sp===sel&&!c3.phase){c3.n=0;c3.hist=[]}c3Persist();c3LogDraw();c3Draw()}
+if(o.sp>0&&o.n>0&&(o.ctx||0)===c3Ctx()){c3.n=o.n;c3.ncpc=o.ncpc||0;c3.sp=o.sp;c3.tn=o.tn||1;const s=$('c3sp');if([...s.options].some(x=>Number(x.value)===o.sp))s.value=String(o.sp)}}catch(e){}}
+function c3LogClear(){const sel=c3SelSp();c3.log=c3.log.filter(c=>!(c.sp===sel&&(c.ctx||0)===c3Ctx()&&(c.cid==null||c.cid===c3SaveCid())));c3.impBy[c3ImpKey(sel)]=[];if(c3.sp===sel&&!c3.phase){c3.n=0;c3.hist=[]}c3Persist();c3LogDraw();c3Draw()}
 function c3SegTxt(s,cpc){return(s.cr>=0?'+':'')+(s.cr/cpc).toFixed(2)+' '+s.k+(s.k==='step'?' @'+(+s.v).toFixed(1):'')+(s.late?' (late)':'')}
 function c3TryTxt(c,cpc){return new Date(c.t).toLocaleTimeString()+' | '+C3CTX[c.ctx||0]+' | '+c.sp+' cm/s'+(c.tn>1?' x'+c.tn:'')+' | try '+(c.n/cpc).toFixed(2)+' | '+(c.segs.length?c.segs.map(s=>c3SegTxt(s,cpc)).join(', '):'no corrections')+
 (c.corr!=null?' | total '+(c.corr>=0?'+':'')+(c.corr/cpc).toFixed(2)+(c.imp?' | says '+(c.imp/cpc).toFixed(2):''):'')+(c.next?' | next '+(c.next/cpc).toFixed(2)+' ('+c.rule+')':c.rule?' | '+c.rule:'')}
