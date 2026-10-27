@@ -16,5 +16,7 @@ uint8_t gw_hostcap_upd();  // v26
 
 // changes when there is something new to read in 256-511: at most every 300 ms, and once more after a burst
 uint8_t gw_hostcap_seq();
+uint16_t gw_hostcap_first_desc_len();                  // v35: wLength of the capture's first device descriptor request (0 none)
+bool gw_hostcap_cfg_ago(uint32_t now, uint32_t* us);  // v35: the capture's SET_CONFIGURATION came, us ago
 
 #endif

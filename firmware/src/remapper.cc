@@ -106,6 +106,12 @@ struct macro_entry_t {
 
 std::queue<macro_entry_t> macro_queue;
 
+// v35 (gw_mouse.cc's wake key): a one-key macro, called from gw_tick inside process_mapping (the queue's own thread);
+// the macro step puts it in the keyboard report in whichever form the host asked for (boot or report protocol)
+void gw_macro_tap(uint32_t usage, uint8_t frames) {
+    macro_queue.push((macro_entry_t){ duration_left : frames, items : { usage } });
+}
+
 uint32_t reports_received;
 uint32_t reports_sent;
 uint32_t processing_time;

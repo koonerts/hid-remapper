@@ -1670,7 +1670,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 34
+#define GW_FW_VERSION 35
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -2209,8 +2209,29 @@ static void gw_action_do(uint8_t a, uint32_t now) {
 }
 
 // regs: the expression registers; unused since v15 (chords come from gw_chords_filter)
+// v35: a keyboard tap once the host has configured the Feather, when it enumerated like the XIM (its first device
+// descriptor request asks 8 bytes; Windows asks 64): the XIM only counts a keyboard as there after its first key, so
+// the first key after an ATEN switch was eaten. F24 (no XIM mapping uses it), about 30 ms, 0.3 s after
+// SET_CONFIGURATION, once per capture (each switch powers the Feather up again)
+static void wake_tick(uint32_t now) {
+    static uint8_t done_for = 0;
+    const uint8_t id = gw_hostcap_id();
+    if (!id || (id == done_for) || !tud_mounted()) {
+        return;
+    }
+    uint32_t ago = 0;
+    if (!gw_hostcap_cfg_ago(now, &ago) || (ago < 300000)) {
+        return;
+    }
+    done_for = id;
+    if (gw_hostcap_first_desc_len() == 8) {
+        gw_macro_tap(0x00070073, 30);  // keyboard page, F24
+    }
+}
+
 void gw_tick(const int32_t* regs) {
     uint32_t now = time_us_32();
+    wake_tick(now);
     ev_tick(now);
     gw_chords_service();
     dpi_tick(now);

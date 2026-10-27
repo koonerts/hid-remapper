@@ -126,6 +126,30 @@ uint8_t gw_hostcap_seq() {
     return seq;
 }
 
+// v35: the capture's first GET_DESCRIPTOR(device) asks this many bytes: 8 from the XIM, 64 from Windows (the QT Py's
+// host guess uses the same); 0 = none yet
+uint16_t gw_hostcap_first_desc_len() {
+    uint16_t len = 0;
+    uint32_t irq = save_and_disable_interrupts();
+    for (uint8_t i = 0; i < cap_n; i++) {
+        if ((cap[i][0] == 0x80) && (cap[i][1] == 0x06) && (cap[i][3] == 0x01)) {
+            len = cap[i][6] | (cap[i][7] << 8);
+            break;
+        }
+    }
+    restore_interrupts(irq);
+    return len;
+}
+
+bool gw_hostcap_cfg_ago(uint32_t now, uint32_t* us) {
+    uint32_t irq = save_and_disable_interrupts();
+    const bool cfg = cap_cfg;
+    const uint32_t at = cap_cfg_us;
+    restore_interrupts(irq);
+    *us = now - at;
+    return cfg;
+}
+
 void gw_hostcap_fill(uint8_t* s) {
     memset(s, 0, 256);
     uint32_t irq = save_and_disable_interrupts();

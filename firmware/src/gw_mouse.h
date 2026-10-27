@@ -11,6 +11,7 @@
 
 // registers: the remapper's expression registers (unused since v15)
 void gw_tick(const int32_t* registers);
+void gw_macro_tap(uint32_t usage, uint8_t frames);  // v35 (remapper.cc): press this usage for about frames ms, then let go
 // remapper.cc, once per frame: how long the frame's processing took, and the chord filter's share (us)
 void gw_frame_time(uint32_t total_us, uint32_t chords_us);
 void gw_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, uint16_t len);
