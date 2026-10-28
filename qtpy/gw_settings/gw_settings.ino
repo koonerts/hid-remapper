@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 63      // this firmware's number, shown in /api/status
+#define QT_FW 64      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -318,8 +318,9 @@ static bool cvt_cand = false;           // BallSheet's A/B block runs the candid
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
 // fw36: + the cursor speed the run used (BallSheet's %, 0 = not known: the page's runs, and runs from before fw36), so
 // the page and BallSheet can pool runs made at a similar speed (NVS "calib2"; "calib" is moved over once)
-#define CALIB_KEEP 20  // 10-24: was 6 (pooling, now often within one curve setting, wants more)
+#define CALIB_KEEP 32  // 10-24: was 6 (pooling, now often within one curve setting, wants more); fw64: 32 (the accuracy test's runs come too)
 #define CALIB_V1_SIZE 46
+#define CALIB_V2_SIZE 47  // fw36-63 (NVS "calib2"): before src
 struct __attribute__((packed)) CalibRec {  // 47 bytes
     uint32_t t;         // Unix time
     uint8_t n[8];       // flicks measured per direction
@@ -328,8 +329,9 @@ struct __attribute__((packed)) CalibRec {  // 47 bytes
     uint8_t flags;      // bit 0 raw input, bit 1 coarse browser clock, bit 2 the speed curve on; 10-24: bits 3-7 its curve id (0 = not recorded)
     uint8_t skipped;    // flicks skipped (at most 255)
     uint8_t speed;      // fw36: cursor speed %, 0 = not known
+    uint8_t src;        // fw64: 0 a calibration run, 1 BallSheet's accuracy test (one arm's first movements, pooled over sessions)
 };
-static_assert(sizeof(CalibRec) == CALIB_V1_SIZE + 1, "fw36 appended one byte to the fw27 record");
+static_assert(sizeof(CalibRec) == CALIB_V2_SIZE + 1, "fw64 appended one byte to the fw36 record");
 static CalibRec calib[CALIB_KEEP];
 // fw43: the cm/360 card's results (measured with the Feather's steady turn, v27), newest first; NVS "c360"
 #define C360_KEEP 24  // fw45: was 12; a curve with ~12 speeds plus by-hand counts outgrew it
@@ -2260,7 +2262,8 @@ static void h_calib_post() {
     c.skipped = (sk < 0) ? 0 : (sk > 255) ? 255 : sk;
     long sp = server.arg("sp").toInt();  // fw36: BallSheet's cursor speed %
     c.speed = (sp < 0) ? 0 : (sp > 255) ? 255 : sp;
-    prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+    c.src = (server.arg("src").toInt() == 1) ? 1 : 0;  // fw64
+    prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
     ok_json(true);
 }
 
@@ -2279,7 +2282,7 @@ static void h_calibcid() {
     for (uint8_t k = 0; k < calib_n; k++) {
         if (calib[k].t == run) {
             calib[k].flags = (calib[k].flags & 7) | (uint8_t) (cid << 3);
-            prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+            prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
             return ok_json(true);
         }
     }
@@ -2298,9 +2301,9 @@ static void h_calibdel() {
             memmove(calib + k, calib + k + 1, sizeof(CalibRec) * (calib_n - k - 1));
             calib_n--;
             if (calib_n) {
-                prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+                prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
             } else {
-                prefs.remove("calib2");  // putBytes of 0 bytes writes nothing
+                prefs.remove("calib3");  // putBytes of 0 bytes writes nothing
             }
             return ok_json(true);
         }
@@ -3103,7 +3106,7 @@ static void h_calibspeed() {
                 return ok_json(false, "that run has its speed already");
             }
             calib[k].speed = sp;
-            prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+            prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
             return ok_json(true);
         }
     }
@@ -3115,7 +3118,7 @@ static void h_calib_get() {
     String j = "{\"runs\":[";
     for (uint8_t k = 0; k < calib_n; k++) {
         const CalibRec& c = calib[k];
-        j += (k ? ",{\"t\":" : "{\"t\":") + String(c.t) + ",\"flags\":" + String(c.flags) + ",\"skipped\":" + String(c.skipped) + ",\"speed\":" + String(c.speed) + ",\"n\":[";
+        j += (k ? ",{\"t\":" : "{\"t\":") + String(c.t) + ",\"flags\":" + String(c.flags) + ",\"skipped\":" + String(c.skipped) + ",\"speed\":" + String(c.speed) + ",\"src\":" + String(c.src) + ",\"n\":[";
         for (int d = 0; d < 8; d++) {
             j += (d ? "," : "") + String(c.n[d]);
         }
@@ -3710,7 +3713,19 @@ void setup() {
     edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
-    calib_n = prefs.getBytes("calib2", calib, sizeof(calib)) / sizeof(CalibRec);  // fw27: calibration summaries (fw36: + speed)
+    calib_n = prefs.getBytes("calib3", calib, sizeof(calib)) / sizeof(CalibRec);  // fw27: calibration summaries (fw36: + speed, fw64: + src)
+    if (!calib_n && prefs.isKey("calib2")) {  // fw64: move the fw36-63 records (47 bytes, no src) over once
+        static uint8_t old2[CALIB_KEEP * CALIB_V2_SIZE];
+        calib_n = prefs.getBytes("calib2", old2, sizeof(old2)) / CALIB_V2_SIZE;
+        for (uint8_t k = 0; k < calib_n; k++) {
+            memcpy(&calib[k], old2 + CALIB_V2_SIZE * k, CALIB_V2_SIZE);
+            calib[k].src = 0;
+        }
+        if (calib_n) {
+            prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
+        }
+        prefs.remove("calib2");
+    }
     c360_n = prefs.getBytes("c360", c360, sizeof(c360)) / sizeof(C360Rec);       // fw43: cm/360 results
     if (!calib_n && prefs.isKey("calib")) {  // fw36: move the fw27-35 records (46 bytes, no speed) over once
         uint8_t old[CALIB_KEEP * CALIB_V1_SIZE];
@@ -3718,9 +3733,10 @@ void setup() {
         for (uint8_t k = 0; k < calib_n; k++) {
             memcpy(&calib[k], old + CALIB_V1_SIZE * k, CALIB_V1_SIZE);
             calib[k].speed = 0;
+            calib[k].src = 0;
         }
         if (calib_n) {
-            prefs.putBytes("calib2", calib, sizeof(CalibRec) * calib_n);
+            prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
         }
         prefs.remove("calib");
     }
