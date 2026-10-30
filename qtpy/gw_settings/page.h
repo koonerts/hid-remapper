@@ -1251,8 +1251,9 @@ if(!cvl.on){tx.textContent='Live view off.';return}
 if(!j){tx.textContent='Waiting for the QT Py\u2026';return}
 if(!j.sup){tx.textContent='The live view needs Feather firmware v32'+(j.fw?' (it has v'+j.fw+')':'')+'.';return}
 if(blind){tx.textContent='Hidden while BallSheet runs a blind A/B (it would show which curve is on).';return}
-const T=cvlTable(),on=!!j.on,dpi=j.dpi||0,v=(j.v||0)/10,g=on&&T?cvGain(T,v):1;
-let l1=dpi?(j.mv?'Now '+cvlFmt(v)+' cm/s':'At rest')+' \u00b7 gain '+g.toFixed(2)+' \u2192 '+Math.round(dpi*g).toLocaleString()+' effective DPI (mouse '+dpi.toLocaleString()+' DPI)'+(on?'':' \u00b7 the curve isn\'t applying on this host'):'The Feather doesn\'t know the mouse\'s DPI yet, so it can\'t tell the speed.';
+// 10-30: a still mouse at 40,000 DPI still sends a count every few ms, which the Feather calls moving at 0.0 cm/s: that's at rest
+const T=cvlTable(),on=!!j.on,dpi=j.dpi||0,v=(j.v||0)/10,g=on&&T?cvGain(T,v):1,mv=j.mv&&v>=0.1;
+let l1=dpi?(mv?'Now '+cvlFmt(v)+' cm/s':'At rest')+' \u00b7 gain '+g.toFixed(2)+' \u2192 '+Math.round(dpi*g).toLocaleString()+' effective DPI (mouse '+dpi.toLocaleString()+' DPI)'+(on?'':' \u00b7 the curve isn\'t applying on this host'):'The Feather doesn\'t know the mouse\'s DPI yet, so it can\'t tell the speed.';
 let l2='';const h=j.h;if(h&&h.ms){const b=h.b,tot=b.reduce((a,x)=>a+x,0)||1,lo=b[0]/tot*100,hi=b[25]/tot*100;
 l2='Moving '+cvlDur(h.ms)+' since the counts started: half of it between '+cvlFmt(cvlPct(b,.25))+' and '+cvlFmt(cvlPct(b,.75))+' cm/s (median '+cvlFmt(cvlPct(b,.5))+')'+(lo>=0.5?', '+lo.toFixed(0)+'% under 5':'')+(hi>=0.5?', '+hi.toFixed(0)+'% over 160':'')+'.'}else if(h)l2='No movement counted yet: move the mouse (it counts in game too).';
 tx.innerHTML=esc(l1)+'<br>'+esc(l2);
@@ -1260,7 +1261,7 @@ tx.innerHTML=esc(l1)+'<br>'+esc(l2);
 const H=cvHover;if(H&&H.T&&svg.innerHTML){const f=x=>x.toFixed(1),lx=s=>H.X0+Math.log(Math.min(160,Math.max(5,s))/5)/Math.log(32)*(H.X1-H.X0),yv=s=>{const q=cvGain(H.T,s);return H.Sx?H.Sx/q:q*100},ly=q=>H.Y1-(q-H.lo)/(H.hi-H.lo)*(H.Y1-H.Y0);
 let s='<g id="cvlg" pointer-events="none">';if(h&&h.ms){const b=h.b,mx=Math.max(...b.slice(1,25))||1;for(let k=1;k<25;k++){if(!b[k])continue;const x0=H.X0+(k-1)/24*(H.X1-H.X0),w=(H.X1-H.X0)/24,ht=b[k]/mx*42;s+='<rect class="cvlb" x="'+f(x0+0.5)+'" y="'+f(H.Y1-ht)+'" width="'+f(w-1)+'" height="'+f(ht)+'"/>'}}
 const R=cvl.S.slice(-200);for(let i=0;i<R.length;i+=4){const q=R[i];if(q==null||q<0.5)continue;s+='<circle class="cvld" cx="'+f(lx(q))+'" cy="'+f(ly(yv(q)))+'" r="2.5" opacity="'+(0.1+0.5*i/R.length).toFixed(2)+'"/>'}
-if(dpi)s+='<circle class="cvld'+(j.mv?'':' rest')+'" cx="'+f(lx(v))+'" cy="'+f(ly(yv(v)))+'" r="5.5" stroke="var(--card)" stroke-width="1.5"/>';
+if(dpi)s+='<circle class="cvld'+(mv?'':' rest')+'" cx="'+f(lx(v))+'" cy="'+f(ly(yv(v)))+'" r="5.5" stroke="var(--card)" stroke-width="1.5"/>';
 svg.insertAdjacentHTML('beforeend',s+'</g>')}
 // the strip: hand speed and effective DPI over the last 4 s
 const W=cvl.S.slice(-800),X0=42,X1=344,n=W.length,px=i=>X1-(n-1-i)/799*(X1-X0);let vm=20;W.forEach(q=>{if(q!=null&&q>vm)vm=q});vm=vm<=20?20:vm<=40?40:vm<=80?80:vm<=160?160:Math.ceil(vm/100)*100;
