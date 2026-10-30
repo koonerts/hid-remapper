@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 64      // this firmware's number, shown in /api/status
+#define QT_FW 65      // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -89,6 +89,7 @@ static uint32_t d_polls = 0, d_ok = 0, d_short = 0, d_bad = 0, d_i2c_resets = 0;
 static uint32_t d_rc_fail = 0, d_rc_ms = 0;  // fw33: full-block reads that failed, and the longest one (ms)
 static uint32_t d_rc256 = 0, d_rc512 = 0;   // fw35: block reads by size
 static uint32_t d_nvs_fail = 0;              // fw62: putBytes that didn't write the whole blob (NVS full?)
+static String d_nvs_fail_key;                // fw65: the key of the last save that failed
 static uint8_t d_last_n = 0, d_b0 = 0, d_b1 = 0;
 static bool last_answered = false;  // the last read returned a full block, valid or not
 // the Feather's chord table (status bytes 128-191), as last read
@@ -277,8 +278,24 @@ static uint32_t cvt_keep_at = 0;
 static uint32_t cvt_ab_at = 0;  // fw59: BallSheet runs a blind curve A/B (ab=1 on any cvtemp call, both arms): the page hides the arm
 // fw49: named curves: each saved curve table gets an id (1-16) that cm/360 results carry and BallSheet stamps on its runs,
 // so results under different curves stay apart; one may be the candidate a curve-vs-curve A/B compares the active one
-// with (BallSheet switches to it through /api/cvtemp?cand=1). NVS "cvlib", "cvid", "cvcand".
+// with (BallSheet switches to it through /api/cvtemp?cand=1). NVS "cvid", "cvcand"; fw65: each curve under "cvl<id>"
+// and its gains under "cvg<id>" (fw49-64 kept all 16 slots in one blob each, "cvlib" 1488 bytes and "cvdg" 2240: NVS
+// writes a whole new copy before erasing the old one, so any change needed 49 and 72 free entries, and once the 20 KB
+// partition filled up the saves failed unseen and new curves were gone at the next power-off (10-29))
 #define CVLIB_N 16
+#define NVS_KEEP 72  // fw65: free entries an added curve must leave, so the largest blob left ("hcaps", 8 x 266 bytes) can still be rewritten
+static bool nvs_put(const char* key, const void* p, size_t len) {  // fw65: a blob save, failures counted with their key
+    if (prefs.putBytes(key, p, len) == len) {
+        return true;
+    }
+    d_nvs_fail++;
+    d_nvs_fail_key = key;
+    return false;
+}
+static int nvs_room() {  // fw65: entries a save can still take (NVS keeps one page free for its garbage collection)
+    nvs_stats_t ns;
+    return (nvs_get_stats(NULL, &ns) == ESP_OK) ? (int) ns.free_entries - 126 : 0;
+}
 struct __attribute__((packed)) CurveLib {  // 93 bytes (fw49 first had 16-byte names: 61, converted at boot)
     uint8_t used;
     char name[48];
@@ -309,10 +326,35 @@ struct __attribute__((packed)) CurveMeta {
     uint8_t ord;
 };
 static CurveMeta cvmeta[CVLIB_N];
-static void cvdg_save() {
-    if (prefs.putBytes("cvdg", cvdg, sizeof(cvdg)) != sizeof(cvdg)) {
-        d_nvs_fail++;
+static CurveLib cvlib_nv[CVLIB_N];   // fw65: what NVS holds per curve, so a save writes only the curves that changed
+static CurveGains cvdg_nv[CVLIB_N];
+static bool cvlib_blob = false, cvdg_blob = false;  // fw65: the old 16-slot blob is still there (removed once every curve is under its own key)
+// fw65: write the changed slots under "<pre><id>" (an unused slot's key removed), then drop the old blob; false = a save failed
+static bool slots_save(const char* pre, void* ram, void* nv, size_t sz, bool (*used)(const void*), const char* blob, bool* blob_left) {
+    bool ok = true;
+    for (int k = 0; k < CVLIB_N; k++) {
+        uint8_t* r = (uint8_t*) ram + sz * k;
+        uint8_t* s = (uint8_t*) nv + sz * k;
+        if (!memcmp(r, s, sz)) {
+            continue;
+        }
+        char key[8];
+        snprintf(key, sizeof(key), "%s%d", pre, k + 1);
+        if (used(r) ? !nvs_put(key, r, sz) : (prefs.isKey(key) && !prefs.remove(key))) {
+            ok = false;
+            continue;
+        }
+        memcpy(s, r, sz);
     }
+    if (ok && *blob_left) {
+        *blob_left = !prefs.remove(blob);
+    }
+    return ok;
+}
+static bool cvlib_used(const void* p) { return ((const CurveLib*) p)->used; }
+static bool cvdg_used(const void* p) { return ((const CurveGains*) p)->has; }
+static bool cvdg_save() {
+    return slots_save("cvg", cvdg, cvdg_nv, sizeof(CurveGains), cvdg_used, "cvdg", &cvdg_blob);
 }
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
@@ -494,7 +536,7 @@ static void edit_dropped(uint8_t seq) {
         if ((edit_seq[k] == (0x100 | seq)) && (edit_log[k].boot == (uint16_t) b_boots) && (millis() - edit_log[k].ms < 30000)) {
             edit_log[k].dev |= 0x80;
             edit_seq[k] = 0;
-            prefs.putBytes("edits", edit_log, sizeof(EditLog) * edit_n);
+            nvs_put("edits", edit_log, sizeof(EditLog) * edit_n);
             return;
         }
     }
@@ -729,7 +771,7 @@ static void hcap_tick() {
     }
     if (hcap_dirty && (millis() - hcap_changed_at >= 2000)) {
         hcap_dirty = false;
-        prefs.putBytes("hcaps", hcap, sizeof(HostCap) * hcap_n);
+        nvs_put("hcaps", hcap, sizeof(HostCap) * hcap_n);
     }
 }
 
@@ -1276,7 +1318,7 @@ static void h_chords() {
     uint8_t c[1 + CH_MAX * 5];
     c[0] = n;
     memcpy(c + 1, rules, n * 5);
-    prefs.putBytes("chords", c, 1 + n * 5);
+    nvs_put("chords", c, 1 + n * 5);
     log_edit(EK_CHORDS, String(n) + (n == 1 ? " rule" : " rules"));
     ok_json(true);
 }
@@ -1344,6 +1386,42 @@ static void h_osd() {
 }
 
 // not counted as use: an open tab alone shouldn't keep the radio on while playing
+// fw65: GET /api/nvs: every NVS key (all namespaces: the Wi-Fi and RF calibration keep theirs there too) as
+// [namespace, key, type, bytes], with the entries used / free / total and what a save can still take
+static void h_nvs() {
+    touch();
+    String j = "{\"keys\":[";
+    nvs_iterator_t it = nullptr;
+    esp_err_t e = nvs_entry_find(NVS_DEFAULT_PART_NAME, NULL, NVS_TYPE_ANY, &it);
+    bool first = true;
+    while (e == ESP_OK) {
+        nvs_entry_info_t in;
+        nvs_entry_info(it, &in);
+        size_t len = 0;
+        if ((in.type == NVS_TYPE_BLOB) || (in.type == NVS_TYPE_STR)) {
+            nvs_handle_t h;
+            if (nvs_open(in.namespace_name, NVS_READONLY, &h) == ESP_OK) {
+                if (in.type == NVS_TYPE_BLOB) {
+                    nvs_get_blob(h, in.key, NULL, &len);
+                } else {
+                    nvs_get_str(h, in.key, NULL, &len);
+                }
+                nvs_close(h);
+            }
+        }
+        j += String(first ? "" : ",") + "[\"" + in.namespace_name + "\",\"" + in.key + "\"," + String((int) in.type) + "," + String((unsigned) len) + "]";
+        first = false;
+        e = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+    nvs_stats_t ns;
+    j += "]";
+    if (nvs_get_stats(NULL, &ns) == ESP_OK) {
+        j += ",\"used\":" + String(ns.used_entries) + ",\"free\":" + String(ns.free_entries) + ",\"total\":" + String(ns.total_entries);
+    }
+    server.send(200, "application/json", j + ",\"room\":" + String(nvs_room()) + ",\"fail\":" + String(d_nvs_fail) + ",\"fail_key\":\"" + d_nvs_fail_key + "\"}");
+}
+
 static void h_status() {
     clock_sync();
     String j;
@@ -1515,7 +1593,7 @@ static void h_status() {
         if (nvs_get_stats(NULL, &ns) == ESP_OK) {
             j += ",\"nvs\":[" + String(ns.used_entries) + "," + String(ns.free_entries) + "," + String(ns.total_entries) + "]";
         }
-        j += ",\"nvs_fail\":" + String(d_nvs_fail) + "}";
+        j += ",\"nvs_fail\":" + String(d_nvs_fail) + ",\"nvs_fail_key\":\"" + d_nvs_fail_key + "\"}";  // fw65: + its key
     }
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
@@ -1596,7 +1674,7 @@ static void log_edit_as(uint8_t kind, const String& text, uint8_t dev, uint32_t 
     if (edit_n < EDIT_LOG) {
         edit_n++;
     }
-    prefs.putBytes("edits", edit_log, sizeof(EditLog) * edit_n);
+    nvs_put("edits", edit_log, sizeof(EditLog) * edit_n);
 }
 
 static void log_edit(uint8_t kind, const String& text) {
@@ -1696,7 +1774,7 @@ static void sig_migrate() {
         }
     }
     if (hprof_n) {
-        prefs.putBytes("hprof", hprof, sizeof(HostProf) * hprof_n);
+        nvs_put("hprof", hprof, sizeof(HostProf) * hprof_n);
     }
     for (uint8_t k = 0; k < dg.n; k++) {
         uint32_t s = sig_v2_of(dg.sig[k]);
@@ -1714,7 +1792,7 @@ static void sig_migrate() {
         }
     }
     if (dg.n) {
-        prefs.putBytes("dgain", &dg, sizeof(dg));
+        nvs_put("dgain", &dg, sizeof(dg));
     }
 }
 
@@ -1956,7 +2034,7 @@ static void h_hostprof() {
         }
     }
     if (hprof_n) {
-        prefs.putBytes("hprof", hprof, sizeof(HostProf) * hprof_n);
+        nvs_put("hprof", hprof, sizeof(HostProf) * hprof_n);
     } else {
         prefs.remove("hprof");  // fw35: putBytes of 0 bytes writes nothing, so the last forgotten host came back
     }
@@ -1988,9 +2066,7 @@ static bool dg_wanted() {  // on for the host connected now
 }
 
 static void cvmeta_save() {
-    if (prefs.putBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta)) {
-        d_nvs_fail++;
-    }
+    nvs_put("cvmeta", cvmeta, sizeof(cvmeta));
 }
 
 static void cvmeta_touch(uint8_t id) {  // fw61: used or changed now
@@ -2028,8 +2104,8 @@ static void cvdg_stamp(uint8_t id) {
     strncpy(c.src, dg_src.c_str(), sizeof(c.src) - 1);
     if (id) {
         cvdg_save();
-    } else if (prefs.putBytes("cvdg0", &cvdg0, sizeof(cvdg0)) != sizeof(cvdg0)) {
-        d_nvs_fail++;
+    } else {
+        nvs_put("cvdg0", &cvdg0, sizeof(cvdg0));
     }
 }
 
@@ -2046,7 +2122,7 @@ static void cvdg_take(uint8_t id) {
     memcpy(dg.g, c.g, sizeof(dg.g));
     dg_src = String(c.src);
     dg_src_t = c.src_t;
-    prefs.putBytes("dgain", &dg, sizeof(dg));
+    nvs_put("dgain", &dg, sizeof(dg));
     prefs.putString("dgsrc", dg_src);
     prefs.putULong("dgsrct", dg_src_t);
     dg_sent_at = 0;
@@ -2217,7 +2293,7 @@ static void h_dirgain() {
     dg.n = n;
     memset(dg.sig, 0, sizeof(dg.sig));
     memcpy(dg.sig, sig, sizeof(uint32_t) * n);
-    prefs.putBytes("dgain", &dg, sizeof(dg));
+    nvs_put("dgain", &dg, sizeof(dg));
     log_edit(EK_DIRGAIN, String(n) + (n == 1 ? " host" : " hosts"));
     cvdg_stamp(cv_id);  // fw60
     cvmeta_touch(cv_id);  // fw62: its gains changed (stamping alone, as on a switch, isn't using it)
@@ -2263,7 +2339,7 @@ static void h_calib_post() {
     long sp = server.arg("sp").toInt();  // fw36: BallSheet's cursor speed %
     c.speed = (sp < 0) ? 0 : (sp > 255) ? 255 : sp;
     c.src = (server.arg("src").toInt() == 1) ? 1 : 0;  // fw64
-    prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
+    nvs_put("calib3", calib, sizeof(CalibRec) * calib_n);
     ok_json(true);
 }
 
@@ -2282,7 +2358,7 @@ static void h_calibcid() {
     for (uint8_t k = 0; k < calib_n; k++) {
         if (calib[k].t == run) {
             calib[k].flags = (calib[k].flags & 7) | (uint8_t) (cid << 3);
-            prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
+            nvs_put("calib3", calib, sizeof(CalibRec) * calib_n);
             return ok_json(true);
         }
     }
@@ -2301,7 +2377,7 @@ static void h_calibdel() {
             memmove(calib + k, calib + k + 1, sizeof(CalibRec) * (calib_n - k - 1));
             calib_n--;
             if (calib_n) {
-                prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
+                nvs_put("calib3", calib, sizeof(CalibRec) * calib_n);
             } else {
                 prefs.remove("calib3");  // putBytes of 0 bytes writes nothing
             }
@@ -2722,10 +2798,19 @@ static String cvlib_clean(const String& s) {
     return o;
 }
 
-static void cvlib_save() {
-    prefs.putBytes("cvlib", cvlib, sizeof(cvlib));
-    prefs.putUChar("cvid", cv_id);
-    prefs.putUChar("cvcand", cv_cand);
+static bool cvlib_save() {  // fw65: false = something wasn't saved (it's gone at the next power-off)
+    bool ok = slots_save("cvl", cvlib, cvlib_nv, sizeof(CurveLib), cvlib_used, "cvlib", &cvlib_blob);
+    if ((prefs.getUChar("cvid", 0) != cv_id) && !prefs.putUChar("cvid", cv_id)) {
+        ok = false;
+        d_nvs_fail++;
+        d_nvs_fail_key = "cvid";
+    }
+    if ((prefs.getUChar("cvcand", 0) != cv_cand) && !prefs.putUChar("cvcand", cv_cand)) {
+        ok = false;
+        d_nvs_fail++;
+        d_nvs_fail_key = "cvcand";
+    }
+    return ok;
 }
 
 static uint16_t cv_src_s10() {  // the "S=" in the active curve's source, x10
@@ -2849,6 +2934,9 @@ static void h_curves() {
             g16[k] = g[k];
         }
         long tau = server.hasArg("tau") ? server.arg("tau").toInt() : 8, s10 = server.arg("s10").toInt();
+        if (nvs_room() < NVS_KEEP + 5) {  // fw65: a curve takes 5 entries; refused rather than lost at the next power-off
+            return ok_json(false, "the QT Py's settings storage is full: delete a curve first");
+        }
         uint8_t nid = cvlib_add(cvlib_clean(server.arg("name")), n, (uint8_t) std::max(1L, std::min(200L, tau)), (uint16_t) std::max(0L, std::min(65535L, s10)), s16, g16);
         if (!nid) {
             return ok_json(false, "the library is full (16): delete a curve first");
@@ -2856,7 +2944,9 @@ static void h_curves() {
         if ((server.arg("setcand") == "1") && (nid != cv_id)) {
             cv_cand = nid;
         }
-        cvlib_save();
+        if (!cvlib_save()) {
+            return ok_json(false, "added, but the QT Py couldn't save it: it's gone at the next power-off");
+        }
         server.send(200, "application/json", "{\"ok\":true,\"id\":" + String(nid) + "}");
         return;
     }
@@ -2905,7 +2995,7 @@ static void h_curves() {
         }
         cv_src = String("lib:") + String(c.name) + (c.s10 ? ";S=" + String(c.s10 / 10.0f, 1) : String(""));
         prefs.putString("cvsrc", cv_src);
-        prefs.putBytes("curve", &cv, sizeof(cv));
+        nvs_put("curve", &cv, sizeof(cv));
         cvlib_save();
         log_edit(EK_CURVE, String("use ") + String(c.name));
         cv_sent_at = 0;
@@ -2953,9 +3043,9 @@ static void h_curves() {
     }
     memset(c.name, 0, sizeof(c.name));
     strncpy(c.name, nm.c_str(), sizeof(c.name) - 1);
-    cvlib_save();
+    bool saved = cvlib_save();
     cvmeta_touch(id);  // fw61
-    ok_json(true);
+    saved ? ok_json(true) : ok_json(false, "renamed, but the QT Py couldn't save it: the old name comes back at the next power-off");
 }
 
 static void h_curve() {
@@ -3018,7 +3108,7 @@ static void h_curve() {
         prefs.putString("cvsrc", cv_src);
     }
     if (n) {
-        prefs.putBytes("curve", &cv, sizeof(cv));
+        nvs_put("curve", &cv, sizeof(cv));
         uint8_t was = cv_id;
         cv_id = cvlib_add(cvlib_clean(server.arg("name")), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g);  // fw49
         if (cv_id != was) {  // fw60: as Use
@@ -3054,7 +3144,7 @@ static void h_c360() {
                 memmove(c360 + k, c360 + k + 1, sizeof(C360Rec) * (c360_n - k - 1));
                 c360_n--;
                 if (c360_n) {
-                    prefs.putBytes("c360", c360, sizeof(C360Rec) * c360_n);
+                    nvs_put("c360", c360, sizeof(C360Rec) * c360_n);
                 } else {
                     prefs.remove("c360");
                 }
@@ -3088,7 +3178,7 @@ static void h_c360() {
     c360[0].cm100 = (uint16_t) cm;
     c360[0].sp10 = (uint16_t) sp;
     c360[0].dpi = ((uint32_t) dpi & 0xFFFF) | ((uint32_t) (cid & 0xFF) << 16) | ((uint32_t) (ctx & 0xFF) << 24);
-    prefs.putBytes("c360", c360, sizeof(C360Rec) * c360_n);
+    nvs_put("c360", c360, sizeof(C360Rec) * c360_n);
     ok_json(true);
 }
 
@@ -3106,7 +3196,7 @@ static void h_calibspeed() {
                 return ok_json(false, "that run has its speed already");
             }
             calib[k].speed = sp;
-            prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
+            nvs_put("calib3", calib, sizeof(CalibRec) * calib_n);
             return ok_json(true);
         }
     }
@@ -3203,7 +3293,7 @@ static void h_tempdpi() {
             tdpi_orig[2 * i] = u16(23 + 4 * i);
             tdpi_orig[2 * i + 1] = u16(25 + 4 * i);
         }
-        prefs.putBytes("tdpi", tdpi_orig, sizeof(tdpi_orig));
+        nvs_put("tdpi", tdpi_orig, sizeof(tdpi_orig));
     }
     uint16_t tb[10];
     memcpy(tb, tdpi_orig, sizeof(tb));
@@ -3382,7 +3472,7 @@ static void h_palette() {
     if (!parse_colours(server.arg("c"), p)) {
         return ok_json(false, "need 5 colours");
     }
-    prefs.putBytes("pal", p, 15);
+    nvs_put("pal", p, 15);
     bool ok = queue_cmd(C_SET_PALETTE, p, 15);
     if (ok) {
         log_edit(EK_COLOURS, String());
@@ -3434,7 +3524,7 @@ static void h_tune() {
     uint8_t t[12] = { (uint8_t) as, (uint8_t) ps, (uint8_t) (int8_t) ah, (uint8_t) (int8_t) ph,
         (uint8_t) (fl & 0xff), (uint8_t) (fl >> 8), (uint8_t) (poh & 0xff), (uint8_t) (poh >> 8),
         (uint8_t) (wh & 0xff), (uint8_t) (wh >> 8), (uint8_t) (rh & 0xff), (uint8_t) (rh >> 8) };
-    prefs.putBytes("tune", t, 12);
+    nvs_put("tune", t, 12);
     bool ok = queue_cmd(C_SET_TUNING, t, 12);
     if (ok) {
         log_edit(EK_TUNE, String());
@@ -3722,7 +3812,7 @@ void setup() {
             calib[k].src = 0;
         }
         if (calib_n) {
-            prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
+            nvs_put("calib3", calib, sizeof(CalibRec) * calib_n);
         }
         prefs.remove("calib2");
     }
@@ -3736,7 +3826,7 @@ void setup() {
             calib[k].src = 0;
         }
         if (calib_n) {
-            prefs.putBytes("calib3", calib, sizeof(CalibRec) * calib_n);
+            nvs_put("calib3", calib, sizeof(CalibRec) * calib_n);
         }
         prefs.remove("calib");
     }
@@ -3748,7 +3838,17 @@ void setup() {
     fs_ok = FFat.begin(false);  // fw41: an uploaded page (no format here: an unformatted partition waits for the first upload)
     page_fs_load();
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
-    if (prefs.getBytes("cvlib", cvlib, sizeof(cvlib)) != sizeof(cvlib)) {  // fw49
+    cvlib_blob = prefs.isKey("cvlib");      // fw65: a curve per key; the fw49-64 blob is split up once (below)
+    if (!cvlib_blob) {
+        for (int k = 0; k < CVLIB_N; k++) {
+            char key[8];
+            snprintf(key, sizeof(key), "cvl%d", k + 1);
+            if ((prefs.getBytes(key, &cvlib[k], sizeof(CurveLib)) != sizeof(CurveLib)) || !cvlib[k].used) {
+                memset(&cvlib[k], 0, sizeof(CurveLib));
+            }
+        }
+        memcpy(cvlib_nv, cvlib, sizeof(cvlib));
+    } else if (prefs.getBytes("cvlib", cvlib, sizeof(cvlib)) != sizeof(cvlib)) {  // fw49
         memset(cvlib, 0, sizeof(cvlib));
         const size_t OLD = sizeof(CurveLib) - 32;  // the first fw49 library had 16-byte names: moved over
         static uint8_t old[CVLIB_N * (sizeof(CurveLib) - 32)];
@@ -3759,8 +3859,17 @@ void setup() {
                 memcpy(cvlib[k].name, o + 1, 15);
                 memcpy(&cvlib[k].n, o + 17, OLD - 17);
             }
-            prefs.putBytes("cvlib", cvlib, sizeof(cvlib));
         }
+    }
+    if (cvlib_blob) {
+        for (int k = 0; k < CVLIB_N; k++) {
+            if (!cvlib[k].used) {
+                memset(&cvlib[k], 0, sizeof(CurveLib));  // so an empty slot matches the (empty) saved copy
+            }
+        }
+        // fw65: each curve under its own key, then the blob goes (a failure leaves it for the next boot); not cvlib_save:
+        // cvid and cvcand aren't read yet
+        slots_save("cvl", cvlib, cvlib_nv, sizeof(CurveLib), cvlib_used, "cvlib", &cvlib_blob);
     }
     cv_id = prefs.getUChar("cvid", 0);
     cv_cand = prefs.getUChar("cvcand", 0);
@@ -3797,12 +3906,31 @@ void setup() {
         }
         dg.n = 0;
     }
-    if (prefs.getBytes("cvdg", cvdg, sizeof(cvdg)) != sizeof(cvdg)) {  // fw60: per-curve gains; first boot: the running curve's are the ones in use
-        memset(cvdg, 0, sizeof(cvdg));
-        cvdg_stamp(cv_id);
-        if (!cv_id) {
-            cvdg_save();
+    cvdg_blob = prefs.isKey("cvdg");  // fw65: per-curve keys; the fw60-64 blob is split up once
+    bool dg_any = false;
+    if (cvdg_blob && (prefs.getBytes("cvdg", cvdg, sizeof(cvdg)) == sizeof(cvdg))) {
+        dg_any = true;
+        for (int k = 0; k < CVLIB_N; k++) {
+            if (!cvdg[k].has) {
+                memset(&cvdg[k], 0, sizeof(CurveGains));  // so an empty slot matches the (empty) saved copy
+            }
         }
+        cvdg_save();  // each curve's under its own key, then the blob goes (a failure leaves it for the next boot)
+    } else {
+        memset(cvdg, 0, sizeof(cvdg));
+        for (int k = 0; k < CVLIB_N; k++) {
+            char key[8];
+            snprintf(key, sizeof(key), "cvg%d", k + 1);
+            if ((prefs.getBytes(key, &cvdg[k], sizeof(CurveGains)) == sizeof(CurveGains)) && cvdg[k].has) {
+                dg_any = true;
+            } else {
+                memset(&cvdg[k], 0, sizeof(CurveGains));
+            }
+        }
+        memcpy(cvdg_nv, cvdg, sizeof(cvdg));
+    }
+    if (!dg_any) {  // fw60: per-curve gains; first boot: the running curve's are the ones in use
+        cvdg_stamp(cv_id);
     }
     if (prefs.getUChar("sigv", 1) < 2) {  // fw34: hosts saved under the v1 signature
         sig_migrate();
@@ -3846,6 +3974,7 @@ void setup() {
     server.on("/api/cvtemp", HTTP_POST, h_cvtemp);  // fw48
   server.on("/api/live", HTTP_GET, h_live);  // fw50
   server.on("/api/live", HTTP_POST, h_live);
+    server.on("/api/nvs", HTTP_GET, h_nvs);  // fw65
     server.on("/api/curves", HTTP_GET, h_curves);  // fw49
     server.on("/api/curves", HTTP_POST, h_curves);
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);

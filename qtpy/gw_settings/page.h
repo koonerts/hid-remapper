@@ -257,7 +257,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 </div>
 <div class="card wide" id="cvcard"><div class="hd"><div><h2>Speed curve</h2><div class="mut">Your XIM curve, done on the Feather instead: the XIM stays linear, so the same hand movement always turns the same.</div></div><button type="button" class="hlpb" onclick="hlpTog(this)">How it works</button></div>
 <p class="note" id="cvoff" hidden></p>
-<div id="cvlibbox"></div>
+<div id="cvlibbox"></div><p id="nvswarn" class="hlp" style="color:var(--bad);margin:6px 0 0" hidden></p>
 <div class="row" style="margin-top:10px"><span class="mut">On for</span><div class="hch" id="cvhosts"></div><button onclick="cvEdStart(0)" title="Shape the running curve by hand on the chart; it saves as a new curve">Edit on the chart</button></div>
 <p class="c3st" id="cvnow"></p>
 <div class="c3g">
@@ -918,7 +918,7 @@ if(k===pgKey||pgFetching)return;if(pgNew){if(!pgBusy())pgGo();return}
 pgFetching=true;try{const t=await(await fetch('/',{cache:'no-store'})).text(),m=t.match(/<meta name="gw-rest" content="([0-9a-f]+)">/),mine=document.querySelector('meta[name=gw-rest]'),s=t.match(/<style>([\s\S]*?)<\/style>/);
 if(m&&s&&mine&&mine.content===m[1]){document.querySelector('style').textContent=s[1];pgKey=k;toast('Page style updated');return}
 pgNew=true;if(!pgBusy())pgGo();else render()}catch(e){}finally{pgFetching=false}}
-function poll(){fetchJ(tq('/api/status')).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}pgCheck(j)}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,document.hidden?5000:1000))}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
+function poll(){fetchJ(tq('/api/status')).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}pgCheck(j);nvsWarn(j)}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,document.hidden?5000:1000))}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
 buildStages();bindSlider('angle');bindSlider('pos');
 $('ms').addEventListener('pointerdown',e=>{if(!S||e.target===$('ms'))return;msDrag=e.target.id==='msh'?'angle':'pos';msOff=0;if(msDrag==='pos'&&$('mss').contains(e.target))msOff=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse()).y-msY(Number($('pos').value));$('ms').setPointerCapture(e.pointerId);e.preventDefault();msMove(e)});
 $('ms').addEventListener('pointermove',msMove);['pointerup','pointercancel'].forEach(t=>$('ms').addEventListener(t,()=>{msDrag=null}));
@@ -1160,6 +1160,7 @@ const CV_SMF=[['slow',20],['med',35],['fast',80]];  // 10-27: the curve names' t
 function cvSmfName(T){return CV_SMF.map(([n,v])=>Math.round(cvGain(T,v)*100)).join('.')}
 function cvSlowPct(g){if(!g||!g.length||!(g[g.length-1]>0))return 0;return Math.round((g[0]/g[g.length-1]-1)*100)}
 function cvSlowTxt(g){const p=cvSlowPct(g);return p===0?'slow = fast':'slow movements '+(p>0?'+':'\u2212')+Math.abs(p)+'%'}
+function nvsWarn(j){const e=$('nvswarn'),d=j.diag||{},n=d.nvs_fail||0;if(!e)return;e.hidden=!n;if(n)e.textContent='The QT Py couldn\'t save '+n+' change'+(n>1?'s':'')+' since it started'+(d.nvs_fail_key?' (last: '+d.nvs_fail_key+')':'')+': its settings storage is full, so they\'re gone at its next power-off. Deleting a curve you don\'t use makes room.'}
 function cvLibLoad(){fetch(tq('/api/curves')).then(r=>r.json()).then(j=>{cvLib=j;cvLibDraw();c3CidOpts();c3.lk='';c3Draw()}).catch(()=>{})}
 function cvLibAct(q,msg){post('/api/curves?'+q).then(r=>{say(r,msg);cvLibLoad()})}
 // rename in place (10-24: a prompt() box can be suppressed by the browser): the name becomes a field; Enter or Save keeps it, Esc cancels
