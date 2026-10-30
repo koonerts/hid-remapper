@@ -27,11 +27,12 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi);
 void gw_curve_status(uint8_t* s);
 
 // v32: the live view (the QT Py page's speed curve chart). The hand speed is tracked whenever the DPI is known, curve on
-// or off, sampled every GW_CURVE_SAMPLE_US, and every frame with motion counts 1 (= 1 ms) in its speed's bin.
+// or off, sampled every GW_CURVE_SAMPLE_US, and every frame with motion counts 1 (= 1 ms) in its speed's bin
+// (v36: when the speed is at least GW_CURVE_STILL, 0.1 cm/s; a resting mouse's stray counts stay out).
 #define GW_CURVE_SAMPLE_US 5000
 #define GW_CURVE_RING 32  // samples in the live block, newest first (v33: 32 = 160 ms, so one missed read leaves no gap)
 #define GW_CURVE_BINS 26  // bin 0 below 5 cm/s, 1-24 log-spaced 5-160 cm/s (x 32^(1/24) each), 25 from 160 up
-// the live block (GW_LINK_LIVE_LEN = 80 since v33, 48 in v32): 0 'L', 1 bit 0 applying, bit 1 DPI known, bit 2 moved in the last 50 ms;
+// the live block (GW_LINK_LIVE_LEN = 80 since v33, 48 in v32): 0 'L', 1 bit 0 applying, bit 1 DPI known, bit 2 moved in the last 50 ms (v36: at GW_CURVE_STILL or faster);
 // 2-3 samples taken (uint16, wraps), 4-5 DPI used, 6-7 gain now per mille (1000 while not applying), 8-9 speed now
 // (0.1 cm/s), 10-73 the last GW_CURVE_RING samples (0.1 cm/s, newest first; 10-41 in v32), the last byte crc8 of the rest
 void gw_curve_live(uint8_t* b);

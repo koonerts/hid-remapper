@@ -15,6 +15,8 @@
 #include "gw_link.h"
 
 #define GW_CURVE_GAP_US 50000
+#define GW_CURVE_STILL 0.1f  // v36: cm/s below which the hand is still: a resting mouse at 40,000 DPI still sends a count every
+                             // few ms (about 6% of resting time), which counted as moving at 0.0 cm/s in the live flag and the histogram
 
 static bool on = false;
 static bool got = false;
@@ -127,7 +129,7 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
     }
     dpi_now = dpi;
     g_now = 1.0f;
-    moving = moved && (now_us - moved_us < GW_CURVE_GAP_US);
+    moving = moved && (now_us - moved_us < GW_CURVE_GAP_US) && (spd >= GW_CURVE_STILL);
     if (dpi == 0) {
         spd = 0;  // v31: no DPI known: the speed can't be, so the motion passes unchanged (it froze the last gain)
         have_t = moved = moving = false;
@@ -155,10 +157,13 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
         float cm = sqrtf((float) dx * dx + (float) dy * dy) * 2.54f / dpi;
         spd += (cm / dt * 1000.0f - spd) * (1.0f - expf(-dt / tau));
     }
-    moved = moving = true;
+    moved = true;
     moved_us = now_us;
-    hist[gw_curve_bin(spd)]++;
-    hist_ms++;
+    moving = spd >= GW_CURVE_STILL;
+    if (moving) {
+        hist[gw_curve_bin(spd)]++;
+        hist_ms++;
+    }
     sample(now_us);
     if (!on) {
         return;
