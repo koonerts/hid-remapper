@@ -921,6 +921,7 @@ static bool idle_check_busy = false;
 static uint32_t idle_check_at = 0;
 static uint8_t idle_check_tries = 0;
 static int32_t idle_drops = 0, idle_check_fails = 0;
+static bool idle_read_asked = false;  // the settings read once per plug-in when the stage or DPI table isn't known
 
 static int rs_stage_seen(int s) {  // a stage read from the mouse, as the rest of the firmware should take it
     return ((idle_low || idle_checking) && (s == idle_stage)) ? idle_back : s;
@@ -1107,6 +1108,7 @@ static void rs_forget(uint8_t dev_addr, bool mounted) {
     rs_refresh_next = -1;
     rs_refresh_item = -1;  // a reply still on its way is ignored
     idle_check_busy = false;  // v37: an idle stage stays owed: the next use puts idle_back on whatever mouse is there
+    idle_read_asked = false;
     if (led.active && !mounted) {
         // the temporary colour may still be in the mouse: put it back once a mouse is there again
         led.restore_pending = true;
@@ -1716,7 +1718,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 37
+#define GW_FW_VERSION 38
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -2326,8 +2328,14 @@ static void idle_tick(uint32_t now) {
         return;
     }
     int cur = rs_cur_stage, low = -1;
-    if ((cur < 0) || (cur >= RS_DPI_STAGES) || !(rs_dpi_known & (1 << cur))) {
-        return;  // the stage or its DPI isn't known
+    if ((cur < 0) || (cur >= RS_DPI_STAGES) || !(rs_dpi_known & (1 << cur)) || (rs_dpi_known != (1 << RS_DPI_STAGES) - 1)) {
+        // the stage or the DPI table isn't known: after an ATEN switch nothing reads them unless the QT Py page is
+        // opened, so read the mouse's settings once (it's awake: the noise that keeps it up answers too)
+        if (!idle_read_asked && (rs_refresh_next < 0) && rs_reads_work()) {
+            idle_read_asked = true;
+            rs_refresh_next = 0;
+        }
+        return;
     }
     for (int s = 0; s < RS_DPI_STAGES; s++) {
         if ((rs_dpi_known & (1 << s)) && ((low < 0) || (rs_dpi_x[s] < rs_dpi_x[low]))) {
