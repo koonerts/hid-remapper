@@ -905,6 +905,33 @@ struct RsLed {
 static RsLed led = {};
 static int rs_cur_stage = -1;  // 0-based; from a read or the firmware's own stage write; -1 = unknown
 
+// v37: idle stage. At 40,000 DPI a resting Warg's sensor noise kept it from ever sleeping (10-31: still answering after
+// 8.75 idle min with an 80 s sleep timer; on the 800 DPI stage asleep within 3 min), so after GW_IDLE_US with no real use
+// the mouse is put on its lowest-DPI stage, and the first button, wheel or movement puts the stage back (then read back
+// until the mouse shows it). Meanwhile everything here keeps the real stage: rs_cur_stage, the status the QT Py shows (no
+// DPI pop-up), and reads that see the idle stage are taken as the real one.
+#define GW_IDLE_US 120000000ull
+static uint64_t idle_used_us = 0;   // the last real use: a button, the wheel, or movement at the curve's still threshold
+static bool idle_low = false;       // the mouse is on idle_stage
+static uint64_t idle_low_us = 0;    // when it was put there: movement in the next GW_IDLE_SETTLE_US is the old stage's noise
+#define GW_IDLE_SETTLE_US 250000ull
+static int idle_stage = -1, idle_back = -1;
+static bool idle_checking = false;  // the stage was put back: read it back (idle_check_*)
+static bool idle_check_busy = false;
+static uint32_t idle_check_at = 0;
+static uint8_t idle_check_tries = 0;
+static int32_t idle_drops = 0, idle_check_fails = 0;
+
+static int rs_stage_seen(int s) {  // a stage read from the mouse, as the rest of the firmware should take it
+    return ((idle_low || idle_checking) && (s == idle_stage)) ? idle_back : s;
+}
+
+static void idle_cancel() {  // a stage chosen by hand (chord, page): that is the stage now
+    idle_low = false;
+    idle_checking = false;
+    idle_used_us = time_us_64();
+}
+
 // DPI table: what the firmware last read or wrote (for the QT Py page); bit n of the mask = stage n known
 static uint16_t rs_dpi_x[RS_DPI_STAGES];
 static uint16_t rs_dpi_y[RS_DPI_STAGES];
@@ -981,6 +1008,7 @@ enum class RsRead : uint8_t {
     INFO,  // the status query (command 04), last item of a refresh
     RAW,   // a probe from the QT Py (LINK_RAW)
     VERIFY,  // v20: an angle/position write read back (rs_read_setting)
+    IDLE_CHECK,  // v37: the stage put back after the idle stage, read back
 };
 
 // The QT Py page's "refresh": stage, angle, position, the 5 colours, the 5 DPI table entries.
@@ -1078,6 +1106,7 @@ static void rs_forget(uint8_t dev_addr, bool mounted) {
     rs_reads_worked = false;
     rs_refresh_next = -1;
     rs_refresh_item = -1;  // a reply still on its way is ignored
+    idle_check_busy = false;  // v37: an idle stage stays owed: the next use puts idle_back on whatever mouse is there
     if (led.active && !mounted) {
         // the temporary colour may still be in the mouse: put it back once a mouse is there again
         led.restore_pending = true;
@@ -1216,6 +1245,7 @@ static void rs_dpi_finish() {
               : ((rs_dpi_last >= 0) && (rs_dpi_last < n)) ? rs_dpi_last
                                                            : 0;
     int next = (cur + rs_dpi_dir + n) % n;
+    idle_cancel();
     rs_write_value(RS_ADDR_DPI_STAGE, next);
     rs_dpi_last = next;
     rs_cur_stage = next;
@@ -1378,8 +1408,8 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
     }
     if (item == 0) {
         if (d[0] < RS_DPI_STAGES) {
-            rs_cur_stage = d[0];
-            rs_dpi_last = d[0];
+            rs_cur_stage = rs_stage_seen(d[0]);
+            rs_dpi_last = rs_cur_stage;
         }
     } else if (item < 3) {
         RsSetting& s = rs_settings[item - 1];
@@ -1444,7 +1474,7 @@ static void rs_read_done(bool ok, uint32_t now) {
             if (!ok) {
                 rs_fail |= 1;
             }
-            rs_dpi_stage = byte;  // range-checked in rs_dpi_finish
+            rs_dpi_stage = ok ? rs_stage_seen(byte) : byte;  // range-checked in rs_dpi_finish
             rs_dpi_finish();
             if (ok) {
                 // reads work: also show the byte at the guessed stage-count address
@@ -1475,7 +1505,23 @@ static void rs_read_done(bool ok, uint32_t now) {
         case RsRead::LED_STAGE:
             led.stage_done = true;
             if (ok && (byte < RS_DPI_STAGES)) {
-                rs_cur_stage = byte;
+                rs_cur_stage = rs_stage_seen(byte);
+            }
+            break;
+        case RsRead::IDLE_CHECK:
+            idle_check_busy = false;
+            if (!idle_checking) {
+                break;  // a stage chosen by hand meanwhile
+            }
+            if (ok && (byte == idle_back)) {
+                idle_checking = false;
+            } else if (++idle_check_tries >= 6) {
+                idle_checking = false;
+                idle_check_fails++;
+                diag(0x708, idle_check_fails);
+            } else {
+                rs_write_value(RS_ADDR_DPI_STAGE, idle_back);
+                idle_check_at = now + 400000;
             }
             break;
         case RsRead::REFRESH:
@@ -1670,7 +1716,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 36
+#define GW_FW_VERSION 37
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1876,6 +1922,7 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
             if ((len == 1) && (d[0] < RS_DPI_STAGES) && rs) {
                 led_restore_now();
                 led.requested = false;
+                idle_cancel();
                 rs_write_value(RS_ADDR_DPI_STAGE, d[0]);
                 rs_cur_stage = d[0];
                 rs_dpi_last = d[0];
@@ -2200,6 +2247,7 @@ static void gw_action_do(uint8_t a, uint32_t now) {
             if ((a >= GA_DPI_1) && (a < GA_DPI_1 + RS_DPI_STAGES) && rs) {
                 led_restore_now();
                 led.requested = false;
+                idle_cancel();
                 rs_write_value(RS_ADDR_DPI_STAGE, a - GA_DPI_1);
                 rs_cur_stage = a - GA_DPI_1;
                 rs_dpi_last = rs_cur_stage;
@@ -2229,6 +2277,77 @@ static void wake_tick(uint32_t now) {
     }
 }
 
+// v37: the idle stage (see GW_IDLE_US). Put back at once from the frame that shows use (a queued write: reads wait for
+// it, so a DPI chord in the same frame reads the stage put back), then read back from idle_tick.
+static void idle_restore() {
+    idle_low = false;
+    led_restore_now();
+    led.requested = false;
+    rs_write_value(RS_ADDR_DPI_STAGE, idle_back);
+    rs_cur_stage = idle_back;
+    rs_dpi_last = idle_back;
+    idle_checking = true;
+    idle_check_busy = false;
+    idle_check_tries = 0;
+    idle_check_at = time_us_32() + 300000;
+}
+
+void gw_idle_frame(int32_t* const* ch, const int32_t* x, const int32_t* y) {
+    bool used = false;
+    for (int i = 0; (i < GW_CH_IN) && !used; i++) {
+        used = (ch[i] != NULL) && (*ch[i] != 0);
+    }
+    if (!used) {
+        // on the idle stage any movement is the hand (800 DPI showed no noise: the mouse slept), once the switch has
+        // landed (the high stage's noise, a count every few ms, can still arrive meanwhile); otherwise only the curve's
+        // real movement counts, since at high DPI the noise moves it a count every few ms
+        used = idle_low ? ((time_us_64() - idle_low_us >= GW_IDLE_SETTLE_US) && (((x != NULL) && (*x != 0)) || ((y != NULL) && (*y != 0))))
+                        : gw_curve_moving();
+    }
+    if (used) {
+        idle_used_us = time_us_64();
+        if (idle_low) {
+            idle_restore();
+        }
+    }
+}
+
+static void idle_tick(uint32_t now) {
+    if (idle_checking) {
+        if (!idle_check_busy && ((int32_t) (now - idle_check_at) >= 0) && rs_can_read()) {
+            idle_check_busy = rs_try_read(RsRead::IDLE_CHECK, RS_ADDR_DPI_STAGE, 2, now);
+            if (!idle_check_busy) {
+                idle_check_at = now + 1000000;  // reads paused (asleep): again in a second
+            }
+        }
+        return;
+    }
+    if (idle_low || !family_present(Family::RS) || (time_us_64() - idle_used_us < GW_IDLE_US)) {
+        return;
+    }
+    int cur = rs_cur_stage, low = -1;
+    if ((cur < 0) || (cur >= RS_DPI_STAGES) || !(rs_dpi_known & (1 << cur))) {
+        return;  // the stage or its DPI isn't known
+    }
+    for (int s = 0; s < RS_DPI_STAGES; s++) {
+        if ((rs_dpi_known & (1 << s)) && ((low < 0) || (rs_dpi_x[s] < rs_dpi_x[low]))) {
+            low = s;
+        }
+    }
+    if ((low < 0) || (rs_dpi_x[low] >= rs_dpi_x[cur])) {
+        return;  // already the lowest
+    }
+    idle_back = cur;
+    idle_stage = low;
+    idle_low = true;
+    idle_low_us = time_us_64();
+    led_restore_now();
+    led.requested = false;
+    rs_write_value(RS_ADDR_DPI_STAGE, low);
+    idle_drops++;
+    diag(0x707, idle_drops);
+}
+
 void gw_tick(const int32_t* regs) {
     uint32_t now = time_us_32();
     wake_tick(now);
@@ -2236,6 +2355,7 @@ void gw_tick(const int32_t* regs) {
     gw_chords_service();
     dpi_tick(now);
     rs_tick(now);
+    idle_tick(now);
     link_tick(now);
     // Also dump everything every 3 s while the Monitor tab is open, so a device that
     // never mounts (no Mid+Left possible) still shows its enumeration trace.

@@ -42,5 +42,7 @@ void gw_curve_hist(uint8_t* b);
 void gw_curve_hist_reset();
 // the bin a speed (cm/s) counts in
 uint8_t gw_curve_bin(float v);
+// v37: real movement now (in the last 50 ms, at GW_CURVE_STILL or faster): the idle stage's "in use" (gw_mouse.cc)
+bool gw_curve_moving(void);
 
 #endif

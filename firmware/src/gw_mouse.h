@@ -25,5 +25,9 @@ void gw_link_status(uint8_t* status);
 bool gw_link_apply(const uint8_t* frame, uint8_t len, uint32_t now);
 // v30: the X DPI of the stage in use (0 = not known), for the speed curve (gw_curve.h)
 uint16_t gw_mouse_dpi(void);
+// v37: once per frame before the chords, on the raw inputs: ch = gw_chords_filter's (buttons 1-5, the wheel), x/y the
+// frame's motion. A button, the wheel or real movement is use: two idle minutes put the mouse on its lowest-DPI stage
+// so it can sleep, and use puts the stage back.
+void gw_idle_frame(int32_t* const* ch, const int32_t* x, const int32_t* y);
 
 #endif

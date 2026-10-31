@@ -185,6 +185,10 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
     }
 }
 
+bool gw_curve_moving(void) {
+    return moving;
+}
+
 void gw_curve_status(uint8_t* s) {
     s[0] = (on ? 1 : 0) | (got ? 2 : 0);
     s[1] = table_crc;

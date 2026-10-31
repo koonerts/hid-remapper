@@ -1121,6 +1121,7 @@ void process_mapping(bool auto_repeat) {
     uint64_t now = get_time();
     frame_counter++;
 
+    gw_idle_frame(gw_ch_in, gw_xy_in[0], gw_xy_in[1]);  // v37: use, for the idle stage (before the chords take buttons)
     // chords take their buttons and the wheel out of what the mappings see (put back at the end)
     gw_chords_filter(gw_ch_in);
     uint32_t gw_chords_us = (uint32_t) (get_time() - now);  // the chord filter alone (v25: not the gains too)
