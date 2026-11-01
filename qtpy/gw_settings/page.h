@@ -1216,15 +1216,15 @@ function cvEdStart(id){const c=id&&cvLib?cvLib.curves.find(x=>x.id===id):null,n=
 const T=c?c.sp.map((s,k)=>[s,c.g[k]]):n?n.T.map(q=>q.slice()):cc&&cc.n?cc.sp.map((s,k)=>[s,cc.g[k]]):null;if(!T)return;
 const S0=c&&c.s10?c.s10/10:n&&n.sc?n.sc.S:Number(cvSrcParse(cc&&cc.src).S)||0;
 cvEd={T,S:S0,tau:c?c.tau:Number($('cvtau').value)||8,sel:-1,rng:null,dc:c&&c.dc?c.dc.map(q=>q.slice()):null,dcBad:false,id:c?c.id:0};$('cveditbar').hidden=false;$('cvedname').value=((c?c.name:'curve')+' edit').slice(0,47);cvRepArm=0;cvEdRepLabel();cvEdDraw();cvDcDraw();$('cvplot').scrollIntoView({block:'nearest'})}
-// fw67 (Feather v39): the slow-down gain in the editor: up to 3 points (share of the flick's peak %, gain); 100% = 1.00 implied
+// fw67 (Feather v39): the slow-down gain in the editor: up to 6 points (as many as the Feather takes) (share of the flick's peak %, gain); 100% = 1.00 implied
 const CV_DC0=[[20,800],[50,900]];  // shares rising, as the QT Py and the Feather want them
 function cvDcGain(P,r){let x0=P[0][0]/100,g0=P[0][1]/1000;if(r<=x0)return g0;for(let k=1;k<=P.length;k++){const x1=k<P.length?P[k][0]/100:1,g1=k<P.length?P[k][1]/1000:1;if(r<x1)return g0+(g1-g0)*(r-x0)/(x1-x0);x0=x1;g0=g1}return 1}
 function cvDcTxt(P){return P.map(q=>q[0]+'% '+(q[1]/1000).toFixed(2)).join(', ')+' (100% = 1.00)'}
 function cvDcDraw(){if(!cvEd)return;const P=cvEd.dc;$('cvdcon').checked=!!P;
-$('cvdcin').innerHTML=P?[0,1,2].map(i=>{const q=P[i];return '<label style="white-space:nowrap" title="Once the flick has slowed to this share of its top speed, the gain is this (a multiplier: 0.80 = 20% less turn per cm of hand there)">at <input type="number" id="cvdcp'+i+'" min="1" max="99" step="1" value="'+(q?q[0]:'')+'" oninput="cvDcIn()" style="width:3.6em">% of peak speed, gain ×<input type="number" id="cvdcg'+i+'" min="0.25" max="4" step="0.01" value="'+(q?(q[1]/1000).toFixed(2):'')+'" oninput="cvDcIn()" style="width:4.4em"></label>'}).join(' '):'<span class="mut">off: the curve\'s gain the whole flick</span>';cvDcPlot()}
+$('cvdcin').innerHTML=P?[0,1,2,3,4,5].map(i=>{const q=P[i];return '<label style="white-space:nowrap" title="Once the flick has slowed to this share of its top speed, the gain is this (a multiplier: 0.80 = 20% less turn per cm of hand there)">at <input type="number" id="cvdcp'+i+'" min="1" max="99" step="1" value="'+(q?q[0]:'')+'" oninput="cvDcIn()" style="width:3.6em">% of peak speed, gain ×<input type="number" id="cvdcg'+i+'" min="0.25" max="4" step="0.01" value="'+(q?(q[1]/1000).toFixed(2):'')+'" oninput="cvDcIn()" style="width:4.4em"></label>'}).join(' '):'<span class="mut">off: the curve\'s gain the whole flick</span>';cvDcPlot()}
 function cvDcTog(){if(!cvEd)return;cvEd.dc=$('cvdcon').checked?CV_DC0.map(q=>q.slice()):null;cvEd.dcBad=false;cvDcDraw()}
 // the inputs as points (blank pairs left out), or null when one is out of range or two shares match
-function cvDcRead(){const P=[];for(let i=0;i<3;i++){const pe=$('cvdcp'+i),ge=$('cvdcg'+i);if(!pe||!ge||(pe.value===''&&ge.value===''))continue;const p=Math.round(Number(pe.value)),g=Math.round(Number(ge.value)*1000);
+function cvDcRead(){const P=[];for(let i=0;i<6;i++){const pe=$('cvdcp'+i),ge=$('cvdcg'+i);if(!pe||!ge||(pe.value===''&&ge.value===''))continue;const p=Math.round(Number(pe.value)),g=Math.round(Number(ge.value)*1000);
 if(pe.value===''||ge.value===''||!(p>=1&&p<=99)||!(g>=250&&g<=4000))return null;P.push([p,g])}P.sort((a,b)=>a[0]-b[0]);for(let i=1;i<P.length;i++)if(P[i][0]===P[i-1][0])return null;return P.length?P:null}
 function cvDcIn(){if(!cvEd||!cvEd.dc)return;const P=cvDcRead();cvEd.dcBad=!P;if(P)cvEd.dc=P;cvDcPlot()}
 // gain from the peak (left) to the stop (right), the 1.00 line dashed
