@@ -20,6 +20,16 @@ extern const char gw_fw_tag[];  // gw_mouse.cc: "GWFW:v<version>;"
 #define GW_OTA_APP 0  // the remapper_ota build sets it (CMakeLists.txt): it runs after gw_boot
 #endif
 
+#ifndef GW_KEEP  // v46: the host tests' hardware/watchdog.h points it at a plain variable
+#define GW_KEEP (watchdog_hw->scratch[0])
+#endif
+void gw_keep_set(uint32_t v) {
+    GW_KEEP = v;
+}
+uint32_t gw_keep_get() {
+    return GW_KEEP;
+}
+
 #ifndef gw_ota_halt  // audit 11-01: the host tests' hardware/watchdog.h defines it to count the stop and go on
 #define gw_ota_halt() while (true) { tight_loop_contents(); }
 #endif

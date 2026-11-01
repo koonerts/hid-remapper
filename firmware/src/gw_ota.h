@@ -64,7 +64,10 @@ static inline uint32_t gw_ota_crc32(const uint8_t* d, uint32_t n, uint32_t crc) 
 #ifdef __cplusplus
 // the app side (gw_ota.cc)
 void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now);
-void gw_ota_tick(uint32_t now);  // publishes the status block; the restart after APPLY
+void gw_ota_tick(uint32_t now);
+// v46: a word kept through the Feather's own restart (an update's, or any watchdog reset); 0 after a power-on
+void gw_keep_set(uint32_t v);
+uint32_t gw_keep_get();  // publishes the status block; the restart after APPLY
 #endif
 
 // v42: an image whose vector table (at +0x100, as boot2 starts one) has a stack pointer in RAM and a Thumb reset vector

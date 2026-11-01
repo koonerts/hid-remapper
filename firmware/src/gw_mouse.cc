@@ -924,6 +924,26 @@ static uint8_t idle_check_tries = 0;
 static int32_t idle_drops = 0, idle_check_fails = 0;
 static bool idle_read_asked = false;  // the settings read once per plug-in when the stage or DPI table isn't known
 
+// v46: while the mouse is on the idle stage, it and the stage to put back are kept in gw_keep (through the Feather's own
+// restart: 11-01 an update restarted it on the idle stage, the stage to put back was lost and the mouse stayed on 800 DPI)
+#define GW_IDLE_KEEP 0x49440000u  // 'ID', back << 8, idle stage
+static void idle_keep() {
+    gw_keep_set((idle_low || idle_checking) ? (GW_IDLE_KEEP | ((uint32_t) idle_back << 8) | (uint32_t) idle_stage) : 0);
+}
+static void idle_keep_load() {  // once at start: the idle stage a restart came in on is still owed
+    uint32_t v = gw_keep_get();
+    int back = (v >> 8) & 0xFF, low = v & 0xFF;
+    if (((v & 0xFFFF0000u) == GW_IDLE_KEEP) && (back < RS_DPI_STAGES) && (low < RS_DPI_STAGES) && (back != low)) {
+        idle_back = back;
+        idle_stage = low;
+        idle_low = true;
+        idle_low_us = time_us_64();
+        rs_cur_stage = back;
+    } else {
+        gw_keep_set(0);
+    }
+}
+
 static int rs_stage_seen(int s) {  // a stage read from the mouse, as the rest of the firmware should take it
     return ((idle_low || idle_checking) && (s == idle_stage)) ? idle_back : s;
 }
@@ -931,6 +951,7 @@ static int rs_stage_seen(int s) {  // a stage read from the mouse, as the rest o
 static void idle_cancel() {  // a stage chosen by hand (chord, page): that is the stage now
     idle_low = false;
     idle_checking = false;
+    idle_keep();  // v46
     idle_used_us = time_us_64();
 }
 
@@ -1522,6 +1543,7 @@ static void rs_read_done(bool ok, uint32_t now) {
             }
             if (ok && (byte == idle_back)) {
                 idle_checking = false;
+                idle_keep();  // v46: back
             } else if (++idle_check_tries >= 6) {
                 idle_checking = false;
                 idle_check_fails++;
@@ -1529,6 +1551,7 @@ static void rs_read_done(bool ok, uint32_t now) {
                     rs_cur_stage = byte;  // v42: given up: the stage the mouse says it's on (its DPI is what the speed curve needs)
                     idle_low = false;
                 }
+                idle_keep();  // v46
                 diag(0x708, idle_check_fails);
             } else {
                 rs_write_value(RS_ADDR_DPI_STAGE, idle_back);
@@ -1727,7 +1750,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 45  // v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
+#define GW_FW_VERSION 46  // v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps
@@ -2380,12 +2403,18 @@ static void idle_tick(uint32_t now) {
     led_restore_now();
     led.requested = false;
     rs_write_value(RS_ADDR_DPI_STAGE, low);
+    idle_keep();  // v46
     idle_drops++;
     diag(0x707, idle_drops);
 }
 
 void gw_tick(const int32_t* regs) {
     uint32_t now = time_us_32();
+    static bool started = false;
+    if (!started) {
+        started = true;
+        idle_keep_load();  // v46
+    }
     wake_tick(now);
     ev_tick(now);
     gw_chords_service();
