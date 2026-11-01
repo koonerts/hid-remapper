@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 68    // this firmware's number, shown in /api/status
+#define QT_FW 69    // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -3857,6 +3857,489 @@ static void h_update_done() {
     ESP.restart();
 }
 
+// ---- fw69: the Feather's firmware over Wi-Fi (Feather v40 and its bootloader gw_boot: firmware/src/gw_ota.h). The page
+// uploads a build's _ota.uf2; its blocks are unpacked into /feather.bin (the app's bytes from 0x10008000), with size,
+// CRC-32, version and time in /feather.inf. Then, on the page's say-so, it goes over the link 40 bytes a frame. The
+// Feather takes only the next expected offset (its main loop stands still ~45 ms while a sector erases, and the frames
+// sent meanwhile are lost), so after each burst its update status (selected block 3) says where to go on from. Nothing
+// else uses the link meanwhile (loop()). The Feather checks its whole copy (CRC-32) before gw_boot may copy it in.
+#define FO_BASE 0x10008000u
+#define FO_MAX 0x1F8000u
+#define FO_CHUNK 40
+#define FO_BURST 8
+#define C_OTA_BEGIN 0x13
+#define C_OTA_DATA 0x14
+#define C_OTA_END 0x15
+#define C_OTA_APPLY 0x16
+#define C_OTA_ABORT 0x17
+enum : uint8_t { FO_IDLE, FO_BEGIN, FO_SEND, FO_END, FO_APPLY, FO_RESTART, FO_DONE, FO_ERROR };
+static const char* const FO_NAMES[] = { "idle", "starting", "sending", "checking", "applying", "restarting", "done", "error" };
+static uint8_t fo_st = FO_IDLE;
+static String fo_err;
+static uint32_t fo_size = 0, fo_crc = 0, fo_t = 0;  // the stored image (/feather.inf)
+static uint8_t fo_ver = 0;
+static uint32_t fo_sent = 0;  // the Feather's next expected offset, as last read
+static uint32_t fo_at = 0, fo_moved_at = 0, fo_t0 = 0, fo_rs_at = 0, fo_secs = 0;
+static uint8_t fo_tries = 0, fo_from = 0;
+static int8_t fo_boot = -1;  // the running Feather build takes updates: 1 yes, 0 no, -1 not known
+static uint32_t fo_boot_at = 0;
+static File fo_file;
+static File fo_up;  // the upload
+static bool fo_up_seen = false;
+static String fo_up_err;
+static uint8_t fo_ub[512];
+static uint16_t fo_ub_n = 0;
+static uint32_t fo_up_end = 0;
+
+static bool fo_busy() {
+    return (fo_st != FO_IDLE) && (fo_st != FO_DONE) && (fo_st != FO_ERROR);
+}
+
+static uint32_t fo_crc32(const uint8_t* d, size_t n, uint32_t crc) {  // as gw_ota_crc32 (zlib's CRC-32)
+    crc = ~crc;
+    while (n--) {
+        crc ^= *d++;
+        for (int k = 0; k < 8; k++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return ~crc;
+}
+
+static bool fo_frame(uint8_t cmd, const uint8_t* p, uint8_t len) {  // one link frame, outside the command queue
+    uint8_t f[4 + 44];
+    f[0] = cmd;
+    f[1] = next_seq;  // the queue's counter: the Feather skips a frame with the last frame's number
+    next_seq = (next_seq == 255) ? 1 : next_seq + 1;
+    f[2] = len;
+    if (len) {
+        memcpy(f + 3, p, len);
+    }
+    f[3 + len] = crc8(f, 3 + len);
+    Wire1.beginTransmission(LINK_ADDR);
+    Wire1.write(f, 4 + len);
+    return Wire1.endTransmission() == 0;
+}
+
+// the Feather's update status (block 3): false = no answer, or a Feather without it (the status block comes back)
+static bool fo_read(uint8_t* b) {
+    for (int k = 0; k < 2; k++) {
+        Wire1.beginTransmission(LINK_ADDR);
+        Wire1.write(LV_SEL);
+        Wire1.write((uint8_t) 3);
+        if (Wire1.endTransmission() != 0) {
+            continue;
+        }
+        delayMicroseconds(LV_SEL_WAIT_US);
+        uint8_t n = Wire1.requestFrom((uint8_t) LINK_ADDR, (uint8_t) 24);
+        if (n != 24) {
+            while (Wire1.available()) {
+                Wire1.read();
+            }
+            continue;
+        }
+        for (int i = 0; i < 24; i++) {
+            b[i] = Wire1.read();
+        }
+        if ((b[0] == 'U') && (crc8(b, 23) == b[23])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const char* fo_err_text(uint8_t e) {
+    switch (e) {
+        case 1:
+            return "this Feather build has no bootloader for updates: install the _boot.uf2 over USB once";
+        case 2:
+            return "the Feather refused its size";
+        case 3:
+            return "the Feather's copy didn't check out (CRC-32): send it again";
+        case 4:
+            return "the Feather's flash didn't take a page";
+        default:
+            return "the Feather stopped taking it";
+    }
+}
+
+static void fo_fail(const String& why) {
+    fo_st = FO_ERROR;
+    fo_err = why;
+    fo_secs = (millis() - fo_t0) / 1000;
+    if (fo_file) {
+        fo_file.close();
+    }
+}
+
+static void fo_tick() {
+    uint8_t b[24];
+    uint32_t now = millis();
+    switch (fo_st) {
+        case FO_BEGIN: {
+            if (now - fo_at < 250) {
+                return;
+            }
+            fo_at = now;
+            if (++fo_tries > 10) {
+                return fo_fail("the Feather didn't start taking it");
+            }
+            uint8_t p[8];
+            put32le(p, fo_size);
+            put32le(p + 4, fo_crc);
+            fo_frame(C_OTA_BEGIN, p, 8);
+            delay(80);  // dropping its old record erases a sector
+            if (!fo_read(b)) {
+                return;
+            }
+            if ((b[1] == 1) && (le32(b + 8) == fo_size) && (le32(b + 12) == fo_crc)) {
+                fo_st = FO_SEND;
+                fo_sent = le32(b + 4);
+                fo_moved_at = now;
+            } else if (b[3]) {
+                fo_fail(fo_err_text(b[3]));
+            }
+            return;
+        }
+        case FO_SEND: {
+            uint32_t off = fo_sent;
+            uint8_t c[4 + FO_CHUNK];
+            for (int k = 0; (k < FO_BURST) && (off < fo_size); k++) {
+                uint8_t n = (fo_size - off < FO_CHUNK) ? (uint8_t) (fo_size - off) : FO_CHUNK;
+                put32le(c, off);
+                if (!fo_file.seek(off) || (fo_file.read(c + 4, n) != n)) {
+                    return fo_fail("the QT Py couldn't read its copy of the image");
+                }
+                fo_frame(C_OTA_DATA, c, 4 + n);
+                off += n;
+            }
+            delay(2);  // the Feather takes a frame every ms
+            if (!fo_read(b)) {
+                if (now - fo_moved_at > 5000) {
+                    fo_fail("the Feather stopped answering");
+                }
+                return;
+            }
+            if (b[1] != 1) {
+                return fo_fail(fo_err_text(b[3]));
+            }
+            uint32_t e = le32(b + 4);
+            if (e != fo_sent) {
+                fo_sent = e;
+                fo_moved_at = now;
+            } else if (now - fo_moved_at > 5000) {
+                return fo_fail("the Feather stopped taking it");
+            }
+            if (fo_sent >= fo_size) {
+                fo_st = FO_END;
+                fo_at = 0;
+                fo_tries = 0;
+            }
+            return;
+        }
+        case FO_END:
+            if (now - fo_at < 1000) {
+                return;
+            }
+            fo_at = now;
+            if (++fo_tries > 6) {
+                return fo_fail("the Feather didn't confirm its copy");
+            }
+            fo_frame(C_OTA_END, nullptr, 0);
+            delay(500);  // its CRC-32 over the whole copy
+            if (fo_read(b)) {
+                if (b[1] == 2) {
+                    fo_st = FO_APPLY;
+                    fo_at = 0;
+                    fo_tries = 0;
+                } else if (b[3]) {
+                    fo_fail(fo_err_text(b[3]));
+                }
+            }
+            return;
+        case FO_APPLY:
+            if (now - fo_at < 500) {
+                return;
+            }
+            fo_at = now;
+            if (++fo_tries > 6) {
+                return fo_fail("the Feather didn't restart");
+            }
+            fo_frame(C_OTA_APPLY, nullptr, 0);
+            delay(20);
+            if (fo_read(b) && (b[1] == 3)) {
+                fo_st = FO_RESTART;
+                fo_rs_at = now;
+                fo_at = now;
+                if (fo_file) {
+                    fo_file.close();
+                }
+            }
+            return;
+        case FO_RESTART: {
+            // gw_boot copies it in (a few seconds), then the new firmware answers; the first second may still be the old one
+            if ((now - fo_at < 500) || (now - fo_rs_at < 1500)) {
+                return;
+            }
+            fo_at = now;
+            if (poll_status()) {
+                toggles_known = false;  // as link_tick after a Feather that went away: it restarted, so its settings go back
+                feather_init_done = false;
+                ch_ok = false;
+                hc_known = false;
+                if (!fo_ver || (st[56] == fo_ver)) {
+                    fo_st = FO_DONE;
+                    fo_secs = (now - fo_t0) / 1000;
+                    fo_boot = -1;
+                } else {
+                    fo_fail(String("the Feather came back with v") + String(st[56]) + ", not v" + String(fo_ver));
+                }
+                return;
+            }
+            static uint32_t reinit_at = 0;  // as link_tick: a Feather that restarted mid-read can leave this master stuck
+            if (now - reinit_at >= 3000) {
+                reinit_at = now;
+                Wire1.end();
+                Wire1.begin(LINK_SDA, LINK_SCL, LINK_HZ);
+                Wire1.setTimeOut(50);
+            }
+            if (now - fo_rs_at > 60000) {
+                fo_fail("no answer since the restart: on FLOW, flash the _boot.uf2 over USB to recover");
+            }
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+static void fo_block(const uint8_t* b) {  // one 512-byte UF2 block of an upload into /feather.tmp
+    if (fo_up_err.length()) {
+        return;
+    }
+    uint32_t fl = le32(b + 8), addr = le32(b + 12), n = le32(b + 16);
+    if ((le32(b) != 0x0A324655u) || (le32(b + 4) != 0x9E5D5157u) || (le32(b + 508) != 0x0AB16F30u)) {
+        fo_up_err = "not a UF2 file";
+        return;
+    }
+    if (fl & 1) {
+        return;  // "not main flash"
+    }
+    if (((fl & 0x2000) && (le32(b + 28) != 0xE48BFF56u)) || (n > 476)) {
+        fo_up_err = "not an RP2040 image";
+        return;
+    }
+    if (addr < FO_BASE) {
+        fo_up_err = "this is the USB image (it starts where the bootloader goes): upload the _ota.uf2";
+        return;
+    }
+    uint32_t off = addr - FO_BASE;
+    if (off + n > FO_MAX) {
+        fo_up_err = "too big for the Feather's app slot";
+        return;
+    }
+    if (off < fo_up_end) {
+        fo_up_err = "its blocks are out of order";
+        return;
+    }
+    uint8_t pad[64];
+    memset(pad, 0xFF, sizeof(pad));
+    while (fo_up_end < off) {
+        uint32_t k = std::min((uint32_t) sizeof(pad), off - fo_up_end);
+        fo_up.write(pad, k);
+        fo_up_end += k;
+    }
+    if (fo_up.write(b + 32, n) != n) {
+        fo_up_err = "the QT Py couldn't store it";
+        return;
+    }
+    fo_up_end = off + n;
+}
+
+static void h_fo_upload() {
+    HTTPUpload& u = server.upload();
+    if (u.status == UPLOAD_FILE_START) {
+        fo_up_seen = true;
+        fo_ub_n = 0;
+        fo_up_end = 0;
+        fo_up_err = String();
+        if (fo_busy()) {
+            fo_up_err = "an update is running";
+            return;
+        }
+        if (!fs_ok) {
+            fs_ok = FFat.begin(true);
+        }
+        fo_up = fs_ok ? FFat.open("/feather.tmp", "w") : File();
+        if (!fo_up) {
+            fo_up_err = "the QT Py's file storage isn't working";
+        }
+    } else if (u.status == UPLOAD_FILE_WRITE) {
+        for (size_t i = 0; (i < u.currentSize) && fo_up; i++) {
+            fo_ub[fo_ub_n++] = u.buf[i];
+            if (fo_ub_n == sizeof(fo_ub)) {
+                fo_block(fo_ub);
+                fo_ub_n = 0;
+            }
+        }
+    } else if ((u.status == UPLOAD_FILE_END) || (u.status == UPLOAD_FILE_ABORTED)) {
+        if (fo_up) {
+            fo_up.close();
+        }
+        if (!fo_up_err.length() && ((u.status == UPLOAD_FILE_ABORTED) || fo_ub_n)) {
+            fo_up_err = (u.status == UPLOAD_FILE_ABORTED) ? "the upload stopped" : "not a UF2 file";
+        }
+        if (fo_up_err.length() && fs_ok) {
+            FFat.remove("/feather.tmp");
+        }
+    }
+}
+
+static void fo_inf_load() {  // the stored image's facts, if there's one
+    fo_size = 0;
+    if (!fs_ok || !FFat.exists("/feather.bin") || !FFat.exists("/feather.inf")) {
+        return;
+    }
+    File m = FFat.open("/feather.inf", "r");
+    String s = m ? m.readString() : String();
+    if (m) {
+        m.close();
+    }
+    unsigned long size = 0, crc = 0, ver = 0, t = 0;
+    if (sscanf(s.c_str(), "%lu %lx %lu %lu", &size, &crc, &ver, &t) == 4) {
+        fo_size = size;
+        fo_crc = crc;
+        fo_ver = (uint8_t) ver;
+        fo_t = t;
+    }
+}
+
+// CRC-32 and the version tag ("GWFW:v40;", gw_mouse.cc) of /feather.tmp
+static bool fo_scan(uint32_t* crc, uint8_t* ver) {
+    File f = FFat.open("/feather.tmp", "r");
+    if (!f) {
+        return false;
+    }
+    static uint8_t buf[1024 + 16];
+    uint32_t c = 0;
+    size_t keep = 0;
+    *ver = 0;
+    while (true) {
+        int n = f.read(buf + keep, 1024);
+        if (n <= 0) {
+            break;
+        }
+        c = fo_crc32(buf + keep, n, c);
+        size_t tot = keep + n;
+        for (size_t i = 0; !*ver && (i + 9 <= tot); i++) {
+            if (!memcmp(buf + i, "GWFW:v", 6)) {
+                uint16_t v = 0;
+                size_t j = i + 6;
+                while ((j < tot) && (buf[j] >= '0') && (buf[j] <= '9') && (v < 255)) {
+                    v = v * 10 + (buf[j++] - '0');
+                }
+                if ((j < tot) && (buf[j] == ';')) {
+                    *ver = (uint8_t) v;
+                }
+            }
+        }
+        keep = (tot >= 15) ? 15 : tot;  // a tag cut by the chunk's end is found in the next
+        memmove(buf, buf + tot - keep, keep);
+    }
+    f.close();
+    *crc = c;
+    return true;
+}
+
+// GET /api/feather: the stored image and an update's progress. POST: multipart "file" = an _ota.uf2 to store;
+// ?start=1 sends the stored one to the Feather; ?abort=1 stops sending
+static void h_feather() {
+    touch();
+    if (server.method() == HTTP_GET) {
+        if (!fo_busy() && link_up && st_ok && ((fo_boot < 0) || (millis() - fo_boot_at > 10000))) {
+            uint8_t b[24];
+            fo_boot = (st[56] < 40) ? 0 : fo_read(b) ? (b[2] & 1) : -1;
+            fo_boot_at = millis();
+        }
+        char crc[12];
+        snprintf(crc, sizeof(crc), "%08lx", (unsigned long) fo_crc);
+        String j = "{\"state\":\"" + String(FO_NAMES[fo_st]) + "\",\"err\":\"" + fo_err + "\",\"sent\":" + String(fo_sent) + ",\"size\":" + String(fo_size) +
+                   ",\"file\":" + (fo_size ? "{\"size\":" + String(fo_size) + ",\"crc\":\"" + String(crc) + "\",\"ver\":" + String(fo_ver) + ",\"t\":" + String(fo_t) + "}" : String("null")) +
+                   ",\"boot\":" + String((fo_boot < 0) ? "null" : fo_boot ? "true" : "false") + ",\"fw\":" + String(st_ok ? st[56] : 0) + ",\"from\":" + String(fo_from) +
+                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + "}";
+        server.send(200, "application/json", j);
+        return;
+    }
+    bool up = fo_up_seen;
+    fo_up_seen = false;
+    if (!from_current_page()) {
+        return;
+    }
+    if (radio != Radio::STA) {
+        return ok_json(false, "only on the home network");  // as /api/update and /api/page
+    }
+    if (server.hasArg("abort")) {
+        if (fo_busy() && (fo_st != FO_RESTART)) {
+            fo_frame(C_OTA_ABORT, nullptr, 0);
+            fo_fail("stopped");
+        }
+        return ok_json(true);
+    }
+    if (server.hasArg("start")) {
+        if (fo_busy()) {
+            return ok_json(false, "an update is already running");
+        }
+        if (!fo_size || !(fo_file = FFat.open("/feather.bin", "r"))) {
+            return ok_json(false, "upload the Feather's _ota.uf2 first");
+        }
+        if (!link_up || !st_ok) {
+            fo_file.close();
+            return ok_json(false, "the Feather isn't answering");
+        }
+        uint8_t b[24];
+        if ((st[56] < 40) || !fo_read(b) || !(b[2] & 1)) {
+            fo_file.close();
+            return ok_json(false, "this Feather can't take updates over Wi-Fi yet: install the _boot.uf2 over USB once");
+        }
+        fo_from = st[56];
+        fo_st = FO_BEGIN;
+        fo_err = String();
+        fo_sent = 0;
+        fo_tries = 0;
+        fo_at = 0;
+        fo_t0 = millis();
+        return ok_json(true);
+    }
+    if (!up) {
+        return ok_json(false, "nothing was uploaded");
+    }
+    if (fo_up_err.length()) {
+        return ok_json(false, fo_up_err.c_str());
+    }
+    if (!fo_up_end) {
+        return ok_json(false, "no firmware in that file");
+    }
+    uint32_t crc = 0;
+    uint8_t ver = 0;
+    if (!fo_scan(&crc, &ver)) {
+        return ok_json(false, "the QT Py couldn't read it back");
+    }
+    FFat.remove("/feather.bin");
+    if (!FFat.rename("/feather.tmp", "/feather.bin")) {
+        return ok_json(false, "the QT Py couldn't keep it");
+    }
+    File m = FFat.open("/feather.inf", "w");
+    if (m) {
+        m.printf("%lu %08lx %u %lu", (unsigned long) fo_up_end, (unsigned long) crc, (unsigned) ver, (unsigned long) now_unix());
+        m.close();
+    }
+    fo_inf_load();
+    if (fo_st != FO_IDLE) {
+        fo_st = FO_IDLE;  // a new image: the last update's result goes
+        fo_err = String();
+    }
+    server.send(200, "application/json", "{\"ok\":true,\"size\":" + String(fo_size) + ",\"ver\":" + String(fo_ver) + "}");
+}
 static void page_fs_load() {  // fw41: is there an uploaded page for this firmware?
     page_fs = false;
     if (!fs_ok || !FFat.exists("/page.gz") || !FFat.exists("/page.fw")) {
@@ -3940,6 +4423,7 @@ static void h_page_done() {
         m.close();
     }
     page_fs_load();
+    fo_inf_load();  // fw69
     ok_json(page_fs, page_fs ? nullptr : "stored, but couldn't read it back");
 }
 
@@ -4027,6 +4511,7 @@ void setup() {
     }
     fs_ok = FFat.begin(false);  // fw41: an uploaded page (no format here: an unformatted partition waits for the first upload)
     page_fs_load();
+    fo_inf_load();  // fw69
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
     cvlib_blob = prefs.isKey("cvlib");      // fw65: a curve per key; the fw49-64 blob is split up once (below)
     if (!cvlib_blob) {
@@ -4176,6 +4661,8 @@ void setup() {
     server.on("/api/curves", HTTP_GET, h_curves);  // fw49
     server.on("/api/curves", HTTP_POST, h_curves);
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
+    server.on("/api/feather", HTTP_GET, h_feather);  // fw69
+    server.on("/api/feather", HTTP_POST, h_feather, h_fo_upload);
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);
@@ -4204,6 +4691,16 @@ void setup() {
 }
 
 void loop() {
+    if (fo_busy()) {  // fw69: an update has the link to itself; the page keeps being served
+        fo_tick();
+        radio_tick();
+        if (radio != Radio::OFF) {
+            server.handleClient();
+        }
+        show_state();
+        delay(1);
+        return;
+    }
     link_tick();
     radio_tick();
     hcap_tick();
