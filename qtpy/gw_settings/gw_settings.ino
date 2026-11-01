@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 73    // this firmware's number, shown in /api/status
+#define QT_FW 74    // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -3978,7 +3978,7 @@ static bool lib_fs_on() {
 // else uses the link meanwhile (loop()). The Feather checks its whole copy (CRC-32) before gw_boot may copy it in.
 #define FO_BASE 0x10008000u
 #define FO_MAX 0x1F8000u
-#define FO_CHUNK 40
+#define FO_CHUNK_MAX 240  // fw74: data bytes in a frame to a Feather v43+ (block 3 byte 2 bit 1); 40 to older ones
 #define FO_BURST 8
 #define C_OTA_BEGIN 0x13
 #define C_OTA_DATA 0x14
@@ -3994,6 +3994,9 @@ static uint8_t fo_ver = 0;
 static uint32_t fo_sent = 0;  // the Feather's next expected offset, as last read
 static uint32_t fo_at = 0, fo_moved_at = 0, fo_t0 = 0, fo_rs_at = 0, fo_secs = 0;
 static uint8_t fo_tries = 0, fo_from = 0;
+static uint8_t fo_chunk = 40;  // fw74: data bytes a frame for this Feather
+static bool fo_begun = false;  // fw74: BEGIN sent at this clock (a v43 Feather erases ahead before it takes data: not sent again meanwhile)
+static uint32_t fo_begun_at = 0;
 static int8_t fo_boot = -1;  // the running Feather build takes updates: 1 yes, 0 no, -1 not known
 static uint32_t fo_boot_at = 0;
 static File fo_file;
@@ -4029,7 +4032,7 @@ static uint32_t fo_crc32(const uint8_t* d, size_t n, uint32_t crc) {  // as gw_o
 }
 
 static bool fo_frame(uint8_t cmd, const uint8_t* p, uint8_t len) {  // one link frame, outside the command queue
-    uint8_t f[4 + 44];
+    uint8_t f[4 + 4 + FO_CHUNK_MAX];  // fw74: 248-byte update frames
     f[0] = cmd;
     f[1] = next_seq;  // the queue's counter: the Feather skips a frame with the last frame's number
     next_seq = (next_seq == 255) ? 1 : next_seq + 1;
@@ -4126,6 +4129,7 @@ static void fo_slower(const String& why) {
     fo_slow_why = why + String(" (at ") + String(FO_HZ[fo_hz] / 1000) + " kHz)";
     fo_clock(fo_hz + 1);
     fo_slower_n++;
+    fo_begun = false;
     fo_st = FO_BEGIN;
     fo_sent = 0;
     fo_tries = 0;
@@ -4141,14 +4145,18 @@ static void fo_tick() {
                 return;
             }
             fo_at = now;
-            if (++fo_tries > 10) {
-                return fo_slower("the Feather didn't start taking it");  // fw73: at a slower clock first
+            if (!fo_begun) {
+                if (++fo_tries > 10) {
+                    return fo_slower("the Feather didn't start taking it");  // fw73: at a slower clock first
+                }
+                uint8_t p[8];
+                put32le(p, fo_size);
+                put32le(p + 4, fo_crc);
+                fo_frame(C_OTA_BEGIN, p, 8);
+                fo_begun = true;
+                fo_begun_at = now;
+                delay(80);  // dropping its old record erases a sector
             }
-            uint8_t p[8];
-            put32le(p, fo_size);
-            put32le(p + 4, fo_crc);
-            fo_frame(C_OTA_BEGIN, p, 8);
-            delay(80);  // dropping its old record erases a sector
             if (!fo_read(b)) {
                 if (++fo_bad >= 3) {  // fw73
                     fo_slower("the Feather didn't start taking it");
@@ -4156,20 +4164,27 @@ static void fo_tick() {
                 return;
             }
             fo_bad = 0;
-            if ((b[1] == 1) && (le32(b + 4) == 0) && (le32(b + 8) == fo_size) && (le32(b + 12) == fo_crc)) {  // 10-31 audit: a fresh start, not a stale status
+            bool mine = (le32(b + 8) == fo_size) && (le32(b + 12) == fo_crc);
+            if ((b[1] == 1) && (le32(b + 4) == 0) && mine) {  // 10-31 audit: a fresh start, not a stale status
                 fo_st = FO_SEND;
                 fo_sent = 0;
                 fo_moved_at = now;
+            } else if ((b[1] == 4) && mine) {  // fw74: a v43 Feather erasing its staging slot ahead (about a second): wait
+                if (now - fo_begun_at > 15000) {
+                    fo_fail("the Feather didn't finish erasing");
+                }
             } else if ((b[1] == 0) && ((b[3] == 1) || (b[3] == 2))) {  // refused (no bootloader, size); an older error is the last try's
                 fo_fail(fo_err_text(b[3]));
+            } else {
+                fo_begun = false;  // fw74: the BEGIN didn't take: again
             }
             return;
         }
         case FO_SEND: {
             uint32_t off = fo_sent;
-            uint8_t c[4 + FO_CHUNK];
+            uint8_t c[4 + FO_CHUNK_MAX];
             for (int k = 0; (k < FO_BURST) && (off < fo_size); k++) {
-                uint8_t n = (fo_size - off < FO_CHUNK) ? (uint8_t) (fo_size - off) : FO_CHUNK;
+                uint8_t n = (fo_size - off < fo_chunk) ? (uint8_t) (fo_size - off) : fo_chunk;
                 put32le(c, off);
                 if (!fo_file.seek(off) || (fo_file.read(c + 4, n) != n)) {
                     return fo_fail("the QT Py couldn't read its copy of the image");
@@ -4482,6 +4497,8 @@ static void h_feather_go() {
             fo_file.close();
             return ok_json(false, "this Feather can't take updates over Wi-Fi yet: once over USB on FLOW, flash the _gwboot.uf2, then the _ota.uf2");
         }
+        fo_chunk = (b[2] & 2) ? FO_CHUNK_MAX : 40;  // fw74: a v43+ Feather takes 240 bytes a frame
+        fo_begun = false;
         fo_from = st[56];
         fo_slower_n = 0;
         fo_clock(0);  // fw73
@@ -4511,7 +4528,7 @@ static void h_feather() {
         String j = "{\"state\":\"" + String(FO_NAMES[fo_st]) + "\",\"err\":\"" + fo_err + "\",\"sent\":" + String(fo_sent) + ",\"size\":" + String(fo_size) +
                    ",\"file\":" + (fo_size ? "{\"size\":" + String(fo_size) + ",\"crc\":\"" + String(crc) + "\",\"ver\":" + String(fo_ver) + ",\"t\":" + String(fo_t) + "}" : String("null")) +
                    ",\"boot\":" + String((fo_boot < 0) ? "null" : fo_boot ? "true" : "false") + ",\"fw\":" + String(st_ok ? st[56] : 0) + ",\"from\":" + String(fo_from) +
-                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + ",\"hz\":" + String(FO_HZ[fo_hz]) + ",\"slower\":" + String(fo_slower_n) + ",\"why\":\"" + fo_slow_why + "\"}";  // fw73: the clock it ran at, steps down
+                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + ",\"hz\":" + String(FO_HZ[fo_hz]) + ",\"slower\":" + String(fo_slower_n) + ",\"why\":\"" + fo_slow_why + "\",\"chunk\":" + String(fo_chunk) + "}";  // fw73: the clock it ran at, steps down
         server.send(200, "application/json", j);
         return;
     }

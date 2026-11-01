@@ -23,17 +23,28 @@ static uint32_t crc_at(uint32_t off, uint32_t n) {
     return gw_ota_crc32(xip(off), n, 0);
 }
 
+// v43: in chunks that end on 64 KB flash blocks (the app slot starts at 32 KB, so the first is 32 KB): a chunk that differs
+// is erased whole (a block erase where it covers one, about 4x quicker than its 16 sectors) and written a sector at a time
 static void copy_stage(uint32_t size) {
     static uint8_t buf[FLASH_SECTOR_SIZE];
-    for (uint32_t o = 0; o < size; o += FLASH_SECTOR_SIZE) {
-        uint32_t n = (size - o < FLASH_SECTOR_SIZE) ? size - o : FLASH_SECTOR_SIZE;
-        if (!memcmp(xip(GW_OTA_STAGE_OFFSET + o), xip(GW_OTA_APP_OFFSET + o), n)) {
+    for (uint32_t o = 0; o < size;) {
+        uint32_t a = GW_OTA_APP_OFFSET + o, end = ((a / 0x10000) + 1) * 0x10000 - GW_OTA_APP_OFFSET;
+        if (end > size) {
+            end = size;
+        }
+        if (!memcmp(xip(GW_OTA_STAGE_OFFSET + o), xip(a), end - o)) {
+            o = end;
             continue;  // already there (a copy a power cut stopped goes on from here)
         }
-        memcpy(buf, xip(GW_OTA_STAGE_OFFSET + o), n);
-        memset(buf + n, 0xFF, FLASH_SECTOR_SIZE - n);
-        flash_range_erase(GW_OTA_APP_OFFSET + o, FLASH_SECTOR_SIZE);
-        flash_range_program(GW_OTA_APP_OFFSET + o, buf, FLASH_SECTOR_SIZE);
+        uint32_t span = (end - o + FLASH_SECTOR_SIZE - 1) / FLASH_SECTOR_SIZE * FLASH_SECTOR_SIZE;
+        flash_range_erase(a, span);
+        for (uint32_t q = o; q < end; q += FLASH_SECTOR_SIZE) {
+            uint32_t n = (end - q < FLASH_SECTOR_SIZE) ? end - q : FLASH_SECTOR_SIZE;
+            memcpy(buf, xip(GW_OTA_STAGE_OFFSET + q), n);
+            memset(buf + n, 0xFF, FLASH_SECTOR_SIZE - n);
+            flash_range_program(GW_OTA_APP_OFFSET + q, buf, FLASH_SECTOR_SIZE);
+        }
+        o = end;
     }
 }
 

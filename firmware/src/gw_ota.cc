@@ -21,7 +21,8 @@ extern const char gw_fw_tag[];  // gw_mouse.cc: "GWFW:v<version>;"
 #endif
 
 static uint8_t st = GW_OTA_IDLE, err = 0;
-static uint32_t size = 0, crc = 0, expect = 0, got_crc = 0, seq_last = 0;  // v42: seq_last = the record's count before BEGIN dropped it
+static uint32_t size = 0, crc = 0, expect = 0, got_crc = 0, seq_last = 0;
+static uint32_t erase_at = 0, erase_end = 0;  // v43: the staging slot still to erase after BEGIN (offsets in it)  // v42: seq_last = the record's count before BEGIN dropped it
 static uint8_t page[FLASH_PAGE_SIZE];
 static uint16_t page_n = 0;
 static bool reboot_due = false;
@@ -48,13 +49,10 @@ static void fail(uint8_t e) {
     dirty = true;
 }
 
-// the page buffer to staging offset off (the bytes after page_n as 0xFF), erasing its sector first at a sector's start
+// the page buffer to staging offset off (the bytes after page_n as 0xFF); v43: the slot was erased ahead (ERASING)
 static bool flash_page(uint32_t off) {
     memset(page + page_n, 0xFF, FLASH_PAGE_SIZE - page_n);
     uint32_t a = GW_OTA_STAGE_OFFSET + off;
-    if ((a % FLASH_SECTOR_SIZE) == 0) {
-        flash_range_erase(a, FLASH_SECTOR_SIZE);
-    }
     flash_range_program(a, page, FLASH_PAGE_SIZE);
     page_n = 0;
     return !memcmp((const void*) (XIP_BASE + a), page, FLASH_PAGE_SIZE);
@@ -97,7 +95,11 @@ void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now) {
             got_crc = 0;
             err = 0;
             reboot_due = false;
-            st = GW_OTA_RX;
+            // v43: erased ahead, a 64 KB block a pass (gw_ota_tick), not a 4 KB sector as each one's first page came in: an
+            // erase stopped the main loop ~45 ms, and the frames that came meanwhile were lost and sent again
+            erase_at = 0;
+            erase_end = (size + FLASH_SECTOR_SIZE - 1) / FLASH_SECTOR_SIZE * FLASH_SECTOR_SIZE;
+            st = GW_OTA_ERASING;
             dirty = true;
             return;
         case GW_OTA_DATA: {
@@ -169,6 +171,18 @@ void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now) {
 
 void gw_ota_tick(uint32_t now) {
     static uint32_t pub_at = 0;
+    if (st == GW_OTA_ERASING) {  // v43: the next 64 KB block of the staging slot (block erases: about 4x quicker than its sectors)
+        uint32_t n = 0x10000 - (erase_at % 0x10000);
+        if (n > erase_end - erase_at) {
+            n = erase_end - erase_at;
+        }
+        flash_range_erase(GW_OTA_STAGE_OFFSET + erase_at, n);
+        erase_at += n;
+        if (erase_at >= erase_end) {
+            st = GW_OTA_RX;
+        }
+        dirty = true;
+    }
     if (reboot_due && ((int32_t) (now - reboot_at) >= 0)) {
         reboot_due = false;
         watchdog_reboot(0, 0, 10);  // through the ROM and gw_boot, as a power-on
@@ -181,7 +195,7 @@ void gw_ota_tick(uint32_t now) {
     memset(b, 0, sizeof(b));
     b[0] = 'U';
     b[1] = st;
-    b[2] = GW_OTA_APP ? 1 : 0;
+    b[2] = GW_OTA_APP ? 3 : 0;  // bit 1 (v43): 240-byte data frames, erased ahead
     b[3] = err;
     put32(b + 4, expect);
     put32(b + 8, size);

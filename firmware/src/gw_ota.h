@@ -28,18 +28,20 @@ typedef struct {  // page 0 of the record sector
 
 // link commands (gw_mouse.cc passes them to gw_ota_link): cmd, seq, len, payload, crc8 as every link frame
 #define GW_OTA_BEGIN 0x13  // [size uint32, crc32 uint32]: a new image starts (the record is dropped)
-#define GW_OTA_DATA 0x14   // [offset uint32, 1-40 bytes]: only the next expected offset is taken (the QT Py goes back to it)
+#define GW_OTA_DATA 0x14   // [offset uint32, 1-40 bytes; v43: 1-240]: only the next expected offset is taken (the QT Py goes back to it)
 #define GW_OTA_END 0x15    // []: all sent: checked (CRC-32 of the staged copy), then the record is written
 #define GW_OTA_APPLY 0x16  // []: after a good END: restart into gw_boot, which copies it in
 #define GW_OTA_ABORT 0x17  // []: stops a transfer; v42: a staged (READY) image is dropped too, so no later reset installs it
 
 // the status block a selected read returns (GW_LINK_SEL, block 3): 0 'U', 1 state, 2 bit 0 this build takes updates
-// (it runs after gw_boot), 3 error, 4-7 next expected offset, 8-11 size, 12-15 CRC-32 wanted, 16-19 CRC-32 of the
+// (it runs after gw_boot), bit 1 (v43) it takes data frames of up to GW_OTA_DATA_MAX bytes and erases ahead, 3 error, 4-7 next expected offset, 8-11 size, 12-15 CRC-32 wanted, 16-19 CRC-32 of the
 // staged copy (after END), 20-21 updates staged (the record's seq), 22 this firmware's version, 23 crc8 of 0-22
 #define GW_OTA_IDLE 0
 #define GW_OTA_RX 1
 #define GW_OTA_READY 2
 #define GW_OTA_APPLYING 3
+#define GW_OTA_ERASING 4  // v43: after BEGIN, the staging slot is erased ahead (a 64 KB block a main-loop pass); DATA waits for RX
+#define GW_OTA_DATA_MAX 240  // v43: data bytes in one DATA frame (4 + 240 + the frame's 4 = 248 <= GW_LINK_FRAME_MAX)
 #define GW_OTA_ERR_NOBOOT 1
 #define GW_OTA_ERR_SIZE 2
 #define GW_OTA_ERR_CRC 3
