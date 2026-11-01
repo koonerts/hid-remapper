@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 71    // this firmware's number, shown in /api/status
+#define QT_FW 72    // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -4057,7 +4057,7 @@ static bool fo_read(uint8_t* b) {
 static const char* fo_err_text(uint8_t e) {
     switch (e) {
         case 1:
-            return "this Feather build has no bootloader for updates: install the _boot.uf2 over USB once";
+            return "this Feather build has no bootloader for updates: once over USB on FLOW, flash the _gwboot.uf2, then the _ota.uf2";
         case 2:
             return "the Feather refused its size";
         case 3:
@@ -4210,7 +4210,7 @@ static void fo_tick() {
                 Wire1.setTimeOut(50);
             }
             if (now - fo_rs_at > 60000) {
-                fo_fail("no answer since the restart: on FLOW, flash the _boot.uf2 over USB to recover");
+                fo_fail("no answer since the restart: on FLOW, flash the _ota.uf2 over USB to recover");
             }
             return;
         }
@@ -4389,7 +4389,7 @@ static void h_feather_go() {
         uint8_t b[24];
         if ((st[56] < 40) || !fo_read(b) || !(b[2] & 1)) {
             fo_file.close();
-            return ok_json(false, "this Feather can't take updates over Wi-Fi yet: install the _boot.uf2 over USB once");
+            return ok_json(false, "this Feather can't take updates over Wi-Fi yet: once over USB on FLOW, flash the _gwboot.uf2, then the _ota.uf2");
         }
         fo_from = st[56];
         fo_st = FO_BEGIN;

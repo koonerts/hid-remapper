@@ -304,7 +304,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row"><button class="p" id="fwfgo" onclick="fwfStart()" disabled>Update the Feather</button><button id="fwfstop" onclick="fwfAbort()" hidden>Stop</button></div>
 <progress id="fwfbar" max="100" value="0" style="width:100%;margin-top:10px" hidden></progress>
 <p class="mut" id="fwfstate" style="min-height:1.4em"></p>
-<p class="mut" style="margin:0">Over Wi-Fi, wherever the Feather is plugged in (Feather v40 and its bootloader). Upload the build's <b>_ota.uf2</b>; the Feather checks the whole copy before its bootloader copies it in, and a power cut midway only means it finishes at the next power-on. The mouse may stutter while it's sent (a minute or two), then the Feather restarts for a few seconds. First time only: flash the <b>_boot.uf2</b> over USB on FLOW.</p></div>
+<p class="mut" style="margin:0">Over Wi-Fi, wherever the Feather is plugged in (Feather v40 and its bootloader). Upload the build's <b>_ota.uf2</b>; the Feather checks the whole copy before its bootloader copies it in, and a power cut midway only means it finishes at the next power-on. The mouse may stutter while it's sent (a minute or two), then the Feather restarts for a few seconds. First time only, over USB on FLOW: flash the <b>_gwboot.uf2</b>, then the <b>_ota.uf2</b>.</p></div>
 </div></section>
 <section class="tab" id="t-diag" role="tabpanel" hidden><div class="cols">
 <div class="card" id="perfc"><div class="hd"><h2>Frame timing</h2><span class="mut">last second</span></div>
@@ -873,7 +873,7 @@ fetch(tq('/api/feather')).then(r=>r.json()).then(j=>{fwf=j;fwfDraw()}).catch(()=
 setTimeout(fwfPoll,2500);
 function fwfDraw(){const j=fwf;if(!j)return;const busy=FWF_BUSY.test(j.state),kb=n=>Math.round((n||0)/1024);
 $('fwfnow').textContent=j.fw?'Running v'+j.fw:'The Feather isn\'t answering';
-$('fwfboot').textContent=j.boot===true?'This Feather takes updates over Wi-Fi.':j.boot===false?(j.fw&&j.fw<40?'v'+j.fw+' can\'t take updates over Wi-Fi: flash a _boot.uf2 (v40 or later) over USB on FLOW once.':'This build has no bootloader for updates: flash the _boot.uf2 over USB on FLOW once.'):'';
+$('fwfboot').textContent=j.boot===true?'This Feather takes updates over Wi-Fi.':j.boot===false?(j.fw&&j.fw<40?'v'+j.fw+' can\'t take updates over Wi-Fi: once over USB on FLOW, flash a _gwboot.uf2, then its _ota.uf2 (v40 or later).':'This build has no bootloader for updates: once over USB on FLOW, flash the _gwboot.uf2, then the _ota.uf2.'):'';
 $('fwfstored').textContent=j.file?'Stored on the QT Py: v'+(j.file.ver||'?')+', '+kb(j.file.size)+' KB'+(j.file.t?', uploaded '+cvWhen(j.file.t):''):'Nothing uploaded yet.';
 $('fwfgo').disabled=busy||!j.file||j.boot!==true;$('fwfstop').hidden=!busy||j.state==='restarting';const bar=$('fwfbar');bar.hidden=!busy;bar.value=j.size?Math.round(100*Math.min(j.sent,j.size)/j.size):0;
 $('fwfstate').textContent=j.state==='sending'?'Sending: '+kb(j.sent)+' of '+kb(j.size)+' KB ('+j.secs+' s)':j.state==='starting'?'Starting\u2026':j.state==='checking'?'The Feather checks its copy\u2026':j.state==='applying'?'Restarting the Feather\u2026':
