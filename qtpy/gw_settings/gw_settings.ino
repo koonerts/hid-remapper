@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 70    // this firmware's number, shown in /api/status
+#define QT_FW 71    // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -354,8 +354,12 @@ static bool slots_save(const char* pre, void* ram, void* nv, size_t sz, bool (*u
 }
 static bool cvlib_used(const void* p) { return ((const CurveLib*) p)->used; }
 static bool cvdg_used(const void* p) { return ((const CurveGains*) p)->has; }
+static bool lib_fs = false;  // fw71: the library is in /curves.bin (more about it with lib_write)
+static uint32_t lib_writes = 0, lib_fails = 0;
+static bool lib_fs_on();
+static bool lib_write();
 static bool cvdg_save() {
-    return slots_save("cvg", cvdg, cvdg_nv, sizeof(CurveGains), cvdg_used, "cvdg", &cvdg_blob);
+    return lib_fs_on() ? lib_write() : slots_save("cvg", cvdg, cvdg_nv, sizeof(CurveGains), cvdg_used, "cvdg", &cvdg_blob);  // fw71: the file
 }
 // fw67: each library curve's slow-down gain (Feather v39, C_SET_DECEL): once a stroke slows from its peak speed, a gain
 // by the speed's share of that peak (points in %, rising, below 100; 100% = 1.0 implied); speeding up is left alone.
@@ -373,8 +377,9 @@ static bool cvdc_blob = false;  // never an old blob (slots_save asks)
 static uint16_t dc_sends = 0;
 static bool dc_force = false;  // send it after every curve send (a Use or BallSheet's switch changes both)
 static bool cvdc_used(const void* p) { return ((const CurveDecel*) p)->n != 0; }
+static bool lib_write();
 static bool cvdc_save() {
-    return slots_save("cvd", cvdc, cvdc_nv, sizeof(CurveDecel), cvdc_used, "cvdcx", &cvdc_blob);
+    return lib_fs_on() ? lib_write() : slots_save("cvd", cvdc, cvdc_nv, sizeof(CurveDecel), cvdc_used, "cvdcx", &cvdc_blob);  // fw71: the file
 }
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
@@ -1617,7 +1622,7 @@ static void h_status() {
         if (nvs_get_stats(NULL, &ns) == ESP_OK) {
             j += ",\"nvs\":[" + String(ns.used_entries) + "," + String(ns.free_entries) + "," + String(ns.total_entries) + "]";
         }
-        j += ",\"nvs_fail\":" + String(d_nvs_fail) + ",\"nvs_fail_key\":\"" + d_nvs_fail_key + "\"}";  // fw65: + its key
+        j += ",\"nvs_fail\":" + String(d_nvs_fail) + ",\"nvs_fail_key\":\"" + d_nvs_fail_key + "\",\"lib\":\"" + String(lib_fs_on() ? "file" : "nvs") + "\",\"lib_writes\":" + String(lib_writes) + ",\"lib_fails\":" + String(lib_fails) + "}";  // fw65: + its key; fw71: where the curve library is
     }
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
@@ -2090,6 +2095,10 @@ static bool dg_wanted() {  // on for the host connected now
 }
 
 static void cvmeta_save() {
+    if (lib_fs_on()) {  // fw71: the file
+        lib_write();
+        return;
+    }
     nvs_put("cvmeta", cvmeta, sizeof(cvmeta));
 }
 
@@ -2876,7 +2885,7 @@ static String cvlib_clean(const String& s) {
 }
 
 static bool cvlib_save() {  // fw65: false = something wasn't saved (it's gone at the next power-off)
-    bool ok = slots_save("cvl", cvlib, cvlib_nv, sizeof(CurveLib), cvlib_used, "cvlib", &cvlib_blob);
+    bool ok = lib_fs_on() ? lib_write() : slots_save("cvl", cvlib, cvlib_nv, sizeof(CurveLib), cvlib_used, "cvlib", &cvlib_blob);  // fw71: the file
     if ((prefs.getUChar("cvid", 0) != cv_id) && !prefs.putUChar("cvid", cv_id)) {
         ok = false;
         d_nvs_fail++;
@@ -3067,7 +3076,7 @@ static void h_curves() {
         if (why) {
             return ok_json(false, why);
         }
-        if (nvs_room() < NVS_KEEP + 5 + (dn ? 3 : 0)) {  // fw65: a curve takes 5 entries (fw67: 3 more with a slow-down gain); refused rather than lost at the next power-off
+        if (!lib_fs_on() && (nvs_room() < NVS_KEEP + 5 + (dn ? 3 : 0))) {  // fw71: only while the library is in NVS; fw65: a curve takes 5 entries (fw67: 3 more with a slow-down gain); refused rather than lost at the next power-off
             return ok_json(false, "the QT Py's settings storage is full: delete a curve first");
         }
         uint8_t nid = cvlib_add(cvlib_clean(server.arg("name")), n, tau, s10, s16, g16, dn, dp, dgv);
@@ -3171,7 +3180,7 @@ static void h_curves() {
                 return ok_json(false, "that's the same as another saved curve");
             }
         }
-        if (nvs_room() < NVS_KEEP + 5 + ((dn && !cvdc[id - 1].n) ? 3 : 0)) {  // the curve's blob is written anew before the old goes; a new slow-down gain adds its own
+        if (!lib_fs_on() && (nvs_room() < NVS_KEEP + 5 + ((dn && !cvdc[id - 1].n) ? 3 : 0))) {  // fw71: in NVS only; the curve's blob is written anew before the old goes; a new slow-down gain adds its own
             return ok_json(false, "the QT Py's settings storage is full: delete a curve first");
         }
         c.n = n;
@@ -3857,6 +3866,103 @@ static void h_update_done() {
     ESP.restart();
 }
 
+// fw71: the library (cvlib, cvdg, cvmeta, cvdc: 16 curves, ~4.2 KB) lives in one file on the QT Py's FFat area,
+// /curves.bin: written whole to /curves.tmp, read back and checked (CRC-32), then renamed over it (the one before kept as
+// /curves.bak). The 20 KB NVS partition had no room for a 7th curve (10-31); NVS keeps the running curve, its id, the
+// candidate's and cvdg0. At boot: /curves.bin, else /curves.bak, else NVS (fw49-70's keys: moved over once, then removed).
+// No file area (never formatted): it all stays in NVS as before.
+#define LIB_MAGIC 0x56435747u  // "GWCV"
+#define LIB_VER 1
+struct __attribute__((packed)) LibHead {
+    uint32_t magic;
+    uint16_t ver, n;
+    uint32_t crc;  // CRC-32 of the four tables after it, in this order: cvlib, cvdg, cvmeta, cvdc
+};
+
+static uint32_t lib_crc() {
+    uint32_t c = fo_crc32((const uint8_t*) cvlib, sizeof(cvlib), 0);
+    c = fo_crc32((const uint8_t*) cvdg, sizeof(cvdg), c);
+    c = fo_crc32((const uint8_t*) cvmeta, sizeof(cvmeta), c);
+    return fo_crc32((const uint8_t*) cvdc, sizeof(cvdc), c);
+}
+
+// a library file's tables, checked; into: false = only check it
+static bool lib_read(const char* path, bool into) {
+    static uint8_t body[sizeof(cvlib) + sizeof(cvdg) + sizeof(cvmeta) + sizeof(cvdc)];
+    File f = FFat.open(path, "r");
+    if (!f) {
+        return false;
+    }
+    LibHead h;
+    bool ok = (f.read((uint8_t*) &h, sizeof(h)) == sizeof(h)) && (h.magic == LIB_MAGIC) && (h.ver == LIB_VER) && (h.n == CVLIB_N) &&
+              (f.read(body, sizeof(body)) == sizeof(body)) && (fo_crc32(body, sizeof(body), 0) == h.crc);
+    f.close();
+    if (!ok || !into) {
+        return ok;
+    }
+    const uint8_t* p = body;
+    memcpy(cvlib, p, sizeof(cvlib));
+    p += sizeof(cvlib);
+    memcpy(cvdg, p, sizeof(cvdg));
+    p += sizeof(cvdg);
+    memcpy(cvmeta, p, sizeof(cvmeta));
+    p += sizeof(cvmeta);
+    memcpy(cvdc, p, sizeof(cvdc));
+    return true;
+}
+
+static bool lib_write() {
+    LibHead h = { LIB_MAGIC, LIB_VER, CVLIB_N, lib_crc() };
+    File f = FFat.open("/curves.tmp", "w");
+    bool ok = (bool) f;
+    if (ok) {
+        ok = (f.write((const uint8_t*) &h, sizeof(h)) == sizeof(h)) && (f.write((const uint8_t*) cvlib, sizeof(cvlib)) == sizeof(cvlib)) &&
+             (f.write((const uint8_t*) cvdg, sizeof(cvdg)) == sizeof(cvdg)) && (f.write((const uint8_t*) cvmeta, sizeof(cvmeta)) == sizeof(cvmeta)) &&
+             (f.write((const uint8_t*) cvdc, sizeof(cvdc)) == sizeof(cvdc));
+        f.close();
+    }
+    ok = ok && lib_read("/curves.tmp", false);  // what's on flash, read back
+    if (ok) {
+        FFat.remove("/curves.bak");
+        if (FFat.exists("/curves.bin")) {
+            FFat.rename("/curves.bin", "/curves.bak");
+        }
+        ok = FFat.rename("/curves.tmp", "/curves.bin");
+    }
+    lib_writes++;
+    if (!ok) {
+        lib_fails++;
+        d_nvs_fail++;  // counted with the settings saves that failed: the page warns the same way
+        d_nvs_fail_key = "curves.bin";
+    }
+    return ok;
+}
+
+static void lib_nvs_clear() {  // the library's NVS keys, once it's in the file
+    char key[8];
+    for (int k = 1; k <= CVLIB_N; k++) {
+        const char* pre[] = { "cvl", "cvg", "cvd" };
+        for (const char* p : pre) {
+            snprintf(key, sizeof(key), "%s%d", p, k);
+            if (prefs.isKey(key)) {
+                prefs.remove(key);
+            }
+        }
+    }
+    for (const char* k : { "cvmeta", "cvlib", "cvdg" }) {
+        if (prefs.isKey(k)) {
+            prefs.remove(k);
+        }
+    }
+    memset(cvlib_nv, 0, sizeof(cvlib_nv));  // what NVS holds now (nothing)
+    memset(cvdg_nv, 0, sizeof(cvdg_nv));
+    memset(cvdc_nv, 0, sizeof(cvdc_nv));
+    cvlib_blob = cvdg_blob = false;
+}
+static bool lib_fs_on() {
+    return lib_fs;
+}
+
 // ---- fw69: the Feather's firmware over Wi-Fi (Feather v40 and its bootloader gw_boot: firmware/src/gw_ota.h). The page
 // uploads a build's _ota.uf2; its blocks are unpacked into /feather.bin (the app's bytes from 0x10008000), with size,
 // CRC-32, version and time in /feather.inf. Then, on the page's say-so, it goes over the link 40 bytes a frame. The
@@ -4527,6 +4633,8 @@ void setup() {
     page_fs_load();
     fo_inf_load();  // fw69
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
+    lib_fs = fs_ok && (lib_read("/curves.bin", true) || lib_read("/curves.bak", true));  // fw71: the library's file
+    if (!lib_fs) {  // fw49-70: the library in NVS
     cvlib_blob = prefs.isKey("cvlib");      // fw65: a curve per key; the fw49-64 blob is split up once (below)
     if (!cvlib_blob) {
         for (int k = 0; k < CVLIB_N; k++) {
@@ -4568,6 +4676,7 @@ void setup() {
         }
     }
     memcpy(cvdc_nv, cvdc, sizeof(cvdc));
+    }  // fw71: !lib_fs
     cv_id = prefs.getUChar("cvid", 0);
     cv_cand = prefs.getUChar("cvcand", 0);
     if ((cv_id > CVLIB_N) || (cv_id && !cvlib[cv_id - 1].used)) {
@@ -4581,7 +4690,7 @@ void setup() {
         cv.hn = 0;
         cv.tau = 8;
     }
-    if (prefs.getBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta)) {  // fw61; fw62: before the migration below (it saves cvmeta)
+    if (!lib_fs && (prefs.getBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta))) {  // fw61; fw62: before the migration below (it saves cvmeta); fw71: in the file
         memset(cvmeta, 0, sizeof(cvmeta));
         for (int k = 0; k < CVLIB_N; k++) {
             cvmeta[k].ord = k + 1;
@@ -4603,6 +4712,7 @@ void setup() {
         }
         dg.n = 0;
     }
+    if (!lib_fs) {  // fw71: the curves' gains are in the file otherwise
     cvdg_blob = prefs.isKey("cvdg");  // fw65: per-curve keys; the fw60-64 blob is split up once
     bool dg_any = false;
     if (cvdg_blob && (prefs.getBytes("cvdg", cvdg, sizeof(cvdg)) == sizeof(cvdg))) {
@@ -4628,6 +4738,13 @@ void setup() {
     }
     if (!dg_any) {  // fw60: per-curve gains; first boot: the running curve's are the ones in use
         cvdg_stamp(cv_id);
+    }
+    }  // fw71: !lib_fs
+    if (fs_ok && !lib_fs) {  // fw71: the library moves to its file once; NVS's copies go only after it read back right
+        lib_fs = lib_write();
+    }
+    if (lib_fs) {
+        lib_nvs_clear();
     }
     if (prefs.getUChar("sigv", 1) < 2) {  // fw34: hosts saved under the v1 signature
         sig_migrate();
