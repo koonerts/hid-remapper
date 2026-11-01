@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 66     // this firmware's number, shown in /api/status
+#define QT_FW 67    // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -62,6 +62,7 @@
 #define C_SET_DIRGAIN 0x0E  // Feather v24+: [on, 8 gains uint16 per mille] sensitivity per direction (RAM only there)
 #define C_SET_CURVE 0x10    // Feather v30+: [on, tau ms, dpi fallback uint16, n x (speed 0.1 cm/s uint16, gain per mille uint16)] the speed curve
 #define C_CURVE_HIST_RESET 0x11  // Feather v32+: [] its speed histogram starts over
+#define C_SET_DECEL 0x12    // Feather v39+: [on, n x (share of the peak speed %, gain per mille uint16)] the slow-down gain
 #define C_TURN 0x0F        // Feather v27+: [total int32, counts a second uint32, hand counts uint32] a measured turn; [] stops it
 
 // chord table limits and action count (gw_chords.h)
@@ -355,6 +356,25 @@ static bool cvlib_used(const void* p) { return ((const CurveLib*) p)->used; }
 static bool cvdg_used(const void* p) { return ((const CurveGains*) p)->has; }
 static bool cvdg_save() {
     return slots_save("cvg", cvdg, cvdg_nv, sizeof(CurveGains), cvdg_used, "cvdg", &cvdg_blob);
+}
+// fw67: each library curve's slow-down gain (Feather v39, C_SET_DECEL): once a stroke slows from its peak speed, a gain
+// by the speed's share of that peak (points in %, rising, below 100; 100% = 1.0 implied); speeding up is left alone.
+// Part of the curve like its table: a different slow-down gain is a different library curve, so BallSheet's results and
+// its curve-vs-curve A/B keep them apart. NVS "cvd<id>".
+#define DC_N 6
+struct __attribute__((packed)) CurveDecel {
+    uint8_t n;  // 0 = none
+    uint8_t pct[DC_N];
+    uint16_t g[DC_N];
+};
+static CurveDecel cvdc[CVLIB_N];
+static CurveDecel cvdc_nv[CVLIB_N];
+static bool cvdc_blob = false;  // never an old blob (slots_save asks)
+static uint16_t dc_sends = 0;
+static bool dc_force = false;  // send it after every curve send (a Use or BallSheet's switch changes both)
+static bool cvdc_used(const void* p) { return ((const CurveDecel*) p)->n != 0; }
+static bool cvdc_save() {
+    return slots_save("cvd", cvdc, cvdc_nv, sizeof(CurveDecel), cvdc_used, "cvdcx", &cvdc_blob);
 }
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
@@ -1514,7 +1534,11 @@ static void h_status() {
         j += "],\"src\":\"" + cv_src + "\",\"sup\":" + String(cv_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[60] & 1) ? "true" : "false") +
              ",\"got\":" + String(sup && (evb[60] & 2) ? "true" : "false") + ",\"want\":" + String(cv_wanted() ? "true" : "false") +
              ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + ",\"id\":" + String(cv_id) + ",\"cand\":" + String(cv_cand) + ",\"tcand\":" + String(cvt_cand ? "true" : "false") + ",\"ab\":" + String((cvt_ab_at && (millis() - cvt_ab_at < 12000)) ? "true" : "false") +
-             ",\"name\":\"" + String(cv_id ? cvlib[cv_id - 1].name : "") + "\",\"cand_name\":\"" + String(cv_cand ? cvlib[cv_cand - 1].name : "") + "\"}";  // fw48: temp = a BallSheet curve-off run; fw49: ids, names, tcand = its candidate block
+             ",\"name\":\"" + String(cv_id ? cvlib[cv_id - 1].name : "") + "\",\"cand_name\":\"" + String(cv_cand ? cvlib[cv_cand - 1].name : "") + "\"";  // fw48: temp = a BallSheet curve-off run; fw49: ids, names, tcand = its candidate block
+        String dc = dc_json(cv_id);  // fw67: the running curve's slow-down gain, and the Feather's copy (dcsup = Feather v39+)
+        bool dsup = dc_supported() && ev_ok;
+        j += ",\"dc\":" + (dc.length() ? dc : String("null")) + ",\"dcsup\":" + String(dc_supported() ? "true" : "false") + ",\"dcon\":" + String(dsup && (evb[60] & 4) ? "true" : "false") +
+             ",\"dcapplied\":" + String(dsup && dc_applied() ? "true" : "false") + ",\"dcsends\":" + String(dc_sends) + "}";
     }
     j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
     {  // fw43: the measured turn (Feather v27: status 246-251, read with the 192-255 block when a turn starts or ends)
@@ -2500,6 +2524,40 @@ static bool cv_applied() {  // the Feather holds the curve it should (status 252
     return (evb[61] == crc8(d + 1, len - 1)) && (((evb[60] & 1) != 0) == (d[0] != 0));
 }
 
+// ---- fw67: the slow-down gain (Feather v39): the running curve's, or the candidate's in BallSheet's candidate block
+static bool dc_supported() {
+    return cv_supported() && (st[56] >= 39);
+}
+
+static uint8_t dc_slot() {
+    return (cvt_cand && cv_cand && cvlib[cv_cand - 1].used) ? cv_cand : cv_id;
+}
+
+static uint8_t dc_payload(uint8_t* d) {  // what C_SET_DECEL carries: [on, n x (share %, gain uint16)]; none = [0]
+    uint8_t id = dc_slot();
+    if (!id || !cvdc[id - 1].n) {
+        d[0] = 0;
+        return 1;
+    }
+    const CurveDecel& c = cvdc[id - 1];
+    d[0] = cv_wanted() ? 1 : 0;
+    for (uint8_t k = 0; k < c.n; k++) {
+        d[1 + 3 * k] = c.pct[k];
+        d[2 + 3 * k] = c.g[k] & 0xFF;
+        d[3 + 3 * k] = c.g[k] >> 8;
+    }
+    return 1 + 3 * c.n;
+}
+
+static bool dc_applied() {  // status 252 bit 2 applying, bit 3 got one; 254 crc after the "on" byte (0 for none)
+    if (!ev_ok || !(evb[60] & 8)) {
+        return false;
+    }
+    uint8_t d[1 + 3 * DC_N];
+    uint8_t len = dc_payload(d);
+    return (evb[62] == ((len > 1) ? crc8(d + 1, len - 1) : 0)) && (((evb[60] & 4) != 0) == (d[0] != 0));
+}
+
 // as dg_tick: 252-253 come with the 192-255 block, so after sending, read it once more ourselves
 static void cv_tick() {
     if ((cvt_off || cvt_cand) && (millis() - cvt_keep_at > 12000)) {
@@ -2523,16 +2581,32 @@ static void cv_tick() {
         }
         return;
     }
-    if (!ev_ok || (!cv_force && cv_applied()) || (millis() - cv_sent_at < 1500)) {
+    if (!ev_ok || (millis() - cv_sent_at < 1500)) {
         return;
     }
     uint8_t d[4 + 4 * CV_N];
-    uint8_t len = cv_payload(d);
-    if (queue_cmd(C_SET_CURVE, d, len)) {
+    bool sent = false;
+    if (cv_force || !cv_applied()) {
+        uint8_t len = cv_payload(d);
+        if (!queue_cmd(C_SET_CURVE, d, len)) {
+            return;
+        }
         cv_force = false;
+        cv_sends++;
+        sent = true;
+        dc_force = true;  // fw67: the slow-down gain right behind it
+    }
+    if (dc_supported() && (dc_force || !dc_applied())) {
+        uint8_t len = dc_payload(d);
+        if (queue_cmd(C_SET_DECEL, d, len)) {
+            dc_force = false;
+            dc_sends++;
+            sent = true;
+        }
+    }
+    if (sent) {
         cv_sent_at = millis();
         cv_reread = true;
-        cv_sends++;
     }
 }
 
@@ -2695,6 +2769,9 @@ static void h_live() {
         const uint8_t* b = lv_blk;
         j += ",\"on\":" + String((b[1] & 1) ? "true" : "false") + ",\"mv\":" + String((b[1] & 4) ? "true" : "false") +
              ",\"dpi\":" + String(b[4] | b[5] << 8) + ",\"g\":" + String(b[6] | b[7] << 8) + ",\"v\":" + String(b[8] | b[9] << 8);
+        if (st_ok && (st[56] >= 39)) {  // fw67: the slow-down gain applying, and its gain now (per mille, part of g)
+            j += ",\"dcon\":" + String((b[1] & 8) ? "true" : "false") + ",\"dcg\":" + String(b[74] | b[75] << 8);
+        }
     }
     j += ",\"s\":[";
     for (uint32_t k = from; k < lv_n; k++) {
@@ -2819,11 +2896,14 @@ static uint16_t cv_src_s10() {  // the "S=" in the active curve's source, x10
 }
 
 // the library entry with this table (same points), registered if new; 0 = the library is full
-static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s10, const uint16_t* sp, const uint16_t* g) {
+// fw67: dn points of slow-down gain (dp shares %, dg gains; dn 0 = none) are part of what makes a curve the same
+static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s10, const uint16_t* sp, const uint16_t* g, uint8_t dn, const uint8_t* dp, const uint16_t* dg) {
     int fr = -1;
     for (int k = 0; k < CVLIB_N; k++) {
         CurveLib& c = cvlib[k];
-        if (c.used && (c.n == n) && !memcmp(c.sp, sp, 2 * n) && !memcmp(c.g, g, 2 * n)) {
+        const CurveDecel& d = cvdc[k];
+        bool same_dc = (d.n == dn) && (!dn || (!memcmp(d.pct, dp, dn) && !memcmp(d.g, dg, 2 * dn)));
+        if (c.used && (c.n == n) && !memcmp(c.sp, sp, 2 * n) && !memcmp(c.g, g, 2 * n) && same_dc) {
             if (name.length()) {
                 memset(c.name, 0, sizeof(c.name));
                 strncpy(c.name, name.c_str(), sizeof(c.name) - 1);
@@ -2852,6 +2932,14 @@ static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s1
     c.s10 = s10;
     memcpy(c.sp, sp, 2 * n);
     memcpy(c.g, g, 2 * n);
+    CurveDecel& d = cvdc[fr];  // fw67
+    memset(&d, 0, sizeof(d));
+    d.n = dn;
+    if (dn) {
+        memcpy(d.pct, dp, dn);
+        memcpy(d.g, dg, 2 * dn);
+    }
+    cvdc_save();
     uint8_t last = 0;  // fw61: added now, at the end of the custom order
     for (int k = 0; k < CVLIB_N; k++) {
         if (cvlib[k].used && (k != fr) && (cvmeta[k].ord > last)) {
@@ -2877,6 +2965,18 @@ static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s1
     return fr + 1;
 }
 
+static String dc_json(uint8_t id) {  // fw67: a library curve's slow-down gain as [[share %, gain per mille], ...]; "" = none
+    if (!id || (id > CVLIB_N) || !cvdc[id - 1].n) {
+        return String();
+    }
+    const CurveDecel& d = cvdc[id - 1];
+    String j = "[";
+    for (uint8_t k = 0; k < d.n; k++) {
+        j += (k ? ",[" : "[") + String(d.pct[k]) + "," + String(d.g[k]) + "]";
+    }
+    return j + "]";
+}
+
 static String cvlib_json_one(uint8_t id) {
     const CurveLib& c = cvlib[id - 1];
     String j = "{\"id\":" + String(id) + ",\"name\":\"" + String(c.name) + "\",\"n\":" + String(c.n) + ",\"tau\":" + String(c.tau) + ",\"s10\":" + String(c.s10) +
@@ -2895,6 +2995,10 @@ static String cvlib_json_one(uint8_t id) {
             j += (k ? "," : "") + String(cvdg[id - 1].g[k]);
         }
         j += "]";
+    }
+    String dc = dc_json(id);  // fw67
+    if (dc.length()) {
+        j += ",\"dc\":" + dc;
     }
     return j + "}";
 }
@@ -2934,10 +3038,28 @@ static void h_curves() {
             g16[k] = g[k];
         }
         long tau = server.hasArg("tau") ? server.arg("tau").toInt() : 8, s10 = server.arg("s10").toInt();
-        if (nvs_room() < NVS_KEEP + 5) {  // fw65: a curve takes 5 entries; refused rather than lost at the next power-off
+        uint8_t dn = 0, dp[DC_N] = {};  // fw67: &dc=share:gain,... (shares % 1-99 rising, gains per mille), none = no slow-down gain
+        uint16_t dgv[DC_N] = {};
+        String ds = server.arg("dc");
+        for (int at = 0; at < (int) ds.length();) {
+            int comma = ds.indexOf(',', at);
+            String one = (comma < 0) ? ds.substring(at) : ds.substring(at, comma);
+            int colon = one.indexOf(':');
+            long p = (colon > 0) ? one.substring(0, colon).toInt() : 0, gv = (colon > 0) ? one.substring(colon + 1).toInt() : 0;
+            if ((dn >= DC_N) || (p < 1) || (p > 99) || (dn && (p <= dp[dn - 1])) || (gv < 250) || (gv > 4000)) {
+                return ok_json(false, "slow-down gain: 1-6 points share:gain, shares 1-99 % and rising, gains 250-4000 per mille");
+            }
+            dp[dn] = (uint8_t) p;
+            dgv[dn++] = (uint16_t) gv;
+            if (comma < 0) {
+                break;
+            }
+            at = comma + 1;
+        }
+        if (nvs_room() < NVS_KEEP + 5 + (dn ? 3 : 0)) {  // fw65: a curve takes 5 entries (fw67: 3 more with a slow-down gain); refused rather than lost at the next power-off
             return ok_json(false, "the QT Py's settings storage is full: delete a curve first");
         }
-        uint8_t nid = cvlib_add(cvlib_clean(server.arg("name")), n, (uint8_t) std::max(1L, std::min(200L, tau)), (uint16_t) std::max(0L, std::min(65535L, s10)), s16, g16);
+        uint8_t nid = cvlib_add(cvlib_clean(server.arg("name")), n, (uint8_t) std::max(1L, std::min(200L, tau)), (uint16_t) std::max(0L, std::min(65535L, s10)), s16, g16, dn, dp, dgv);
         if (!nid) {
             return ok_json(false, "the library is full (16): delete a curve first");
         }
@@ -3014,6 +3136,8 @@ static void h_curves() {
         memset(&c, 0, sizeof(c));
         memset(&cvdg[id - 1], 0, sizeof(CurveGains));  // fw60
         cvdg_save();
+        memset(&cvdc[id - 1], 0, sizeof(CurveDecel));  // fw67
+        cvdc_save();
         memset(&cvmeta[id - 1], 0, sizeof(CurveMeta));  // fw61
         cvmeta_save();
         if (cv_cand == id) {
@@ -3110,7 +3234,11 @@ static void h_curve() {
     if (n) {
         nvs_put("curve", &cv, sizeof(cv));
         uint8_t was = cv_id;
-        cv_id = cvlib_add(cvlib_clean(server.arg("name")), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g);  // fw49
+        CurveDecel od = {};  // fw67: a new table keeps the running curve's slow-down gain
+        if (was) {
+            od = cvdc[was - 1];
+        }
+        cv_id = cvlib_add(cvlib_clean(server.arg("name")), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g, od.n, od.pct, od.g);  // fw49
         if (cv_id != was) {  // fw60: as Use
             cvdg_stamp(was);
             cvdg_take(cv_id);
@@ -3871,6 +3999,14 @@ void setup() {
         // cvid and cvcand aren't read yet
         slots_save("cvl", cvlib, cvlib_nv, sizeof(CurveLib), cvlib_used, "cvlib", &cvlib_blob);
     }
+    for (int k = 0; k < CVLIB_N; k++) {  // fw67: the slow-down gains (before cvlib_add below: they're part of a curve's match)
+        char key[8];
+        snprintf(key, sizeof(key), "cvd%d", k + 1);
+        if ((prefs.getBytes(key, &cvdc[k], sizeof(CurveDecel)) != sizeof(CurveDecel)) || !cvlib[k].used || (cvdc[k].n > DC_N)) {
+            memset(&cvdc[k], 0, sizeof(CurveDecel));
+        }
+    }
+    memcpy(cvdc_nv, cvdc, sizeof(cvdc));
     cv_id = prefs.getUChar("cvid", 0);
     cv_cand = prefs.getUChar("cvcand", 0);
     if ((cv_id > CVLIB_N) || (cv_id && !cvlib[cv_id - 1].used)) {
@@ -3895,7 +4031,7 @@ void setup() {
         memset(&cvdg0, 0, sizeof(cvdg0));
     }
     if ((cv.n >= 2) && !cv_id) {  // fw49: the curve saved before named curves becomes the library's first
-        cv_id = cvlib_add(String(""), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g);
+        cv_id = cvlib_add(String(""), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g, 0, nullptr, nullptr);
         cvlib_save();
     }
     dg_src = prefs.getString("dgsrc", "");  // fw39: where the gains came from

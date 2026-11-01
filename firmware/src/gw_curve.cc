@@ -42,6 +42,17 @@ static uint64_t samp_us = 0;
 static uint32_t hist[GW_CURVE_BINS];
 static uint32_t hist_ms = 0;
 static uint8_t hist_resets = 0;
+// v39: the slow-down gain
+static bool dc_on = false, dc_got = false;
+static uint8_t dc_n = 0, dc_crc = 0, dc_last_on = 0xFF;
+static float dc_r[GW_DECEL_N], dc_g[GW_DECEL_N];  // share of the peak (0-1), gain
+static float dc_pk = 0, dc_tr = 0;                 // cm/s: the stroke's peak, the slowest since it
+static float dc_gn = 1.0f;                         // the slow-down gain now (eased)
+
+static void dc_stroke() {
+    dc_pk = dc_tr = 0;
+    dc_gn = 1.0f;
+}
 
 void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, const uint16_t* sp, const uint16_t* g) {
     bool ok = (n >= 2) && (n <= GW_CURVE_N) && (tau_ms >= 1) && (tau_ms <= 200);
@@ -64,6 +75,7 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
     on = want && ok;
     spd = rx = ry = 0;
     have_t = moved = false;
+    dc_stroke();
 }
 
 void gw_curve_link(const uint8_t* d, uint8_t len) {
@@ -81,6 +93,76 @@ void gw_curve_link(const uint8_t* d, uint8_t len) {
     }
     gw_curve_set(ok && (d[0] != 0), ok ? d[1] : 0, ok ? (d[2] | d[3] << 8) : 0, ok ? n : 0, sp, g);
     table_crc = crc;
+}
+
+void gw_curve_decel_set(bool want, uint8_t n, const uint8_t* pct, const uint16_t* g) {
+    bool ok = (n >= 1) && (n <= GW_DECEL_N);
+    for (uint8_t k = 0; ok && (k < n); k++) {
+        ok = (pct[k] >= 1) && (pct[k] <= 99) && ((k == 0) || (pct[k] > pct[k - 1]));
+    }
+    dc_n = 0;
+    if (ok) {
+        for (uint8_t k = 0; k < n; k++) {
+            uint16_t v = g[k];
+            v = (v < GW_CURVE_GMIN) ? GW_CURVE_GMIN : (v > GW_CURVE_GMAX) ? GW_CURVE_GMAX : v;
+            dc_r[k] = pct[k] / 100.0f;
+            dc_g[k] = v / 1000.0f;
+        }
+        dc_n = n;
+    }
+    dc_got = true;
+    dc_on = want && ok;
+    dc_stroke();
+}
+
+void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
+    uint8_t crc = (len > 1) ? gw_crc8(d + 1, len - 1) : 0;
+    if (dc_got && (len >= 1) && (crc == dc_crc) && (d[0] == dc_last_on)) {
+        return;  // the same again (the QT Py resends while it can't confirm): keep the stroke
+    }
+    dc_last_on = (len >= 1) ? d[0] : 0xFF;
+    uint8_t pct[GW_DECEL_N] = {};
+    uint16_t g[GW_DECEL_N] = {};
+    uint8_t n = (len >= 1) ? (len - 1) / 3 : 0;
+    bool ok = (len >= 1) && ((len - 1) % 3 == 0) && (n <= GW_DECEL_N);
+    for (uint8_t k = 0; ok && (k < n); k++) {
+        pct[k] = d[1 + 3 * k];
+        g[k] = d[2 + 3 * k] | d[3 + 3 * k] << 8;
+    }
+    gw_curve_decel_set(ok && (d[0] != 0), ok ? n : 0, pct, g);
+    dc_crc = crc;
+}
+
+static float decel_at(float r) {  // r = the speed's share of the stroke's peak
+    float x0 = dc_r[0], g0 = dc_g[0];
+    if (r <= x0) {
+        return g0;
+    }
+    for (uint8_t k = 1; k <= dc_n; k++) {
+        float x1 = (k < dc_n) ? dc_r[k] : 1.0f, g1 = (k < dc_n) ? dc_g[k] : 1.0f;
+        if (r < x1) {
+            return g0 + (g1 - g0) * (r - x0) / (x1 - x0);
+        }
+        x0 = x1;
+        g0 = g1;
+    }
+    return 1.0f;
+}
+
+// v39: the stroke's peak and the slowest speed since it. A rise of 1.25x and 2 cm/s over that slowest is speeding up
+// again: a new peak, so only slowing down gets the gain. It eases toward its value by the speed's own smoothing (a =
+// 1 - e^(-dt/tau), 0 for the first frame from rest), so neither the switch at the peak nor a new rise is a step.
+static float decel_step(float a) {
+    if (spd >= dc_pk) {
+        dc_pk = dc_tr = spd;
+    } else if (spd < dc_tr) {
+        dc_tr = spd;
+    } else if ((spd > dc_tr * 1.25f) && (spd > dc_tr + 2.0f)) {
+        dc_pk = dc_tr = spd;
+    }
+    float want = (dc_on && (dc_pk > 0)) ? decel_at(spd / dc_pk) : 1.0f;
+    dc_gn += (want - dc_gn) * a;
+    return dc_gn;
 }
 
 static float gain_at(float v) {
@@ -145,17 +227,20 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
             spd *= expf(-(gap / 1000.0f) / tau);  // a still frame: the speed decays
         }
         if (on) {
-            g_now = gain_at(spd);
+            g_now = gain_at(spd) * dc_gn;
         }
         sample(now_us);
         return;
     }
+    float a = 0;  // how far this frame moves the smoothed speed (and the slow-down gain) toward its own
     if (!moved || (now_us - moved_us >= GW_CURVE_GAP_US)) {
         spd = 0;  // the first motion after 50 ms without any starts from rest
+        dc_stroke();  // v39: and a new stroke
     } else if (gap > 0) {
         float dt = gap / 1000.0f;  // ms
         float cm = sqrtf((float) dx * dx + (float) dy * dy) * 2.54f / dpi;
-        spd += (cm / dt * 1000.0f - spd) * (1.0f - expf(-dt / tau));
+        a = 1.0f - expf(-dt / tau);
+        spd += (cm / dt * 1000.0f - spd) * a;
     }
     moved = true;
     moved_us = now_us;
@@ -168,7 +253,7 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
     if (!on) {
         return;
     }
-    float g = gain_at(spd);
+    float g = gain_at(spd) * decel_step(a);
     g_now = g;
     // as in gw_dirgain.cc: an axis that didn't move stays 0, floor(x + 0.5) rounding, clamped to a 16-bit report
     if (dx != 0) {
@@ -190,8 +275,9 @@ bool gw_curve_moving(void) {
 }
 
 void gw_curve_status(uint8_t* s) {
-    s[0] = (on ? 1 : 0) | (got ? 2 : 0);
+    s[0] = (on ? 1 : 0) | (got ? 2 : 0) | (dc_on ? 4 : 0) | (dc_got ? 8 : 0);
     s[1] = table_crc;
+    s[2] = dc_crc;  // v39
 }
 
 static void put16(uint8_t* p, uint32_t v) {
@@ -209,7 +295,7 @@ static void put32(uint8_t* p, uint32_t v) {
 void gw_curve_live(uint8_t* b) {
     memset(b, 0, GW_LINK_LIVE_LEN);
     b[0] = 'L';
-    b[1] = (on ? 1 : 0) | (dpi_now ? 2 : 0) | (moving ? 4 : 0);
+    b[1] = (on ? 1 : 0) | (dpi_now ? 2 : 0) | (moving ? 4 : 0) | ((on && dc_on) ? 8 : 0);
     b[2] = ring_n & 0xFF;
     b[3] = ring_n >> 8;
     put16(b + 4, dpi_now);
@@ -219,6 +305,7 @@ void gw_curve_live(uint8_t* b) {
     for (uint8_t k = 0; k < n; k++) {
         put16(b + 10 + 2 * k, ring[(uint16_t) (ring_n - 1 - k) % GW_CURVE_RING]);
     }
+    put16(b + 74, (uint32_t) ((on ? dc_gn : 1.0f) * 1000.0f + 0.5f));  // v39
     b[GW_LINK_LIVE_LEN - 1] = gw_crc8(b, GW_LINK_LIVE_LEN - 1);
 }
 

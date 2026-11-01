@@ -9,7 +9,7 @@
 #   -o, --output FILE   the header to write (default: page_gz.h next to this script)
 #   -p, --push HOST     also upload the page to the QT Py at HOST (fw41+): it serves it from flash at once, no firmware update
 #   -h, --help          show this help and exit
-param([Parameter(ValueFromRemainingArguments)] [string[]]$Rest)
+$Rest = @($args)  # 10-31: no [Parameter()] block: it made the script advanced, and PowerShell then took -p as an ambiguous common parameter (-ProgressAction/-PipelineVariable)
 
 $in = Join-Path $PSScriptRoot 'page.h'
 $out = Join-Path $PSScriptRoot 'page_gz.h'

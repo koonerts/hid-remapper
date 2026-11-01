@@ -1718,7 +1718,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 38
+#define GW_FW_VERSION 39
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -1735,6 +1735,7 @@ static void rs_tick(uint32_t now) {
 #define LINK_SET_DIRGAIN 0x0E      // v24: [on, 8 gains uint16 per mille] sensitivity per direction (gw_dirgain.cc), RAM only
 #define LINK_SET_CURVE 0x10        // v30: [on, tau ms, dpi fallback uint16, n x (speed 0.1 cm/s uint16, gain per mille uint16)] the speed curve (gw_curve.cc), RAM only
 #define LINK_CURVE_HIST_RESET 0x11  // v32: [] the speed histogram starts over (gw_curve.cc)
+#define LINK_SET_DECEL 0x12        // v39: [on, n x (share of the peak speed %, gain per mille uint16)] the slow-down gain (gw_curve.cc), RAM only
 #define LINK_TURN 0x0F             // v27: [total int32, counts a second uint32, hand counts uint32] a measured turn (gw_turn.cc); [] stops it; v28: [1] counts the real X; v34: [2] counts it after the speed curve
 
 // per-frame processing time (gw_frame_time), over a 1 s window; since v19 also how long after its tick each frame was
@@ -1894,7 +1895,7 @@ void gw_link_status(uint8_t* s) {
     s[244] = gw_hostcap_upd();  // v26: the capture block's change counter and capture number (= its bytes 258 and 257)
     s[245] = gw_hostcap_id();
     gw_turn_status(s + 246);  // v27: 246 state, 247 run number, 248-251 counts sent
-    gw_curve_status(s + 252);  // v30: 252 bit 0 applying, bit 1 got a table; 253 crc8 of the curve as received
+    gw_curve_status(s + 252);  // v30: 252 bit 0 applying, bit 1 got a table; 253 crc8 of the curve as received; v39: 252 bits 2-3 and 254 the same for the slow-down gain
     s[255] = gw_crc8(s + 192, 63);
     gw_hostcap_fill(s + 256);  // v23
 }
@@ -2009,6 +2010,9 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
             break;
         case LINK_SET_CURVE:
             gw_curve_link(d, len);
+            break;
+        case LINK_SET_DECEL:
+            gw_curve_decel_link(d, len);
             break;
         case LINK_TURN:
             if (len == 12) {
