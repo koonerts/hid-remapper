@@ -17,13 +17,15 @@
 #define GW_LINK_SEL 0xF5
 #define GW_LINK_LIVE_LEN 80  // v33 (48 in v32)
 #define GW_LINK_HIST_LEN 116
+#define GW_LINK_OTA_LEN 24  // v40: block 3, the update status (gw_ota.h)
 
 void gw_link_init();
 // a complete frame written by the QT Py, if there is one; len = bytes in buf
 bool gw_link_take_frame(uint8_t* buf, uint8_t* len);
 // the next status block the QT Py reads (GW_LINK_STATUS_LEN bytes)
 void gw_link_set_status(const uint8_t* status);
-// v32: the next block 1 (live, GW_LINK_LIVE_LEN bytes) or 2 (histogram, GW_LINK_HIST_LEN bytes) a selected read returns
+// v32: the next block 1 (live, GW_LINK_LIVE_LEN bytes) or 2 (histogram, GW_LINK_HIST_LEN bytes) a selected read returns;
+// v40: 3 (the update status, GW_LINK_OTA_LEN bytes)
 void gw_link_set_block(uint8_t which, const uint8_t* data);
 // CRC-8, polynomial 0x07, init 0 (the QT Py uses the same)
 uint8_t gw_crc8(const uint8_t* data, uint8_t len);

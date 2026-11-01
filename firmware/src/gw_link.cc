@@ -62,7 +62,8 @@ static volatile uint16_t tx_i = 0;  // the block is 256 bytes since v21
 // v32: the live and histogram blocks, double-buffered the same way; sel = what the next read returns
 static uint8_t live_buf[2][GW_LINK_LIVE_LEN];
 static uint8_t hist_buf[2][GW_LINK_HIST_LEN];
-static volatile uint8_t live_cur = 0, hist_cur = 0;
+static uint8_t ota_buf[2][GW_LINK_OTA_LEN];  // v40
+static volatile uint8_t live_cur = 0, hist_cur = 0, ota_cur = 0;
 static volatile uint8_t sel = 0;
 static const uint8_t* volatile tx_buf = nullptr;
 static volatile uint16_t tx_len = 0;
@@ -89,6 +90,9 @@ static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t eve
                 } else if (sel == 2) {
                     tx_buf = hist_buf[hist_cur];
                     tx_len = GW_LINK_HIST_LEN;
+                } else if (sel == 3) {
+                    tx_buf = ota_buf[ota_cur];
+                    tx_len = GW_LINK_OTA_LEN;
                 } else {
                     status_reading = status_cur;
                     tx_buf = status_buf[status_reading];
@@ -151,14 +155,14 @@ void gw_link_set_status(const uint8_t* status) {
 }
 
 void gw_link_set_block(uint8_t which, const uint8_t* data) {
-    uint8_t* b0 = (which == 1) ? live_buf[0] : hist_buf[0];
-    uint8_t* b1 = (which == 1) ? live_buf[1] : hist_buf[1];
-    volatile uint8_t& cur = (which == 1) ? live_cur : hist_cur;
+    uint8_t* b0 = (which == 1) ? live_buf[0] : (which == 2) ? hist_buf[0] : ota_buf[0];
+    uint8_t* b1 = (which == 1) ? live_buf[1] : (which == 2) ? hist_buf[1] : ota_buf[1];
+    volatile uint8_t& cur = (which == 1) ? live_cur : (which == 2) ? hist_cur : ota_cur;
     uint8_t next = cur ^ 1;
     if ((tx_i != 0) && (tx_buf == (next ? b1 : b0))) {
         return;  // being read right now
     }
-    memcpy(next ? b1 : b0, data, (which == 1) ? GW_LINK_LIVE_LEN : GW_LINK_HIST_LEN);
+    memcpy(next ? b1 : b0, data, (which == 1) ? GW_LINK_LIVE_LEN : (which == 2) ? GW_LINK_HIST_LEN : GW_LINK_OTA_LEN);
     cur = next;
 }
 

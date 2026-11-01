@@ -15,6 +15,7 @@
 #include "gw_curve.h"
 #include "gw_hostcap.h"
 #include "gw_link.h"
+#include "gw_ota.h"
 #include "gw_payloads.h"
 #include "out_report.h"
 #include "remapper.h"
@@ -1718,7 +1719,12 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 39
+#define GW_FW_VERSION 40
+#define GW_STR2(x) #x
+#define GW_STR(x) GW_STR2(x)
+// v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps
+// it in the image)
+extern const char gw_fw_tag[] = "GWFW:v" GW_STR(GW_FW_VERSION) ";";
 #define LINK_SET_STAGE 0x01        // [stage 0-4]
 #define LINK_SET_ANGLE 0x02        // [int8]
 #define LINK_SET_POS 0x03          // [int8]
@@ -2014,6 +2020,13 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
         case LINK_SET_DECEL:
             gw_curve_decel_link(d, len);
             break;
+        case GW_OTA_BEGIN:  // v40: an update through the QT Py (gw_ota.cc)
+        case GW_OTA_DATA:
+        case GW_OTA_END:
+        case GW_OTA_APPLY:
+        case GW_OTA_ABORT:
+            gw_ota_link(cmd, d, len, now);
+            break;
         case LINK_TURN:
             if (len == 12) {
                 gw_turn_start((int32_t) ((uint32_t) d[0] | (uint32_t) d[1] << 8 | (uint32_t) d[2] << 16 | (uint32_t) d[3] << 24),
@@ -2111,8 +2124,11 @@ static void link_tick(uint32_t now) {
     uint8_t n;
     if (gw_link_take_frame(f, &n)) {
         gw_link_apply(f, n, now);
-        status_at = now - 20000;  // show the ack right away
+        if (f[0] != GW_OTA_DATA) {
+            status_at = now - 20000;  // show the ack right away (v40: an update's data frames are followed by block 3 instead)
+        }
     }
+    gw_ota_tick(now);  // v40
     if ((now - status_at) >= 20000) {
         status_at = now;
         uint8_t s[GW_LINK_STATUS_LEN];

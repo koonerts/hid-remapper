@@ -39,6 +39,7 @@ add_executable(remapper
     src/gw_dirgain.cc
     src/gw_turn.cc
     src/gw_curve.cc
+    src/gw_ota.cc
     src/crc.cc
     src/descriptor_parser.cc
     src/tinyusb_stuff.cc
@@ -73,6 +74,7 @@ target_link_libraries(remapper
     hardware_pio
     hardware_dma
     hardware_flash
+    hardware_watchdog
     hardware_i2c
     pico_i2c_slave
     $<$<STREQUAL:${PICO_BOARD},remapper_v8>:hardware_adc>
@@ -93,6 +95,42 @@ else()
 endif()
 pico_add_extra_outputs(remapper)
 
+# v40: updates through the QT Py (src/gw_ota.h), Feather only: the same firmware linked after the bootloader, and the
+# bootloader. A first install over USB needs both (feather-build.ps1 merges their UF2s); later updates send only the app.
+if(PICO_BOARD STREQUAL "feather_host")
+    get_target_property(REMAPPER_OTA_SOURCES remapper SOURCES)
+    add_executable(remapper_ota ${REMAPPER_OTA_SOURCES})
+    target_compile_definitions(remapper_ota PRIVATE GW_OTA_APP=1)
+    target_include_directories(remapper_ota PRIVATE
+        src
+        src/tusb_config_both
+        ${PICO_PIO_USB_PATH}
+    )
+    target_link_libraries(remapper_ota
+        pico_stdlib
+        pico_unique_id
+        hardware_pio
+        hardware_dma
+        hardware_flash
+        hardware_watchdog
+        hardware_i2c
+        pico_i2c_slave
+        tinyusb_device
+        tinyusb_host
+        tinyusb_board
+        tinyusb_pico_pio_usb
+        usb_midi_host
+    )
+    pico_set_binary_type(remapper_ota copy_to_ram)
+    pico_set_linker_script(remapper_ota ${CMAKE_CURRENT_LIST_DIR}/remapper_single_ota.ld)
+    pico_add_extra_outputs(remapper_ota)
+
+    add_executable(gw_boot bootloader/gw_boot.c)
+    target_include_directories(gw_boot PRIVATE src)
+    target_link_libraries(gw_boot pico_stdlib hardware_flash)
+    pico_add_extra_outputs(gw_boot)
+endif()
+
 
 add_executable(remapper_dual_a
     src/main.cc
@@ -104,6 +142,7 @@ add_executable(remapper_dual_a
     src/gw_dirgain.cc
     src/gw_turn.cc
     src/gw_curve.cc
+    src/gw_ota.cc
     src/remapper_dual_a.cc
     src/crc.cc
     src/descriptor_parser.cc
@@ -132,6 +171,7 @@ target_include_directories(remapper_dual_a PRIVATE
 target_link_libraries(remapper_dual_a
     pico_stdlib
     hardware_flash
+    hardware_watchdog
     hardware_i2c
     pico_i2c_slave
     $<$<STREQUAL:${PICO_BOARD},remapper_v7>:hardware_i2c>
@@ -183,6 +223,7 @@ add_executable(remapper_serial
     src/gw_dirgain.cc
     src/gw_turn.cc
     src/gw_curve.cc
+    src/gw_ota.cc
     src/remapper_serial.cc
     src/crc.cc
     src/descriptor_parser.cc
@@ -204,6 +245,7 @@ target_link_libraries(remapper_serial
     pico_stdlib
     pico_unique_id
     hardware_flash
+    hardware_watchdog
     hardware_i2c
     pico_i2c_slave
     tinyusb_device
