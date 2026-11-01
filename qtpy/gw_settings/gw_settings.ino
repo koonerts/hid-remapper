@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 67    // this firmware's number, shown in /api/status
+#define QT_FW 68    // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -3006,6 +3006,43 @@ static String cvlib_json_one(uint8_t id) {
 // GET /api/curves: the library; POST ?use=id (make it the active curve) | ?cand=id (0 = none) | ?del=id | ?id=&name= (fw49)
 // | ?add=1&name=&sp=&g=&tau=&s10=[&setcand=1]: a curve from the page's editor into the library, not running (answers its id)
 // | ?id=&s10= (fw54): its linear cm/360 x10
+// fw67: a curve's table from a request (sp, g, tau, s10, dc), as add=1 and replace=1 take it; nullptr = fine, else why not
+static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_t* tau, uint16_t* s10, uint8_t* dn, uint8_t* dp, uint16_t* dgv) {
+    long sp[CV_N], g[CV_N];
+    uint8_t ng = 0;
+    *n = 0;
+    if (!csv_n(server.arg("sp"), 1, 65535, sp, n) || !csv_n(server.arg("g"), 250, 4000, g, &ng) || (*n != ng) || (*n < 2)) {
+        return "need 2-10 speeds (0.1 cm/s) and as many gains (250-4000 per mille)";
+    }
+    for (uint8_t k = 0; k < *n; k++) {
+        if (k && (sp[k] <= sp[k - 1])) {
+            return "speeds must rise";
+        }
+        s16[k] = sp[k];
+        g16[k] = g[k];
+    }
+    long t = server.hasArg("tau") ? server.arg("tau").toInt() : 8, s = server.arg("s10").toInt();
+    *tau = (uint8_t) std::max(1L, std::min(200L, t));
+    *s10 = (uint16_t) std::max(0L, std::min(65535L, s));
+    *dn = 0;  // &dc=share:gain,... (shares % 1-99 rising, gains per mille), none = no slow-down gain
+    String ds = server.arg("dc");
+    for (int at = 0; at < (int) ds.length();) {
+        int comma = ds.indexOf(',', at);
+        String one = (comma < 0) ? ds.substring(at) : ds.substring(at, comma);
+        int colon = one.indexOf(':');
+        long p = (colon > 0) ? one.substring(0, colon).toInt() : 0, gv = (colon > 0) ? one.substring(colon + 1).toInt() : 0;
+        if ((*dn >= DC_N) || (p < 1) || (p > 99) || (*dn && (p <= dp[*dn - 1])) || (gv < 250) || (gv > 4000)) {
+            return "slow-down gain: 1-6 points share:gain, shares 1-99 % and rising, gains 250-4000 per mille";
+        }
+        dp[*dn] = (uint8_t) p;
+        dgv[(*dn)++] = (uint16_t) gv;
+        if (comma < 0) {
+            break;
+        }
+        at = comma + 1;
+    }
+    return nullptr;
+}
 static void h_curves() {
     touch();
     if (server.method() == HTTP_GET) {
@@ -3024,42 +3061,16 @@ static void h_curves() {
         return;
     }
     if (server.hasArg("add")) {
-        long sp[CV_N], g[CV_N];
-        uint8_t n = 0, ng = 0;
-        if (!csv_n(server.arg("sp"), 1, 65535, sp, &n) || !csv_n(server.arg("g"), 250, 4000, g, &ng) || (n != ng) || (n < 2)) {
-            return ok_json(false, "need 2-10 speeds (0.1 cm/s) and as many gains (250-4000 per mille)");
-        }
-        uint16_t s16[CV_N] = {}, g16[CV_N] = {};
-        for (uint8_t k = 0; k < n; k++) {
-            if (k && (sp[k] <= sp[k - 1])) {
-                return ok_json(false, "speeds must rise");
-            }
-            s16[k] = sp[k];
-            g16[k] = g[k];
-        }
-        long tau = server.hasArg("tau") ? server.arg("tau").toInt() : 8, s10 = server.arg("s10").toInt();
-        uint8_t dn = 0, dp[DC_N] = {};  // fw67: &dc=share:gain,... (shares % 1-99 rising, gains per mille), none = no slow-down gain
-        uint16_t dgv[DC_N] = {};
-        String ds = server.arg("dc");
-        for (int at = 0; at < (int) ds.length();) {
-            int comma = ds.indexOf(',', at);
-            String one = (comma < 0) ? ds.substring(at) : ds.substring(at, comma);
-            int colon = one.indexOf(':');
-            long p = (colon > 0) ? one.substring(0, colon).toInt() : 0, gv = (colon > 0) ? one.substring(colon + 1).toInt() : 0;
-            if ((dn >= DC_N) || (p < 1) || (p > 99) || (dn && (p <= dp[dn - 1])) || (gv < 250) || (gv > 4000)) {
-                return ok_json(false, "slow-down gain: 1-6 points share:gain, shares 1-99 % and rising, gains 250-4000 per mille");
-            }
-            dp[dn] = (uint8_t) p;
-            dgv[dn++] = (uint16_t) gv;
-            if (comma < 0) {
-                break;
-            }
-            at = comma + 1;
+        uint16_t s16[CV_N] = {}, g16[CV_N] = {}, dgv[DC_N] = {}, s10 = 0;
+        uint8_t n = 0, tau = 8, dn = 0, dp[DC_N] = {};
+        const char* why = cv_req_table(&n, s16, g16, &tau, &s10, &dn, dp, dgv);
+        if (why) {
+            return ok_json(false, why);
         }
         if (nvs_room() < NVS_KEEP + 5 + (dn ? 3 : 0)) {  // fw65: a curve takes 5 entries (fw67: 3 more with a slow-down gain); refused rather than lost at the next power-off
             return ok_json(false, "the QT Py's settings storage is full: delete a curve first");
         }
-        uint8_t nid = cvlib_add(cvlib_clean(server.arg("name")), n, (uint8_t) std::max(1L, std::min(200L, tau)), (uint16_t) std::max(0L, std::min(65535L, s10)), s16, g16, dn, dp, dgv);
+        uint8_t nid = cvlib_add(cvlib_clean(server.arg("name")), n, tau, s10, s16, g16, dn, dp, dgv);
         if (!nid) {
             return ok_json(false, "the library is full (16): delete a curve first");
         }
@@ -3146,7 +3157,58 @@ static void h_curves() {
         cvlib_save();
         return ok_json(true);
     }
-    if (server.hasArg("s10")) {  // fw54: ?id=&s10=: the XIM's linear cm/360 (x10) the curve goes with
+    if (server.hasArg("replace")) {  // fw67: ?id=&replace=1 and the table as add=1 takes it: written over that curve (same id, name, place)
+        uint16_t s16[CV_N] = {}, g16[CV_N] = {}, dgv[DC_N] = {}, s10 = 0;
+        uint8_t n = 0, tau = 8, dn = 0, dp[DC_N] = {};
+        const char* why = cv_req_table(&n, s16, g16, &tau, &s10, &dn, dp, dgv);
+        if (why) {
+            return ok_json(false, why);
+        }
+        for (int k = 0; k < CVLIB_N; k++) {
+            const CurveDecel& o = cvdc[k];
+            if ((k != id - 1) && cvlib[k].used && (cvlib[k].n == n) && !memcmp(cvlib[k].sp, s16, 2 * n) && !memcmp(cvlib[k].g, g16, 2 * n) && (o.n == dn) &&
+                (!dn || (!memcmp(o.pct, dp, dn) && !memcmp(o.g, dgv, 2 * dn)))) {
+                return ok_json(false, "that's the same as another saved curve");
+            }
+        }
+        if (nvs_room() < NVS_KEEP + 5 + ((dn && !cvdc[id - 1].n) ? 3 : 0)) {  // the curve's blob is written anew before the old goes; a new slow-down gain adds its own
+            return ok_json(false, "the QT Py's settings storage is full: delete a curve first");
+        }
+        c.n = n;
+        c.tau = tau;
+        if (s10) {
+            c.s10 = s10;
+        }
+        memset(c.sp, 0, sizeof(c.sp));
+        memset(c.g, 0, sizeof(c.g));
+        memcpy(c.sp, s16, 2 * n);
+        memcpy(c.g, g16, 2 * n);
+        CurveDecel& d = cvdc[id - 1];
+        memset(&d, 0, sizeof(d));
+        d.n = dn;
+        memcpy(d.pct, dp, dn);
+        memcpy(d.g, dgv, 2 * dn);
+        if (id == cv_id) {  // the running one: the Feather gets it now
+            cv.n = n;
+            cv.tau = tau;
+            memset(cv.sp, 0, sizeof(cv.sp));
+            memset(cv.g, 0, sizeof(cv.g));
+            memcpy(cv.sp, s16, 2 * n);
+            memcpy(cv.g, g16, 2 * n);
+            nvs_put("curve", &cv, sizeof(cv));
+            cv_src = String("lib:") + String(c.name) + (c.s10 ? ";S=" + String(c.s10 / 10.0f, 1) : String(""));
+            prefs.putString("cvsrc", cv_src);
+        }
+        if ((id == cv_id) || (id == cv_cand)) {
+            cv_force = true;
+            cv_sent_at = 0;
+        }
+        cvmeta_touch(id);
+        bool saved = cvdc_save();
+        saved = cvlib_save() && saved;
+        log_edit(EK_CURVE, String("replace ") + String(c.name));
+        return saved ? ok_json(true) : ok_json(false, "replaced, but the QT Py couldn't save it: the old version comes back at the next power-off");
+    }    if (server.hasArg("s10")) {  // fw54: ?id=&s10=: the XIM's linear cm/360 (x10) the curve goes with
         long v = server.arg("s10").toInt();
         if ((v < 0) || (v > 65535)) {
             return ok_json(false, "linear cm/360 out of range");
