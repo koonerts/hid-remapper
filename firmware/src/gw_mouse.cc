@@ -1719,7 +1719,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 40
+#define GW_FW_VERSION 41  // v41: no change from v40 but the number (the first update over Wi-Fi)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps

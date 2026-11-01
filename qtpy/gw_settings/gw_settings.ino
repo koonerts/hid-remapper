@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 69    // this firmware's number, shown in /api/status
+#define QT_FW 70    // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -4251,32 +4251,16 @@ static bool fo_scan(uint32_t* crc, uint8_t* ver) {
     return true;
 }
 
-// GET /api/feather: the stored image and an update's progress. POST: multipart "file" = an _ota.uf2 to store;
-// ?start=1 sends the stored one to the Feather; ?abort=1 stops sending
-static void h_feather() {
+// POST /api/feathergo?start=1 sends the stored image to the Feather; ?abort=1 stops sending. fw70: a route of its own:
+// on /api/feather (it takes uploads), a POST without a multipart body reached the handler with the previous request's
+// arguments, so start=1 was never seen
+static void h_feather_go() {
     touch();
-    if (server.method() == HTTP_GET) {
-        if (!fo_busy() && link_up && st_ok && ((fo_boot < 0) || (millis() - fo_boot_at > 10000))) {
-            uint8_t b[24];
-            fo_boot = (st[56] < 40) ? 0 : fo_read(b) ? (b[2] & 1) : -1;
-            fo_boot_at = millis();
-        }
-        char crc[12];
-        snprintf(crc, sizeof(crc), "%08lx", (unsigned long) fo_crc);
-        String j = "{\"state\":\"" + String(FO_NAMES[fo_st]) + "\",\"err\":\"" + fo_err + "\",\"sent\":" + String(fo_sent) + ",\"size\":" + String(fo_size) +
-                   ",\"file\":" + (fo_size ? "{\"size\":" + String(fo_size) + ",\"crc\":\"" + String(crc) + "\",\"ver\":" + String(fo_ver) + ",\"t\":" + String(fo_t) + "}" : String("null")) +
-                   ",\"boot\":" + String((fo_boot < 0) ? "null" : fo_boot ? "true" : "false") + ",\"fw\":" + String(st_ok ? st[56] : 0) + ",\"from\":" + String(fo_from) +
-                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + "}";
-        server.send(200, "application/json", j);
-        return;
-    }
-    bool up = fo_up_seen;
-    fo_up_seen = false;
     if (!from_current_page()) {
         return;
     }
     if (radio != Radio::STA) {
-        return ok_json(false, "only on the home network");  // as /api/update and /api/page
+        return ok_json(false, "only on the home network");
     }
     if (server.hasArg("abort")) {
         if (fo_busy() && (fo_st != FO_RESTART)) {
@@ -4309,6 +4293,36 @@ static void h_feather() {
         fo_at = 0;
         fo_t0 = millis();
         return ok_json(true);
+    }
+    ok_json(false, "start=1 or abort=1");
+}
+
+// GET /api/feather: the stored image and an update's progress. POST: multipart "file" = an _ota.uf2 to store (sending:
+// /api/feathergo)
+static void h_feather() {
+    touch();
+    if (server.method() == HTTP_GET) {
+        if (!fo_busy() && link_up && st_ok && ((fo_boot < 0) || (millis() - fo_boot_at > 10000))) {
+            uint8_t b[24];
+            fo_boot = (st[56] < 40) ? 0 : fo_read(b) ? (b[2] & 1) : -1;
+            fo_boot_at = millis();
+        }
+        char crc[12];
+        snprintf(crc, sizeof(crc), "%08lx", (unsigned long) fo_crc);
+        String j = "{\"state\":\"" + String(FO_NAMES[fo_st]) + "\",\"err\":\"" + fo_err + "\",\"sent\":" + String(fo_sent) + ",\"size\":" + String(fo_size) +
+                   ",\"file\":" + (fo_size ? "{\"size\":" + String(fo_size) + ",\"crc\":\"" + String(crc) + "\",\"ver\":" + String(fo_ver) + ",\"t\":" + String(fo_t) + "}" : String("null")) +
+                   ",\"boot\":" + String((fo_boot < 0) ? "null" : fo_boot ? "true" : "false") + ",\"fw\":" + String(st_ok ? st[56] : 0) + ",\"from\":" + String(fo_from) +
+                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + "}";
+        server.send(200, "application/json", j);
+        return;
+    }
+    bool up = fo_up_seen;
+    fo_up_seen = false;
+    if (!from_current_page()) {
+        return;
+    }
+    if (radio != Radio::STA) {
+        return ok_json(false, "only on the home network");  // as /api/update and /api/page
     }
     if (!up) {
         return ok_json(false, "nothing was uploaded");
@@ -4663,6 +4677,7 @@ void setup() {
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
     server.on("/api/feather", HTTP_GET, h_feather);  // fw69
     server.on("/api/feather", HTTP_POST, h_feather, h_fo_upload);
+    server.on("/api/feathergo", HTTP_POST, h_feather_go);  // fw70
     server.on("/api/set", HTTP_POST, h_set);
     server.on("/api/palette", HTTP_POST, h_palette);
     server.on("/api/dpi", HTTP_POST, h_dpi);

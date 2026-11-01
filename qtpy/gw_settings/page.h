@@ -880,8 +880,8 @@ $('fwfstate').textContent=j.state==='sending'?'Sending: '+kb(j.sent)+' of '+kb(j
 j.state==='restarting'?'Its bootloader copies it in; waiting for the Feather ('+j.secs+' s)\u2026':j.state==='done'?'Done: v'+j.from+' \u2192 v'+j.fw+' in '+j.secs+' s.':j.state==='error'?'Failed: '+j.err+'.':''}
 function fwfUpload(){const f=$('fwffile').files[0];if(!f){toast('Pick the _ota.uf2 first',true);return}const fd=new FormData();fd.append('file',f,f.name);toast('Uploading '+f.name+'\u2026');
 post('/api/feather',fd).then(r=>{say(r,'Stored: v'+(r.ver||'?')+', '+Math.round((r.size||0)/1024)+' KB');fwfPoll()})}
-function fwfStart(){post('/api/feather?start=1').then(r=>{say(r,'Sending it to the Feather');fwfPoll()})}
-function fwfAbort(){post('/api/feather?abort=1').then(r=>{say(r,'Stopped');fwfPoll()})}
+function fwfStart(){post('/api/feathergo?start=1').then(r=>{say(r,'Sending it to the Feather');fwfPoll()})}
+function fwfAbort(){post('/api/feathergo?abort=1').then(r=>{say(r,'Stopped');fwfPoll()})}
 // QT Py fw37: the tabs; the open one is kept on the QT Py like the fold-outs (a #hash in the address wins)
 const TABS=['mouse','aim','setup','diag'];let tabSet=false;
 function tabShow(n,save){if(!TABS.includes(n))n='mouse';TABS.forEach(t=>{$('t-'+t).hidden=t!==n;const b=$('tb-'+t);b.classList.toggle('on',t===n);b.setAttribute('aria-selected',t===n?'true':'false')});
