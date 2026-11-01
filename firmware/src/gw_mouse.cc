@@ -986,7 +986,10 @@ static void rs_led_flash(uint32_t colour, uint32_t now) {
 
 static void led_apply(uint32_t now) {
     led.requested = false;
-    led.stage = (rs_cur_stage >= 0) && (rs_cur_stage < RS_DPI_STAGES) ? rs_cur_stage : -1;
+    // audit 11-01: on the idle stage the mouse shows idle_stage's slot (rs_cur_stage keeps the real one), so the flash goes
+    // there; led_restore_now puts back the same slot, and the DPI stays as it is
+    int s = (idle_low && (rs_cur_stage == idle_back)) ? idle_stage : rs_cur_stage;
+    led.stage = (s >= 0) && (s < RS_DPI_STAGES) ? s : -1;
     led_write(led.stage, NULL, led.colour);
     led.shown = led.colour;
     led.active = true;
@@ -1153,7 +1156,8 @@ static bool rs_parse_reply(const uint8_t* r, uint16_t len, uint8_t* out) {
 }
 
 void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* report, uint16_t len) {
-    if ((rs_noread_dev != 0) && (dev_addr == rs_noread_dev) && ((int32_t) (time_us_32() - rs_noread_at) >= RS_NOREAD_HOLD_US)) {
+    // audit 11-01: unsigned, so input more than 35.8 min after the timeout still clears it (the signed test went negative)
+    if ((rs_noread_dev != 0) && (dev_addr == rs_noread_dev) && ((uint32_t) (time_us_32() - rs_noread_at) >= (uint32_t) RS_NOREAD_HOLD_US)) {
         rs_noread_dev = 0;  // sending again, so awake: reads are worth trying
     }
     if ((rs_read == RsRead::NONE) || (dev_addr != rs_read_dev) || (len < 8) || (report[0] != RS_REPORT_ID)) {
@@ -1723,7 +1727,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 44  // v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
+#define GW_FW_VERSION 45  // v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps

@@ -876,7 +876,7 @@ function saveWifi(){const b=new URLSearchParams({ssid:$('ssid').value,pass:$('pa
 // fw69 (Feather v40 + gw_boot): the Feather's firmware over Wi-Fi: upload a build's _ota.uf2, then the QT Py sends it over the link
 let fwf=null,fwfT=0;const FWF_BUSY=/^(starting|sending|checking|applying|restarting)$/;
 function fwfPoll(){clearTimeout(fwfT);const box=$('fwfc'),busy=fwf&&FWF_BUSY.test(fwf.state);if(!box||(!box.offsetParent&&!busy)||document.hidden){fwfT=setTimeout(fwfPoll,2000);return}
-fetch(tq('/api/feather')).then(r=>r.json()).then(j=>{fwf=j;fwfDraw()}).catch(()=>{}).finally(()=>{fwfT=setTimeout(fwfPoll,fwf&&FWF_BUSY.test(fwf.state)?700:8000)})}
+fetchJ(tq('/api/feather')).then(j=>{fwf=j;fwfDraw()}).catch(()=>{}).finally(()=>{fwfT=setTimeout(fwfPoll,fwf&&FWF_BUSY.test(fwf.state)?700:8000)})}
 setTimeout(fwfPoll,2500);
 function fwfDraw(){const j=fwf;if(!j)return;const busy=FWF_BUSY.test(j.state),kb=n=>Math.round((n||0)/1024);
 $('fwfnow').textContent=j.fw?'Running v'+j.fw:'The Feather isn\'t answering';
@@ -888,7 +888,7 @@ j.state==='restarting'?'Its bootloader copies it in; waiting for the Feather ('+
 function fwfUpload(){const f=$('fwffile').files[0];if(!f){toast('Pick the _ota.uf2 first',true);return}const fd=new FormData();fd.append('file',f,f.name);toast('Uploading '+f.name+'\u2026');
 fetchJ(tq('/api/feather'),{method:'POST',body:fd},120000).catch(()=>({ok:false,err:'no answer'})).then(r=>{say(r,'Stored: v'+(r.ver||'?')+', '+Math.round((r.size||0)/1024)+' KB');fwfPoll()})}
 function fwfStart(){post('/api/feathergo?start=1').then(r=>{say(r,'Sending it to the Feather');fwfPoll()})}
-function fwfAbort(){post('/api/feathergo?abort=1').then(r=>{say(r,'Stopped');fwfPoll()})}
+function fwfAbort(){post('/api/feathergo?abort=1').then(r=>{toast(r.ok?'Stopped':r.err||'error',!r.ok);fwfPoll()})}  // audit 11-01: QT Py fw75 says why when it did nothing
 // QT Py fw37: the tabs; the open one is kept on the QT Py like the fold-outs (a #hash in the address wins)
 const TABS=['mouse','aim','setup','diag'];let tabSet=false;
 function tabShow(n,save){if(!TABS.includes(n))n='mouse';TABS.forEach(t=>{$('t-'+t).hidden=t!==n;const b=$('tb-'+t);b.classList.toggle('on',t===n);b.setAttribute('aria-selected',t===n?'true':'false')});
@@ -940,7 +940,7 @@ if(touched)return false;location.replace('http://'+ip+'/');return true}
 // everything but the style, so equal stamps mean only the style changed.
 let pgKey=null,pgNew=false,pgFetching=false;
 function pgKeyOf(j){return j.qt_fw+':'+(j.page&&j.page.fs?j.page.t+':'+j.page.len:'built-in')}
-function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.phase||cvDirty()||cvHostsNew||(cvErr&&$('cvx').value)||(S&&S.turn&&S.turn.state===7&&S.turn.run!==c3.csaved)||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
+function pgBusy(){const a=document.activeElement;return !!(cb||lvOn||c3.phase||cvEd||cvDirty()||cvHostsNew||(cvErr&&$('cvx').value)||(S&&S.turn&&S.turn.state===7&&S.turn.run!==c3.csaved)||(S&&S.turn&&S.turn.state===6)||msDrag||dCol||dDpi||dTune||chDirty||dgEdit||dgDrag>=0||['angle','pos','stage'].some(k=>edit[k]&&Date.now()-edit[k]<3000)||
 (a&&a!==document.body&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)&&a.type!=='range'&&a.type!=='checkbox'&&a.type!=='color'))}
 // back to where it was: the cards below fill in over a few seconds, so keep trying until the page is that tall (or you scroll)
 function pgScroll(want){const t0=Date.now();let stop=false;['wheel','pointerdown','keydown','touchstart'].forEach(e=>addEventListener(e,()=>{stop=true},{once:true,passive:true}));
@@ -1195,7 +1195,9 @@ function cvSmfName(T){return CV_SMF.map(([n,v])=>Math.round(cvGain(T,v)*100)).jo
 function cvSlowPct(g){if(!g||!g.length||!(g[g.length-1]>0))return 0;return Math.round((g[0]/g[g.length-1]-1)*100)}
 function cvSlowTxt(g){const p=cvSlowPct(g);return p===0?'slow = fast':'slow movements '+(p>0?'+':'\u2212')+Math.abs(p)+'%'}
 function nvsWarn(j){const e=$('nvswarn'),d=j.diag||{},n=d.nvs_fail||0;if(!e)return;e.hidden=!n;if(n)e.textContent='The QT Py couldn\'t save '+n+' change'+(n>1?'s':'')+' since it started'+(d.nvs_fail_key?' (last: '+d.nvs_fail_key+')':'')+': its settings storage is full, so they\'re gone at its next power-off. Deleting a curve you don\'t use makes room.'}
-function cvLibLoad(){fetch(tq('/api/curves')).then(r=>r.json()).then(j=>{cvLib=j;cvLibDraw();c3CidOpts();c3.lk='';c3Draw()}).catch(()=>{})}
+// audit 11-01: fetchJ's timeout; a failure clears busy (cvDraw's refresh would stop for good), and a first load that failed is tried again
+let cvLibT=0;
+function cvLibLoad(){fetchJ(tq('/api/curves')).then(j=>{clearTimeout(cvLibT);cvLib=j;cvLibDraw();c3CidOpts();c3.lk='';c3Draw()}).catch(()=>{if(cvLib)cvLib.busy=0;else{clearTimeout(cvLibT);cvLibT=setTimeout(cvLibLoad,4000)}})}
 function cvLibAct(q,msg){post('/api/curves?'+q).then(r=>{say(r,msg);cvLibLoad()})}
 // rename in place (10-24: a prompt() box can be suppressed by the browser): the name becomes a field; Enter or Save keeps it, Esc cancels
 let cvRen=0;
@@ -1225,8 +1227,11 @@ function cvDragLeave(ev){ev.currentTarget.classList.remove('dropa','dropb')}
 function cvDrop(ev,id){ev.preventDefault();const tr=ev.currentTarget,after=tr.classList.contains('dropb');tr.classList.remove('dropa','dropb');const from=cvDragId;cvDragId=0;if(!from||from===id)return;
 const ids=cvSorted().map(c=>c.id).filter(x=>x!==from);let at=ids.indexOf(id);if(after)at++;ids.splice(at,0,from);ids.forEach((x,i)=>{const c=cvLib.curves.find(q=>q.id===x);if(c)c.ord=i+1});cvLibDraw();
 post('/api/curves?order='+ids.join(',')).then(r=>{if(!r||!r.ok)say(r)})}
+function cvLibFresh(){if(!confirm('Start a new curve library with the running curve? The other saved curves are gone from the list (their damaged files are kept as .bad).'))return;post('/api/curves?fresh=1').then(r=>{toast(r.ok?'New library started':(r.err||'error'),!r.ok);cvLibLoad()})}
 function cvWhen(s){return s?new Date(s*1000).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'not known'}
-function cvLibDraw(){const box=$('cvlibbox');if(!box)return;if(!cvLib||!cvLib.curves.length){box.innerHTML='';return}
+function cvLibDraw(){const box=$('cvlibbox');if(!box)return;
+if(cvLib&&cvLib.off){box.innerHTML=cvLib.dmg?'<p style="color:var(--bad);margin:6px 0 0">The saved curves\' files are damaged (every copy failed its check). The running curve still applies (without its slow-down gain). A new library keeps the running curve; the damaged files stay on the QT Py as .bad.</p><div class="row"><button onclick="cvLibFresh()">Start a new library</button></div>':'<p style="color:var(--bad);margin:6px 0 0">The saved curves didn\'t load when the QT Py started (its file storage). The running curve still applies (without its slow-down gain); the list and its changes are back after a restart of the QT Py.</p>';return}  // audit 11-01: QT Py fw75
+if(!cvLib||!cvLib.curves.length){box.innerHTML='';return}
 const L=cvSorted(),cu=cvSort==='custom';
 box.innerHTML='<table class="cvlt"><tr><th>Saved curves <select class="cvsort" onchange="cvSortSet(this.value)" title="Order of the list">'+[['used','last used'],['added','date added'],['name','name'],['custom','custom (drag)']].map(o=>'<option value="'+o[0]+'"'+(o[0]===cvSort?' selected':'')+'>'+o[1]+'</option>').join('')+'</select></th><th>Slow vs fast</th><th>Linear</th><th>Gains</th><th></th></tr>'+L.map(c=>{const act=c.id===cvLib.active,cand=c.id===cvLib.cand;
 return '<tr'+(act?' class="run"':'')+(cu?' draggable="true" ondragstart="cvDragStart(event,'+c.id+')" ondragover="cvDragOver(event)" ondragleave="cvDragLeave(event)" ondrop="cvDrop(event,'+c.id+')"':'')+'><td title="Added '+cvWhen(c.added)+' · last used or changed '+cvWhen(c.used)+'">'+(cu?'<span class="grip" aria-hidden="true">⋮⋮</span>':'')+(cvRen===c.id?'<input type="text" id="cvrenin" maxlength="47" value="'+esc(c.name)+'" onkeydown="cvRenKey(event)" style="width:14em"> <button onclick="cvRenSave()">Save</button>':'<b>'+esc(c.name)+'</b>')+(c.dc?' <span class="sdn" title="Slow-down gain: '+cvDcTxt(c.dc)+(S&&S.cv&&S.cv.sup&&S.cv.dcsup===false?'. Needs Feather firmware v39':'')+'">slow-down'+(S&&S.cv&&S.cv.sup&&S.cv.dcsup===false?' (needs Feather v39)':'')+'</span>':'')+(act?' <span class="use">running</span>':'')+(cand?' <span class="wn" title="BallSheet\'s curve A/B compares the running curve with this one (pick it in BallSheet)">A/B compare</span>':'')+'</td>'+
@@ -1288,7 +1293,10 @@ function cvEdSet(i,sp,g){const T=cvEd.T,lo=i?T[i-1][0]+1:1,hi=i<T.length-1?T[i+1
 function cvEdKey(e){if(!cvEd||cvEd.sel<0)return false;const a=document.activeElement;if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return false;const i=cvEd.sel,q=cvEd.T[i],st=(e.shiftKey?20:5)*(cvEd.S?-1:1);
 if(e.key==='ArrowUp')cvEdSet(i,q[0],q[1]+st);else if(e.key==='ArrowDown')cvEdSet(i,q[0],q[1]-st);else if(e.key==='ArrowRight')cvEdSet(i,q[0]*1.02+1,q[1]);else if(e.key==='ArrowLeft')cvEdSet(i,q[0]/1.02-1,q[1]);
 else if((e.key==='Delete'||e.key==='Backspace')&&cvEd.T.length>2){cvEd.T.splice(i,1);cvEd.sel=-1}else if(e.key==='Escape')cvEd.sel=-1;else return false;e.preventDefault();cvEdDraw();return true}
-document.addEventListener('keydown',e=>{if(cvEd&&cvEdKey(e))e.stopImmediatePropagation()},true);
+// audit 11-01: only while you work in the curve card (last pointer down or focus there): the cm/360 card's arrows are its own
+let cvEdIn=false;const cvInCard=t=>{const c=$('cvcard');return !!(c&&t instanceof Node&&c.contains(t))};
+document.addEventListener('pointerdown',e=>{cvEdIn=cvInCard(e.target)},true);document.addEventListener('focusin',e=>{cvEdIn=cvInCard(e.target)},true);
+document.addEventListener('keydown',e=>{if(cvEd&&cvEdIn&&cvEdKey(e))e.stopImmediatePropagation()},true);
 // pointer on the chart: viewBox coordinates, the value scale frozen while dragging (it would rescale under the pointer)
 function cvXY(ev){const svg=$('cvplot'),r=svg.getBoundingClientRect();return[(ev.clientX-r.left)/r.width*360,(ev.clientY-r.top)/r.height*176]}
 function cvFromXY(x,y){const h=cvHover,v=5*Math.pow(32,Math.max(0,Math.min(1,(x-h.X0)/(h.X1-h.X0)))),val=h.lo+(h.Y1-y)/(h.Y1-h.Y0)*(h.hi-h.lo);return[v*10,h.Sx?h.Sx/Math.max(1,val)*1000:val*10]}
@@ -1304,7 +1312,7 @@ let cvl={on:true,n:0,S:[],j:null,busy:false};try{cvl.on=localStorage.getItem('gw
 function cvlSet(){cvl.on=$('cvlon').checked;try{localStorage.setItem('gw_cvl',cvl.on?'1':'0')}catch(e){}cvl.S=[];cvl.n=0;cvlDraw()}
 function cvlReset(){post('/api/live?reset=1').then(r=>say(r,'Counts start over'))}
 function cvlPoll(){const b=$('cvlbox');if(cvl.busy||!cvl.on||document.hidden||!b||!b.offsetParent)return;cvl.busy=true;
-fetch(tq('/api/live'+(cvl.n?'?since='+cvl.n:''))).then(r=>r.json()).then(j=>{cvl.busy=false;cvlTake(j)}).catch(()=>{cvl.busy=false;cvl.j=null;cvlDraw()})}
+fetchJ(tq('/api/live'+(cvl.n?'?since='+cvl.n:''))).then(j=>{cvl.busy=false;cvlTake(j)}).catch(()=>{cvl.busy=false;cvl.j=null;cvlDraw()})}
 setInterval(cvlPoll,100);
 function cvlTake(j){cvl.j=j;if(j.sup&&j.s){if(cvl.n&&j.from!==cvl.n)cvl.S.push(null);j.s.forEach(v=>cvl.S.push(v<0?null:v/10));cvl.n=j.n;if(cvl.S.length>800)cvl.S=cvl.S.slice(-800)}cvlDraw()}
 // the running table (what the effective DPI comes from)

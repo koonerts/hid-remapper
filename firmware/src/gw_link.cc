@@ -71,19 +71,68 @@ static volatile uint16_t tx_len = 0;
 // In RAM: firmware/src code runs from flash (remapper_single.ld), and this runs from the I2C
 // interrupt, which stays on while HID Remapper's config or the chord table is written to flash
 // (XIP is off then; a handler fetched from flash would fault and hang the Feather).
+
+// a transfer is over: act on the write it carried (or end the read)
+static void __not_in_flash_func(link_done)() {
+    if ((rx_n == 2) && !rx_overflow && (rx[0] == GW_LINK_SEL)) {
+        sel = rx[1];  // v32: not a frame (those are 4 bytes at least)
+    } else {
+        if ((rx_n > 0) && !rx_overflow && (frame_n == 0)) {
+            memcpy(frame, rx, rx_n);
+            frame_n = rx_n;
+        }
+        if (tx_i > 0) {
+            sel = 0;
+        }
+    }
+    rx_n = 0;
+    rx_overflow = false;
+    tx_i = 0;
+}
+
+// audit 11-01: every byte in the RX FIFO into rx, not one per RECEIVE. The SDK's handler (pico_i2c_slave 2.1.1) runs
+// FINISH for a START/STOP before RECEIVE in the same entry, and this interrupt is the lowest priority, so a late entry
+// found the end of a write still in the FIFO at FINISH (a SEL taken as 1 byte, a 248-byte DATA frame cut short). A late
+// entry can also find the next write's bytes there: IC_DATA_CMD's FIRST_DATA_BYTE marks where one starts, and the
+// transfer before it is over (FINISH reports that end; in RECEIVE, when rx holds bytes or a read was answered, its FINISH
+// is still to come). That one is done here and the START/STOP flags of the boundary (latched before this byte) are
+// cleared, so no FINISH for them cuts the new write short. True = a new write started.
+static bool __not_in_flash_func(link_pull)(i2c_inst_t* i2c, bool finishing) {
+    i2c_hw_t* hw = i2c_get_hw(i2c);
+    bool split = false;
+    while (hw->rxflr != 0) {
+        uint32_t d = hw->data_cmd;
+        if ((d & I2C_IC_DATA_CMD_FIRST_DATA_BYTE_BITS) && (finishing || (rx_n > 0) || rx_overflow || (tx_i > 0))) {
+            (void) hw->clr_stop_det;
+            (void) hw->clr_start_det;
+            link_done();
+            split = true;
+        }
+        if (rx_n < GW_LINK_FRAME_MAX) {
+            rx[rx_n++] = (uint8_t) d;
+        } else {
+            rx_overflow = true;
+        }
+    }
+    if (split && !(hw->status & I2C_IC_STATUS_SLV_ACTIVITY_BITS) && (hw->rxflr == 0)) {
+        link_done();  // the bus is idle: that write has ended too (its STOP may be one of the flags cleared)
+    }
+    return split;
+}
+
 static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t event) {
     switch (event) {
-        case I2C_SLAVE_RECEIVE: {
-            uint8_t b = i2c_read_byte_raw(i2c);
-            if (rx_n < GW_LINK_FRAME_MAX) {
-                rx[rx_n++] = b;
-            } else {
-                rx_overflow = true;
-            }
+        case I2C_SLAVE_RECEIVE:
+            link_pull(i2c, false);
             break;
-        }
         case I2C_SLAVE_REQUEST:
             if (tx_i == 0) {
+                // audit 11-01: a read starting while a write's bytes are still unread (the entry was late for all of
+                // it, so no FINISH ran): that write is over, and a SEL in it picks what this read returns
+                link_pull(i2c, false);
+                if ((rx_n > 0) || rx_overflow) {
+                    link_done();
+                }
                 if (sel == 1) {
                     tx_buf = live_buf[live_cur];
                     tx_len = GW_LINK_LIVE_LEN;
@@ -103,20 +152,9 @@ static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t eve
             tx_i++;
             break;
         case I2C_SLAVE_FINISH:
-            if ((rx_n == 2) && !rx_overflow && (rx[0] == GW_LINK_SEL)) {
-                sel = rx[1];  // v32: not a frame (those are 4 bytes at least)
-            } else {
-                if ((rx_n > 0) && !rx_overflow && (frame_n == 0)) {
-                    memcpy(frame, rx, rx_n);
-                    frame_n = rx_n;
-                }
-                if (tx_i > 0) {
-                    sel = 0;
-                }
+            if (!link_pull(i2c, true)) {  // audit 11-01: the write's last bytes first; a new write found there: done already
+                link_done();
             }
-            rx_n = 0;
-            rx_overflow = false;
-            tx_i = 0;
             break;
         default:
             break;

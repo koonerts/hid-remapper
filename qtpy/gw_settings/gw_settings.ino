@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 74    // this firmware's number, shown in /api/status
+#define QT_FW 75    // this firmware's number, shown in /api/status; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown)
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -145,7 +145,8 @@ static OsdItem osdq[OSD_KEEP];  // osdq[0] newest
 // fw41: the page can be replaced without a firmware update. POST /api/page (multipart: the gzipped page, as page_gz.ps1
 // --push sends it) stores it in the flash FAT partition ("ffat", 3.7 MB, unused until now) and / serves it from there;
 // the built-in copy is the fallback. The partition is formatted on the first upload (never at boot), and a page uploaded
-// under another firmware number is dropped at boot: a firmware update brings its own matching page.
+// under another firmware number is dropped at boot: a firmware update brings its own matching page (audit 11-01: also when
+// the built-in page changed under the same number, PAGE_SRC_FNV; POST /api/pagereset goes back to the built-in one).
 static bool fs_ok = false;
 static bool page_fs = false;
 static uint32_t page_fs_t = 0, page_fs_len = 0;
@@ -356,9 +357,18 @@ static bool cvlib_used(const void* p) { return ((const CurveLib*) p)->used; }
 static bool cvdg_used(const void* p) { return ((const CurveGains*) p)->has; }
 static bool lib_fs = false;  // fw71: the library is in /curves.bin (more about it with lib_write)
 static uint32_t lib_writes = 0, lib_fails = 0, lib_bad = 0;  // lib_bad: library files that didn't read back, set aside at boot
+// audit 11-01: the library lives in its file (NVS "libfs") but no copy read back at this boot (FFat didn't mount, or every
+// file failed its check). NVS no longer holds it, so nothing falls back there or is written anywhere: the running curve
+// (NVS "curve") still applies, its id and the candidate's stay as saved, and library edits are refused (LIB_OFF_WHY)
+static bool lib_off = false;
+static bool lib_dmg = false;  // audit 11-01: of those, the storage mounted but every copy failed its check (a restart won't help)
+#define LIB_OFF_WHY (lib_dmg ? "the curve library's files are damaged: 'Start a new library' on the page sets them aside and starts one with the running curve" : "the curve library didn't load at start-up (its file storage): restart the QT Py; nothing in it was changed")
 static bool lib_fs_on();
 static bool lib_write();
 static bool cvdg_save() {
+    if (lib_off) {
+        return false;  // audit 11-01
+    }
     return lib_fs_on() ? lib_write() : slots_save("cvg", cvdg, cvdg_nv, sizeof(CurveGains), cvdg_used, "cvdg", &cvdg_blob);  // fw71: the file
 }
 // fw67: each library curve's slow-down gain (Feather v39, C_SET_DECEL): once a stroke slows from its peak speed, a gain
@@ -379,6 +389,9 @@ static bool dc_force = false;  // send it after every curve send (a Use or BallS
 static bool cvdc_used(const void* p) { return ((const CurveDecel*) p)->n != 0; }
 static bool lib_write();
 static bool cvdc_save() {
+    if (lib_off) {
+        return false;  // audit 11-01
+    }
     return lib_fs_on() ? lib_write() : slots_save("cvd", cvdc, cvdc_nv, sizeof(CurveDecel), cvdc_used, "cvdcx", &cvdc_blob);  // fw71: the file
 }
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
@@ -433,6 +446,7 @@ static String calib_diag;           // fw29: the page's last calibration diagnos
 static uint8_t calib_n = 0;
 static uint8_t wmode = 0;         // Wi-Fi switches itself off: 0 = 10 min idle, 1 = 1 hour idle, 2 = never
 static bool radio_manual = true;   // this radio session was started by hand (button, chord, page)
+static bool radio_rejoin = false;  // audit 11-01: JOINING again after a dropped connection (not the first join: no setup-network fallback)
 // Wi-Fi power save. Off by default: with it on the board can go unreachable for a minute or more
 // on some routers (broadcast ARP and mDNS queries get lost while it dozes). /api/wifisleep sets it.
 static bool wsleep = false;
@@ -572,7 +586,7 @@ static void pump_cmds() {
         return;
     }
     Cmd& c = cmdq[cq_head];
-    if (st_ok && (st[55] == c.seq)) {  // acked
+    if (st_ok && cmd_sent_at && (st[55] == c.seq)) {  // acked (audit 11-01: only once it went out)
         cq_head = (cq_head + 1) % CMDQ;
         cq_n--;
         cmd_tries = 0;
@@ -895,6 +909,7 @@ static void radio_on(bool manual = true) {
         return;  // nothing to join, and the setup network is never opened unasked
     }
     radio_manual = manual;
+    radio_rejoin = false;
     radio_since = millis();
     last_http = millis();
     if (ssid.length()) {
@@ -922,11 +937,16 @@ static uint32_t idle_limit() {
 static void radio_tick() {
     if ((radio == Radio::JOINING) && (WiFi.status() == WL_CONNECTED)) {
         radio = Radio::STA;
-        start_mdns();
+        radio_rejoin = false;
+        start_mdns();  // audit 11-01: on a reconnect too
+    }
+    if ((radio == Radio::STA) && (WiFi.status() != WL_CONNECTED)) {  // audit 11-01: the connection dropped: show it (the
+        radio = Radio::JOINING;                                        // stack reconnects by itself), never the setup network
+        radio_rejoin = true;
     }
     // switched on by hand and can't join: setup network instead. Started by itself (power-up,
     // after an update): keep trying, the Wi-Fi stack retries on its own.
-    if ((radio == Radio::JOINING) && radio_manual && (millis() - radio_since > JOIN_TIMEOUT_MS)) {
+    if ((radio == Radio::JOINING) && radio_manual && !radio_rejoin && (millis() - radio_since > JOIN_TIMEOUT_MS)) {
         WiFi.disconnect(true);
         start_ap();
     }
@@ -1024,6 +1044,26 @@ static void link_tick() {
     if (first_status) {  // fw33: tuning already set = the Feather kept running and only the QT Py restarted (OTA, crash)
         first_status = false;
         feather_ran = st[2] & 1;
+        // audit 11-01: the numbers go on from the Feather's last ack (byte 55), so after a QT Py-only restart the first command
+        // can't carry the number it took last (it would skip it as a repeat). Nothing has gone out yet: renumber the queue.
+        uint8_t s = st[55], olds[CMDQ];
+        for (uint8_t k = 0; k < cq_n; k++) {
+            Cmd& c = cmdq[(cq_head + k) % CMDQ];
+            s = (s == 255) ? 1 : s + 1;
+            olds[k] = c.seq;
+            c.seq = s;
+            c.f[1] = s;
+            c.f[c.n - 1] = crc8(c.f, c.n - 1);
+        }
+        for (uint8_t e = 0; e < EDIT_LOG; e++) {  // the edits that went with them follow (edit_dropped)
+            for (uint8_t k = 0; k < cq_n; k++) {
+                if (edit_seq[e] == (0x100 | olds[k])) {
+                    edit_seq[e] = 0x100 | cmdq[(cq_head + k) % CMDQ].seq;
+                    break;
+                }
+            }
+        }
+        next_seq = (s == 255) ? 1 : s + 1;
     }
     if (chords_supported() && (!ch_ok || (ch[1] != st[124]) || (events_supported() && ((st[117] >> 4) != ev_nib)))) {
         read_chords();
@@ -1538,8 +1578,8 @@ static void h_status() {
         bool sup = cv_supported() && ev_ok;
         j += "],\"src\":\"" + cv_src + "\",\"sup\":" + String(cv_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[60] & 1) ? "true" : "false") +
              ",\"got\":" + String(sup && (evb[60] & 2) ? "true" : "false") + ",\"want\":" + String(cv_wanted() ? "true" : "false") +
-             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + ",\"id\":" + String(cv_id) + ",\"cand\":" + String(cv_cand) + ",\"tcand\":" + String(cvt_cand ? "true" : "false") + ",\"ab\":" + String((cvt_ab_at && (millis() - cvt_ab_at < 12000)) ? "true" : "false") +
-             ",\"name\":\"" + String(cv_id ? cvlib[cv_id - 1].name : "") + "\",\"cand_name\":\"" + String(cv_cand ? cvlib[cv_cand - 1].name : "") + "\"";  // fw48: temp = a BallSheet curve-off run; fw49: ids, names, tcand = its candidate block
+             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + ",\"id\":" + String(lib_off ? 0 : cv_id) + ",\"cand\":" + String(lib_off ? 0 : cv_cand) + ",\"tcand\":" + String(cvt_cand ? "true" : "false") + ",\"ab\":" + String((cvt_ab_at && (millis() - cvt_ab_at < 12000)) ? "true" : "false") +
+             ",\"name\":\"" + String(cv_id ? cvlib[cv_id - 1].name : "") + "\",\"cand_name\":\"" + String(cv_cand ? cvlib[cv_cand - 1].name : "") + "\"" + (lib_off ? ",\"liboff\":true" : "");  // audit 11-01: liboff = the library didn't load; fw48: temp = a BallSheet curve-off run; fw49: ids, names, tcand = its candidate block
         String dc = dc_json(cv_id);  // fw67: the running curve's slow-down gain, and the Feather's copy (dcsup = Feather v39+)
         bool dsup = dc_supported() && ev_ok;
         j += ",\"dc\":" + (dc.length() ? dc : String("null")) + ",\"dcsup\":" + String(dc_supported() ? "true" : "false") + ",\"dcon\":" + String(dsup && (evb[60] & 4) ? "true" : "false") +
@@ -1622,7 +1662,7 @@ static void h_status() {
         if (nvs_get_stats(NULL, &ns) == ESP_OK) {
             j += ",\"nvs\":[" + String(ns.used_entries) + "," + String(ns.free_entries) + "," + String(ns.total_entries) + "]";
         }
-        j += ",\"nvs_fail\":" + String(d_nvs_fail) + ",\"nvs_fail_key\":\"" + d_nvs_fail_key + "\",\"lib\":\"" + String(lib_fs_on() ? "file" : "nvs") + "\",\"lib_writes\":" + String(lib_writes) + ",\"lib_fails\":" + String(lib_fails) + ",\"lib_bad\":" + String(lib_bad) + "}";  // fw65: + its key; fw71: where the curve library is
+        j += ",\"nvs_fail\":" + String(d_nvs_fail) + ",\"nvs_fail_key\":\"" + d_nvs_fail_key + "\",\"lib\":\"" + String(lib_fs_on() ? "file" : lib_off ? "off" : "nvs") + "\",\"lib_writes\":" + String(lib_writes) + ",\"lib_fails\":" + String(lib_fails) + ",\"lib_bad\":" + String(lib_bad) + "}";  // fw65: + its key; fw71: where the curve library is
     }
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
@@ -2095,6 +2135,9 @@ static bool dg_wanted() {  // on for the host connected now
 }
 
 static void cvmeta_save() {
+    if (lib_off) {
+        return;  // audit 11-01
+    }
     if (lib_fs_on()) {  // fw71: the file
         lib_write();
         return;
@@ -2605,7 +2648,7 @@ static void cv_tick() {
         sent = true;
         dc_force = true;  // fw67: the slow-down gain right behind it
     }
-    if (dc_supported() && (dc_force || !dc_applied())) {
+    if (dc_supported() && !lib_off && (dc_force || !dc_applied())) {  // audit 11-01: the curve's slow-down gain is in the library
         uint8_t len = dc_payload(d);
         if (queue_cmd(C_SET_DECEL, d, len)) {
             dc_force = false;
@@ -2832,7 +2875,7 @@ static void h_cvtemp() {
     }
     if (server.hasArg("cand")) {  // fw49: the candidate curve instead of the active one
         if (!cv_cand || !cvlib[cv_cand - 1].used) {
-            return ok_json(false, "no candidate curve set (Speed curve card)");
+            return ok_json(false, lib_off ? LIB_OFF_WHY : "no candidate curve set (Speed curve card)");  // audit 11-01
         }
         cvt_cand = true;
         cvt_off = false;
@@ -2884,8 +2927,19 @@ static String cvlib_clean(const String& s) {
     return o;
 }
 
-static bool cvlib_save() {  // fw65: false = something wasn't saved (it's gone at the next power-off)
-    bool ok = lib_fs_on() ? lib_write() : slots_save("cvl", cvlib, cvlib_nv, sizeof(CurveLib), cvlib_used, "cvlib", &cvlib_blob);  // fw71: the file
+// audit 11-01: cvlib_save in two halves, so a curve switch can do the slow file rewrite first and then write the running
+// table (NVS "curve") and its id back to back
+static bool cvlib_lib_save() {
+    if (lib_off) {
+        return false;
+    }
+    return lib_fs_on() ? lib_write() : slots_save("cvl", cvlib, cvlib_nv, sizeof(CurveLib), cvlib_used, "cvlib", &cvlib_blob);  // fw71: the file
+}
+static bool cvlib_ids_save() {
+    bool ok = true;
+    if (lib_off) {
+        return false;  // the saved ids stay (they name curves in the file that didn't load)
+    }
     if ((prefs.getUChar("cvid", 0) != cv_id) && !prefs.putUChar("cvid", cv_id)) {
         ok = false;
         d_nvs_fail++;
@@ -2898,10 +2952,27 @@ static bool cvlib_save() {  // fw65: false = something wasn't saved (it's gone a
     }
     return ok;
 }
+static bool cvlib_save() {  // fw65: false = something wasn't saved (it's gone at the next power-off)
+    bool ok = cvlib_lib_save();
+    return cvlib_ids_save() && ok;
+}
 
 static uint16_t cv_src_s10() {  // the "S=" in the active curve's source, x10
     int at = cv_src.indexOf(";S=");
     return (at < 0) ? 0 : (uint16_t) lround(cv_src.substring(at + 3).toFloat() * 10);
+}
+
+// audit 11-01: cvlib_add would take this table (a curve with the same points and slow-down gain, or a free slot)
+static bool cvlib_fits(uint8_t n, const uint16_t* sp, const uint16_t* g, uint8_t dn, const uint8_t* dp, const uint16_t* dg) {
+    for (int k = 0; k < CVLIB_N; k++) {
+        const CurveLib& c = cvlib[k];
+        const CurveDecel& d = cvdc[k];
+        bool same_dc = (d.n == dn) && (!dn || (!memcmp(d.pct, dp, dn) && !memcmp(d.g, dg, 2 * dn)));
+        if (!c.used || ((c.n == n) && !memcmp(c.sp, sp, 2 * n) && !memcmp(c.g, g, 2 * n) && same_dc)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // the library entry with this table (same points), registered if new; 0 = the library is full
@@ -3055,7 +3126,7 @@ static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_
 static void h_curves() {
     touch();
     if (server.method() == HTTP_GET) {
-        String j = "{\"active\":" + String(cv_id) + ",\"cand\":" + String(cv_cand) + ",\"curves\":[";
+        String j = "{\"active\":" + String(cv_id) + ",\"cand\":" + String(cv_cand) + (lib_off ? ",\"off\":true" : "") + (lib_dmg ? ",\"dmg\":true" : "") + ",\"curves\":[";  // audit 11-01: off = didn't load, dmg = its files are damaged
         bool first = true;
         for (uint8_t k = 1; k <= CVLIB_N; k++) {
             if (cvlib[k - 1].used) {
@@ -3068,6 +3139,40 @@ static void h_curves() {
     }
     if (!from_current_page()) {
         return;
+    }
+    if (server.hasArg("fresh")) {  // audit 11-01: damaged library files set aside (name.bad), a new library with the running curve
+        if (!lib_dmg) {
+            return ok_json(false, "the curve library isn't damaged");
+        }
+        const char* lib_files[] = { "/curves.bin", "/curves.tmp", "/curves.bak" };
+        for (const char* p : lib_files) {
+            if (FFat.exists(p)) {
+                String bad = String(p) + ".bad";
+                FFat.remove(bad.c_str());
+                FFat.rename(p, bad.c_str());
+                lib_bad++;
+            }
+        }
+        lib_off = false;
+        lib_dmg = false;
+        lib_fs = true;
+        cv_id = 0;
+        cv_cand = 0;
+        if (cv.n >= 2) {
+            cv_id = cvlib_add(String(""), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g, 0, nullptr, nullptr);
+        }
+        cvdg_stamp(cv_id);
+        lib_fs = lib_write();
+        if (!lib_fs) {
+            lib_off = true;
+            lib_dmg = true;
+            return ok_json(false, "couldn't write the new library file");
+        }
+        cvlib_ids_save();
+        return ok_json(true, "a new curve library, with the running curve");
+    }
+    if (lib_off) {
+        return ok_json(false, LIB_OFF_WHY);  // audit 11-01
     }
     if (server.hasArg("add")) {
         uint16_t s16[CV_N] = {}, g16[CV_N] = {}, dgv[DC_N] = {}, s10 = 0;
@@ -3137,15 +3242,16 @@ static void h_curves() {
         memcpy(cv.g, c.g, 2 * c.n);
         cvdg_stamp(cv_id);  // fw60
         cv_id = id;
-        cvdg_take(cv_id);
         cvmeta_touch(cv_id);  // fw61
         if (cv_cand == id) {
             cv_cand = 0;
         }
+        cvlib_lib_save();  // audit 11-01: the slow /curves.bin rewrites first; the running table and its id then back to back
+        cvdg_take(cv_id);
         cv_src = String("lib:") + String(c.name) + (c.s10 ? ";S=" + String(c.s10 / 10.0f, 1) : String(""));
         prefs.putString("cvsrc", cv_src);
         nvs_put("curve", &cv, sizeof(cv));
-        cvlib_save();
+        cvlib_ids_save();
         log_edit(EK_CURVE, String("use ") + String(c.name));
         cv_sent_at = 0;
         cv_force = true;
@@ -3255,6 +3361,9 @@ static void h_curve() {
     if (!from_current_page()) {
         return;
     }
+    if (lib_off) {
+        return ok_json(false, LIB_OFF_WHY);  // audit 11-01: the running curve's id can't follow a new table
+    }
     long sp[CV_N], g[CV_N];
     uint8_t n = 0, ng = 0;
     if (!csv_n(server.arg("sp"), 1, 65535, sp, &n) || !csv_n(server.arg("g"), 250, 4000, g, &ng) || (n != ng) || (n == 1)) {
@@ -3285,6 +3394,20 @@ static void h_curve() {
         }
         at = comma + 1;
     }
+    if (n) {  // audit 11-01: a new table the full library can't take is refused as /api/curves?add=1 does, before anything changes
+        uint16_t s16[CV_N] = {}, g16[CV_N] = {};
+        for (uint8_t k = 0; k < n; k++) {
+            s16[k] = sp[k];
+            g16[k] = g[k];
+        }
+        CurveDecel od = {};
+        if (cv_id) {
+            od = cvdc[cv_id - 1];
+        }
+        if (!cvlib_fits(n, s16, g16, od.n, od.pct, od.g)) {
+            return ok_json(false, "the library is full (16): delete a curve first");
+        }
+    }
     cv.n = n;
     cv.tau = tau;
     cv.dpi = dpi;
@@ -3310,7 +3433,6 @@ static void h_curve() {
         prefs.putString("cvsrc", cv_src);
     }
     if (n) {
-        nvs_put("curve", &cv, sizeof(cv));
         uint8_t was = cv_id;
         CurveDecel od = {};  // fw67: a new table keeps the running curve's slow-down gain
         if (was) {
@@ -3325,12 +3447,17 @@ static void h_curve() {
             cv_cand = 0;
         }
     } else {
-        prefs.remove("curve");
         cvdg_stamp(cv_id);  // fw62
         cv_id = 0;
         cvdg_take(0);
     }
-    cvlib_save();
+    cvlib_lib_save();  // audit 11-01: the slow /curves.bin rewrites first; the running table and its id then back to back
+    if (n) {
+        nvs_put("curve", &cv, sizeof(cv));
+    } else {
+        prefs.remove("curve");
+    }
+    cvlib_ids_save();
     log_edit(EK_CURVE, n ? String(hn) + (hn == 1 ? " host" : " hosts") : String("off"));
     cv_sent_at = 0;  // send now
     cv_force = true;
@@ -3997,6 +4124,7 @@ static uint8_t fo_tries = 0, fo_from = 0;
 static uint8_t fo_chunk = 40;  // fw74: data bytes a frame for this Feather
 static bool fo_begun = false;  // fw74: BEGIN sent at this clock (a v43 Feather erases ahead before it takes data: not sent again meanwhile)
 static uint32_t fo_begun_at = 0;
+static bool fo_apply_sent = false;  // audit 11-01: an APPLY of this update was taken by the bus (FO_APPLY)
 static int8_t fo_boot = -1;  // the running Feather build takes updates: 1 yes, 0 no, -1 not known
 static uint32_t fo_boot_at = 0;
 static File fo_file;
@@ -4099,7 +4227,7 @@ static const char* fo_err_text(uint8_t e) {
 }
 
 static void fo_fail(const String& why) {
-    bool staged = (fo_st == FO_END) || (fo_st == FO_APPLY);  // 10-31 audit: it may be staged on the Feather
+    bool staged = (fo_st == FO_END) || (fo_st == FO_APPLY) || (fo_st == FO_RESTART);  // 10-31 audit: it may be staged on the Feather; audit 11-01: + RESTART (an unconfirmed APPLY: the old version came back)
     fo_st = FO_ERROR;
     fo_err = why;
     fo_secs = (millis() - fo_t0) / 1000;
@@ -4237,12 +4365,13 @@ static void fo_tick() {
                     fo_st = FO_APPLY;
                     fo_at = 0;
                     fo_tries = 0;
+                    fo_apply_sent = false;  // audit 11-01
                 } else if (b[3]) {
                     fo_slower(fo_err_text(b[3]));  // fw73: e.g. a garbled frame that passed its crc8: all again, slower
                 }
             }
             return;
-        case FO_APPLY:
+        case FO_APPLY: {
             if (now - fo_at < 500) {
                 return;
             }
@@ -4250,9 +4379,21 @@ static void fo_tick() {
             if (++fo_tries > 6) {
                 return fo_fail("the Feather didn't restart");
             }
-            fo_frame(C_OTA_APPLY, nullptr, 0);
-            delay(20);
-            if (fo_read(b) && (b[1] == 3)) {
+            // audit 11-01: the Feather restarts 200 ms after it takes APPLY: read a few times in that window. Applying (3), or
+            // no answer at all once an earlier try's APPLY went out, goes on to FO_RESTART, whose version check decides; still
+            // READY: again
+            bool sent = fo_frame(C_OTA_APPLY, nullptr, 0);
+            bool answered = false, applying = false;
+            for (int k = 0; (k < 5) && !applying; k++) {
+                delay(k ? 30 : 20);
+                if (fo_read(b)) {
+                    answered = true;
+                    applying = (b[1] == 3);
+                }
+            }
+            bool restarted = fo_apply_sent && !answered;  // this try's reads all come before the 200 ms: only an earlier APPLY
+            fo_apply_sent = fo_apply_sent || sent;
+            if (applying || restarted) {
                 Wire1.setClock(LINK_HZ);  // fw73: the new firmware is talked to as always
                 fo_st = FO_RESTART;
                 fo_rs_at = now;
@@ -4262,6 +4403,7 @@ static void fo_tick() {
                 }
             }
             return;
+        }
         case FO_RESTART: {
             // gw_boot copies it in (a few seconds), then the new firmware answers; the first second may still be the old one
             if ((now - fo_at < 500) || (now - fo_rs_at < 1500)) {
@@ -4474,8 +4616,10 @@ static void h_feather_go() {
         if (fo_busy() && (fo_st != FO_APPLY) && (fo_st != FO_RESTART)) {  // 10-31 audit: once APPLY may have gone, the Feather installs it anyway
             fo_frame(C_OTA_ABORT, nullptr, 0);
             fo_fail("stopped");
+            return ok_json(true);
         }
-        return ok_json(true);
+        // audit 11-01: say so when it did nothing
+        return ok_json(false, fo_busy() ? "too late to stop: the Feather is already installing it" : "no update is running");
     }
     if (server.hasArg("start")) {
         if (fo_busy()) {
@@ -4589,8 +4733,11 @@ static void page_fs_load() {  // fw41: is there an uploaded page for this firmwa
         m.close();
     }
     long fw = 0, t = 0, len = 0;
-    sscanf(meta.c_str(), "%ld %ld %ld", &fw, &t, &len);
-    if (fw != QT_FW) {  // uploaded for another firmware: this firmware's own page is the right one
+    unsigned long src = 0;
+    sscanf(meta.c_str(), "%ld %ld %ld %lx", &fw, &t, &len, &src);
+    // audit 11-01: also the built-in page it was uploaded over (page_gz.h's FNV of page.h): a rebuild under the same number
+    // with another page brings that page
+    if ((fw != QT_FW) || (src != (unsigned long) PAGE_SRC_FNV)) {  // uploaded for another firmware: this firmware's own page is the right one
         FFat.remove("/page.gz");
         FFat.remove("/page.fw");
         return;
@@ -4625,21 +4772,28 @@ static void h_page_upload() {
     }
 }
 
-// POST /api/page (multipart "file": the gzipped page) | ?reset=1 back to the built-in page (fw41)
+// POST /api/pagereset: back to the built-in page. audit 11-01: a route of its own (was /api/page?reset=1): /api/page takes
+// uploads, so a POST without a multipart body saw the previous request's arguments (as /api/feathergo, fw70)
+static void h_page_reset() {
+    touch();
+    if (radio != Radio::STA) {
+        return ok_json(false, "only on the home network");
+    }
+    if (fs_ok) {
+        FFat.remove("/page.gz");
+        FFat.remove("/page.fw");
+    }
+    page_fs = false;
+    ok_json(true);
+}
+
+// POST /api/page (multipart "file": the gzipped page) (fw41); audit 11-01: never removes the stored page (/api/pagereset does)
 static void h_page_done() {
     touch();
     bool up = page_up_ok;
     page_up_ok = false;
     if (radio != Radio::STA) {
         return ok_json(false, "only on the home network");  // fw47: as /api/update (the setup network is open)
-    }
-    if (server.hasArg("reset")) {
-        if (fs_ok) {
-            FFat.remove("/page.gz");
-            FFat.remove("/page.fw");
-        }
-        page_fs = false;
-        return ok_json(true);
     }
     if (!fs_ok) {
         return ok_json(false, "no file system");
@@ -4657,7 +4811,7 @@ static void h_page_done() {
     FFat.rename("/page.tmp", "/page.gz");
     File m = FFat.open("/page.fw", "w");
     if (m) {
-        m.print(String(QT_FW) + " " + String(now_unix()) + " " + String(page_up_len));
+        m.print(String(QT_FW) + " " + String(now_unix()) + " " + String(page_up_len) + " " + String((unsigned long) PAGE_SRC_FNV, HEX));  // audit 11-01: + the built-in page's FNV
         m.close();
     }
     page_fs_load();
@@ -4757,7 +4911,9 @@ void setup() {
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
     // fw71: the library's file; 10-31 audit: /curves.tmp is a whole checked copy too (a power cut between lib_write's renames)
     lib_fs = fs_ok && (lib_read("/curves.bin", true) || lib_read("/curves.tmp", true) || lib_read("/curves.bak", true));
-    if (!lib_fs) {  // fw49-70: the library in NVS
+    lib_off = !lib_fs && prefs.getUChar("libfs", 0);  // audit 11-01: in its file, which didn't load: no NVS fallback, nothing written
+    lib_dmg = lib_off && fs_ok;
+    if (!lib_fs && !lib_off) {  // fw49-70: the library in NVS
     cvlib_blob = prefs.isKey("cvlib");      // fw65: a curve per key; the fw49-64 blob is split up once (below)
     if (!cvlib_blob) {
         for (int k = 0; k < CVLIB_N; k++) {
@@ -4802,10 +4958,10 @@ void setup() {
     }  // fw71: !lib_fs
     cv_id = prefs.getUChar("cvid", 0);
     cv_cand = prefs.getUChar("cvcand", 0);
-    if ((cv_id > CVLIB_N) || (cv_id && !cvlib[cv_id - 1].used)) {
+    if ((cv_id > CVLIB_N) || (cv_id && !lib_off && !cvlib[cv_id - 1].used)) {  // audit 11-01: kept while the library didn't load
         cv_id = 0;
     }
-    if ((cv_cand > CVLIB_N) || (cv_cand && !cvlib[cv_cand - 1].used)) {
+    if ((cv_cand > CVLIB_N) || (cv_cand && !lib_off && !cvlib[cv_cand - 1].used)) {
         cv_cand = 0;
     }
     if (prefs.getBytes("curve", &cv, sizeof(cv)) != sizeof(cv) || (cv.n > CV_N) || (cv.hn > HPROF_MAX) || (cv.tau < 1) || (cv.tau > 200)) {
@@ -4813,7 +4969,7 @@ void setup() {
         cv.hn = 0;
         cv.tau = 8;
     }
-    if (!lib_fs && (prefs.getBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta))) {  // fw61; fw62: before the migration below (it saves cvmeta); fw71: in the file
+    if (!lib_fs && !lib_off && (prefs.getBytes("cvmeta", cvmeta, sizeof(cvmeta)) != sizeof(cvmeta))) {  // fw61; fw62: before the migration below (it saves cvmeta); fw71: in the file
         memset(cvmeta, 0, sizeof(cvmeta));
         for (int k = 0; k < CVLIB_N; k++) {
             cvmeta[k].ord = k + 1;
@@ -4823,7 +4979,7 @@ void setup() {
     if (prefs.getBytes("cvdg0", &cvdg0, sizeof(cvdg0)) != sizeof(cvdg0)) {  // fw62
         memset(&cvdg0, 0, sizeof(cvdg0));
     }
-    if ((cv.n >= 2) && !cv_id) {  // fw49: the curve saved before named curves becomes the library's first
+    if ((cv.n >= 2) && !cv_id && !lib_off) {  // fw49: the curve saved before named curves becomes the library's first
         cv_id = cvlib_add(String(""), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g, 0, nullptr, nullptr);
         cvlib_save();
     }
@@ -4835,7 +4991,7 @@ void setup() {
         }
         dg.n = 0;
     }
-    if (!lib_fs) {  // fw71: the curves' gains are in the file otherwise
+    if (!lib_fs && !lib_off) {  // fw71: the curves' gains are in the file otherwise
     cvdg_blob = prefs.isKey("cvdg");  // fw65: per-curve keys; the fw60-64 blob is split up once
     bool dg_any = false;
     if (cvdg_blob && (prefs.getBytes("cvdg", cvdg, sizeof(cvdg)) == sizeof(cvdg))) {
@@ -4863,7 +5019,7 @@ void setup() {
         cvdg_stamp(cv_id);
     }
     }  // fw71: !lib_fs
-    if (fs_ok && !lib_fs) {  // fw71: the library moves to its file once; NVS's copies go only after it read back right
+    if (fs_ok && !lib_fs && !lib_off) {  // fw71: the library moves to its file once; NVS's copies go only after it read back right
         // 10-31 audit: a library file that's there but didn't read back is set aside (name.bad), never written over
         const char* lib_files[] = { "/curves.bin", "/curves.tmp", "/curves.bak" };
         for (const char* p : lib_files) {
@@ -4928,6 +5084,7 @@ void setup() {
     server.on("/api/curves", HTTP_GET, h_curves);  // fw49
     server.on("/api/curves", HTTP_POST, h_curves);
     server.on("/api/page", HTTP_POST, h_page_done, h_page_upload);
+    server.on("/api/pagereset", HTTP_POST, h_page_reset);  // audit 11-01
     server.on("/api/feather", HTTP_GET, h_feather);  // fw69
     server.on("/api/feather", HTTP_POST, h_feather, h_fo_upload);
     server.on("/api/feathergo", HTTP_POST, h_feather_go);  // fw70

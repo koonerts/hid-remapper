@@ -20,6 +20,10 @@ extern const char gw_fw_tag[];  // gw_mouse.cc: "GWFW:v<version>;"
 #define GW_OTA_APP 0  // the remapper_ota build sets it (CMakeLists.txt): it runs after gw_boot
 #endif
 
+#ifndef gw_ota_halt  // audit 11-01: the host tests' hardware/watchdog.h defines it to count the stop and go on
+#define gw_ota_halt() while (true) { tight_loop_contents(); }
+#endif
+
 static uint8_t st = GW_OTA_IDLE, err = 0;
 static uint32_t size = 0, crc = 0, expect = 0, got_crc = 0, seq_last = 0;
 static uint32_t erase_at = 0, erase_end = 0;  // v43: the staging slot still to erase after BEGIN (offsets in it)  // v42: seq_last = the record's count before BEGIN dropped it
@@ -186,6 +190,9 @@ void gw_ota_tick(uint32_t now) {
     if (reboot_due && ((int32_t) (now - reboot_at) >= 0)) {
         reboot_due = false;
         watchdog_reboot(0, 0, 10);  // through the ROM and gw_boot, as a power-on
+        // audit 11-01: and never back to the main loop: in those 10 ms a chord table or config save could start a 4 KB
+        // erase (~45 ms) that the reset cuts off. Interrupts (USB, link) keep running until it lands.
+        gw_ota_halt();
     }
     if (!dirty && (now - pub_at < 100000)) {
         return;
