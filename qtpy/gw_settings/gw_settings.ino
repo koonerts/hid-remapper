@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 72    // this firmware's number, shown in /api/status
+#define QT_FW 73    // this firmware's number, shown in /api/status
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -3990,6 +3990,13 @@ static uint8_t fo_tries = 0, fo_from = 0;
 static int8_t fo_boot = -1;  // the running Feather build takes updates: 1 yes, 0 no, -1 not known
 static uint32_t fo_boot_at = 0;
 static File fo_file;
+// fw73: the link's clock while an update runs, tried fastest first. The lines hang on the chips' built-in pull-ups, so
+// the faster ones may not hold: errors at a clock drop to the next and start the transfer over (a frame garbled at that
+// clock can still pass its crc8; the whole image's CRC-32 would only tell at the end). Back to LINK_HZ when it ends.
+#define FO_HZ_N 4
+static const uint32_t FO_HZ[FO_HZ_N] = { 400000, 200000, 100000, LINK_HZ };
+static uint8_t fo_hz = 0, fo_bad = 0, fo_slower_n = 0;
+static uint16_t fo_rd_n = 0, fo_rd_bad = 0;  // status reads at this clock, and those that came back short or garbled
 static File fo_up;  // the upload
 static bool fo_up_seen = false;
 static String fo_up_err;
@@ -4048,10 +4055,20 @@ static bool fo_read(uint8_t* b) {
             b[i] = Wire1.read();
         }
         if ((b[0] == 'U') && (crc8(b, 23) == b[23])) {
+            fo_rd_n++;
             return true;
+        }
+        if (b[0] != 'G') {  // fw73: garbled (a pre-v40 Feather's status block isn't the bus's fault)
+            fo_rd_n++;
+            fo_rd_bad++;
         }
     }
     return false;
+}
+
+// fw73: over 10% of the status reads at this clock garbled: a slower clock gets more through
+static bool fo_noisy() {
+    return (fo_hz + 1 < FO_HZ_N) && (fo_rd_n >= 20) && (fo_rd_bad * 10 > fo_rd_n);
 }
 
 static const char* fo_err_text(uint8_t e) {
@@ -4076,6 +4093,27 @@ static void fo_fail(const String& why) {
     if (fo_file) {
         fo_file.close();
     }
+    Wire1.setClock(LINK_HZ);  // fw73
+}
+
+static void fo_clock(uint8_t k) {  // fw73
+    fo_hz = k;
+    fo_bad = 0;
+    fo_rd_n = fo_rd_bad = 0;
+    Wire1.setClock(FO_HZ[k]);
+}
+
+// fw73: errors at this clock: the next slower one, and the transfer from the start (at the last one: give up)
+static void fo_slower(const String& why) {
+    if (fo_hz + 1 >= FO_HZ_N) {
+        return fo_fail(why);
+    }
+    fo_clock(fo_hz + 1);
+    fo_slower_n++;
+    fo_st = FO_BEGIN;
+    fo_sent = 0;
+    fo_tries = 0;
+    fo_at = 0;
 }
 
 static void fo_tick() {
@@ -4088,7 +4126,7 @@ static void fo_tick() {
             }
             fo_at = now;
             if (++fo_tries > 10) {
-                return fo_fail("the Feather didn't start taking it");
+                return fo_slower("the Feather didn't start taking it");  // fw73: at a slower clock first
             }
             uint8_t p[8];
             put32le(p, fo_size);
@@ -4096,8 +4134,12 @@ static void fo_tick() {
             fo_frame(C_OTA_BEGIN, p, 8);
             delay(80);  // dropping its old record erases a sector
             if (!fo_read(b)) {
+                if (++fo_bad >= 3) {  // fw73
+                    fo_slower("the Feather didn't start taking it");
+                }
                 return;
             }
+            fo_bad = 0;
             if ((b[1] == 1) && (le32(b + 8) == fo_size) && (le32(b + 12) == fo_crc)) {
                 fo_st = FO_SEND;
                 fo_sent = le32(b + 4);
@@ -4120,21 +4162,27 @@ static void fo_tick() {
                 off += n;
             }
             delay(2);  // the Feather takes a frame every ms
-            if (!fo_read(b)) {
-                if (now - fo_moved_at > 5000) {
-                    fo_fail("the Feather stopped answering");
+            uint32_t stall = (fo_hz + 1 < FO_HZ_N) ? 1500 : 5000;  // fw73: a fast clock gets less time before the next
+            bool got = fo_read(b);
+            if (fo_noisy()) {
+                return fo_slower("the link garbles at this clock");
+            }
+            if (!got) {
+                if ((++fo_bad >= 3) || (now - fo_moved_at > stall)) {
+                    fo_slower("the Feather stopped answering");
                 }
                 return;
             }
+            fo_bad = 0;
             if (b[1] != 1) {
-                return fo_fail(fo_err_text(b[3]));
+                return fo_slower(fo_err_text(b[3]));
             }
             uint32_t e = le32(b + 4);
             if (e != fo_sent) {
                 fo_sent = e;
                 fo_moved_at = now;
-            } else if (now - fo_moved_at > 5000) {
-                return fo_fail("the Feather stopped taking it");
+            } else if (now - fo_moved_at > stall) {
+                return fo_slower("the Feather stopped taking it");
             }
             if (fo_sent >= fo_size) {
                 fo_st = FO_END;
@@ -4159,7 +4207,7 @@ static void fo_tick() {
                     fo_at = 0;
                     fo_tries = 0;
                 } else if (b[3]) {
-                    fo_fail(fo_err_text(b[3]));
+                    fo_slower(fo_err_text(b[3]));  // fw73: e.g. a garbled frame that passed its crc8: all again, slower
                 }
             }
             return;
@@ -4174,6 +4222,7 @@ static void fo_tick() {
             fo_frame(C_OTA_APPLY, nullptr, 0);
             delay(20);
             if (fo_read(b) && (b[1] == 3)) {
+                Wire1.setClock(LINK_HZ);  // fw73: the new firmware is talked to as always
                 fo_st = FO_RESTART;
                 fo_rs_at = now;
                 fo_at = now;
@@ -4392,6 +4441,8 @@ static void h_feather_go() {
             return ok_json(false, "this Feather can't take updates over Wi-Fi yet: once over USB on FLOW, flash the _gwboot.uf2, then the _ota.uf2");
         }
         fo_from = st[56];
+        fo_slower_n = 0;
+        fo_clock(0);  // fw73
         fo_st = FO_BEGIN;
         fo_err = String();
         fo_sent = 0;
@@ -4418,7 +4469,7 @@ static void h_feather() {
         String j = "{\"state\":\"" + String(FO_NAMES[fo_st]) + "\",\"err\":\"" + fo_err + "\",\"sent\":" + String(fo_sent) + ",\"size\":" + String(fo_size) +
                    ",\"file\":" + (fo_size ? "{\"size\":" + String(fo_size) + ",\"crc\":\"" + String(crc) + "\",\"ver\":" + String(fo_ver) + ",\"t\":" + String(fo_t) + "}" : String("null")) +
                    ",\"boot\":" + String((fo_boot < 0) ? "null" : fo_boot ? "true" : "false") + ",\"fw\":" + String(st_ok ? st[56] : 0) + ",\"from\":" + String(fo_from) +
-                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + "}";
+                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + ",\"hz\":" + String(FO_HZ[fo_hz]) + ",\"slower\":" + String(fo_slower_n) + "}";  // fw73: the clock it ran at, steps down
         server.send(200, "application/json", j);
         return;
     }
