@@ -355,7 +355,7 @@ static bool slots_save(const char* pre, void* ram, void* nv, size_t sz, bool (*u
 static bool cvlib_used(const void* p) { return ((const CurveLib*) p)->used; }
 static bool cvdg_used(const void* p) { return ((const CurveGains*) p)->has; }
 static bool lib_fs = false;  // fw71: the library is in /curves.bin (more about it with lib_write)
-static uint32_t lib_writes = 0, lib_fails = 0;
+static uint32_t lib_writes = 0, lib_fails = 0, lib_bad = 0;  // lib_bad: library files that didn't read back, set aside at boot
 static bool lib_fs_on();
 static bool lib_write();
 static bool cvdg_save() {
@@ -1622,7 +1622,7 @@ static void h_status() {
         if (nvs_get_stats(NULL, &ns) == ESP_OK) {
             j += ",\"nvs\":[" + String(ns.used_entries) + "," + String(ns.free_entries) + "," + String(ns.total_entries) + "]";
         }
-        j += ",\"nvs_fail\":" + String(d_nvs_fail) + ",\"nvs_fail_key\":\"" + d_nvs_fail_key + "\",\"lib\":\"" + String(lib_fs_on() ? "file" : "nvs") + "\",\"lib_writes\":" + String(lib_writes) + ",\"lib_fails\":" + String(lib_fails) + "}";  // fw65: + its key; fw71: where the curve library is
+        j += ",\"nvs_fail\":" + String(d_nvs_fail) + ",\"nvs_fail_key\":\"" + d_nvs_fail_key + "\",\"lib\":\"" + String(lib_fs_on() ? "file" : "nvs") + "\",\"lib_writes\":" + String(lib_writes) + ",\"lib_fails\":" + String(lib_fails) + ",\"lib_bad\":" + String(lib_bad) + "}";  // fw65: + its key; fw71: where the curve library is
     }
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
@@ -3076,6 +3076,13 @@ static void h_curves() {
         if (why) {
             return ok_json(false, why);
         }
+        for (int k = 0; k < CVLIB_N; k++) {  // 10-31 audit: "Save as copy" of an unchanged curve renamed the original (cvlib_add's match)
+            const CurveDecel& o = cvdc[k];
+            if (cvlib[k].used && (cvlib[k].n == n) && !memcmp(cvlib[k].sp, s16, 2 * n) && !memcmp(cvlib[k].g, g16, 2 * n) && (o.n == dn) &&
+                (!dn || (!memcmp(o.pct, dp, dn) && !memcmp(o.g, dgv, 2 * dn)))) {
+                return ok_json(false, (String("that's the same as ") + String(cvlib[k].name) + ": change something first").c_str());  // no quotes: ok_json doesn't escape
+            }
+        }
         if (!lib_fs_on() && (nvs_room() < NVS_KEEP + 5 + (dn ? 3 : 0))) {  // fw71: only while the library is in NVS; fw65: a curve takes 5 entries (fw67: 3 more with a slow-down gain); refused rather than lost at the next power-off
             return ok_json(false, "the QT Py's settings storage is full: delete a curve first");
         }
@@ -3923,8 +3930,8 @@ static bool lib_write() {
     }
     ok = ok && lib_read("/curves.tmp", false);  // what's on flash, read back
     if (ok) {
-        FFat.remove("/curves.bak");
-        if (FFat.exists("/curves.bin")) {
+        if (FFat.exists("/curves.bin")) {  // 10-31 audit: the backup goes only when a newer good copy takes its place
+            FFat.remove("/curves.bak");
             FFat.rename("/curves.bin", "/curves.bak");
         }
         ok = FFat.rename("/curves.tmp", "/curves.bin");
@@ -3996,6 +4003,7 @@ static File fo_file;
 #define FO_HZ_N 4
 static const uint32_t FO_HZ[FO_HZ_N] = { 400000, 200000, 100000, LINK_HZ };
 static uint8_t fo_hz = 0, fo_bad = 0, fo_slower_n = 0;
+static String fo_slow_why;  // why the clock last stepped down (/api/feather "why")
 static uint16_t fo_rd_n = 0, fo_rd_bad = 0;  // status reads at this clock, and those that came back short or garbled
 static File fo_up;  // the upload
 static bool fo_up_seen = false;
@@ -4003,6 +4011,7 @@ static String fo_up_err;
 static uint8_t fo_ub[512];
 static uint16_t fo_ub_n = 0;
 static uint32_t fo_up_end = 0;
+static uint32_t fo_ub_count = 0, fo_ub_total = 0;  // 10-31 audit: UF2 blocks seen, and the file's own count
 
 static bool fo_busy() {
     return (fo_st != FO_IDLE) && (fo_st != FO_DONE) && (fo_st != FO_ERROR);
@@ -4087,6 +4096,7 @@ static const char* fo_err_text(uint8_t e) {
 }
 
 static void fo_fail(const String& why) {
+    bool staged = (fo_st == FO_END) || (fo_st == FO_APPLY);  // 10-31 audit: it may be staged on the Feather
     fo_st = FO_ERROR;
     fo_err = why;
     fo_secs = (millis() - fo_t0) / 1000;
@@ -4094,13 +4104,18 @@ static void fo_fail(const String& why) {
         fo_file.close();
     }
     Wire1.setClock(LINK_HZ);  // fw73
+    if (staged) {
+        fo_frame(C_OTA_ABORT, nullptr, 0);  // so no later reset installs an update that ended in an error
+    }
 }
 
 static void fo_clock(uint8_t k) {  // fw73
     fo_hz = k;
     fo_bad = 0;
     fo_rd_n = fo_rd_bad = 0;
-    Wire1.setClock(FO_HZ[k]);
+    Wire1.end();  // 10-31 audit: a fresh start of the bus too (a Feather that restarted mid-read can leave it stuck)
+    Wire1.begin(LINK_SDA, LINK_SCL, FO_HZ[k]);
+    Wire1.setTimeOut(50);
 }
 
 // fw73: errors at this clock: the next slower one, and the transfer from the start (at the last one: give up)
@@ -4108,6 +4123,7 @@ static void fo_slower(const String& why) {
     if (fo_hz + 1 >= FO_HZ_N) {
         return fo_fail(why);
     }
+    fo_slow_why = why + String(" (at ") + String(FO_HZ[fo_hz] / 1000) + " kHz)";
     fo_clock(fo_hz + 1);
     fo_slower_n++;
     fo_st = FO_BEGIN;
@@ -4140,11 +4156,11 @@ static void fo_tick() {
                 return;
             }
             fo_bad = 0;
-            if ((b[1] == 1) && (le32(b + 8) == fo_size) && (le32(b + 12) == fo_crc)) {
+            if ((b[1] == 1) && (le32(b + 4) == 0) && (le32(b + 8) == fo_size) && (le32(b + 12) == fo_crc)) {  // 10-31 audit: a fresh start, not a stale status
                 fo_st = FO_SEND;
-                fo_sent = le32(b + 4);
+                fo_sent = 0;
                 fo_moved_at = now;
-            } else if (b[3]) {
+            } else if ((b[1] == 0) && ((b[3] == 1) || (b[3] == 2))) {  // refused (no bootloader, size); an older error is the last try's
                 fo_fail(fo_err_text(b[3]));
             }
             return;
@@ -4277,6 +4293,14 @@ static void fo_block(const uint8_t* b) {  // one 512-byte UF2 block of an upload
         fo_up_err = "not a UF2 file";
         return;
     }
+    if (!fo_ub_count) {
+        fo_ub_total = le32(b + 24);
+    }
+    if ((le32(b + 20) != fo_ub_count) || (le32(b + 24) != fo_ub_total)) {  // 10-31 audit: a CRC only covers what arrived
+        fo_up_err = "its blocks aren't one whole file in order";
+        return;
+    }
+    fo_ub_count++;
     if (fl & 1) {
         return;  // "not main flash"
     }
@@ -4311,19 +4335,27 @@ static void fo_block(const uint8_t* b) {  // one 512-byte UF2 block of an upload
     fo_up_end = off + n;
 }
 
+// 10-31 audit: after an upload's last byte: all the blocks the file says it has
+static void fo_up_finish() {
+    if (!fo_up_err.length() && (fo_ub_count != fo_ub_total)) {
+        fo_up_err = String("it's cut short (") + String(fo_ub_count) + " of " + String(fo_ub_total) + " blocks)";
+    }
+}
+
 static void h_fo_upload() {
     HTTPUpload& u = server.upload();
     if (u.status == UPLOAD_FILE_START) {
         fo_up_seen = true;
         fo_ub_n = 0;
         fo_up_end = 0;
+        fo_ub_count = fo_ub_total = 0;
         fo_up_err = String();
         if (fo_busy()) {
             fo_up_err = "an update is running";
             return;
         }
         if (!fs_ok) {
-            fs_ok = FFat.begin(true);
+            fs_ok = fs_mount_or_format();
         }
         fo_up = fs_ok ? FFat.open("/feather.tmp", "w") : File();
         if (!fo_up) {
@@ -4344,6 +4376,7 @@ static void h_fo_upload() {
         if (!fo_up_err.length() && ((u.status == UPLOAD_FILE_ABORTED) || fo_ub_n)) {
             fo_up_err = (u.status == UPLOAD_FILE_ABORTED) ? "the upload stopped" : "not a UF2 file";
         }
+        fo_up_finish();
         if (fo_up_err.length() && fs_ok) {
             FFat.remove("/feather.tmp");
         }
@@ -4361,7 +4394,12 @@ static void fo_inf_load() {  // the stored image's facts, if there's one
         m.close();
     }
     unsigned long size = 0, crc = 0, ver = 0, t = 0;
-    if (sscanf(s.c_str(), "%lu %lx %lu %lu", &size, &crc, &ver, &t) == 4) {
+    File bin = FFat.open("/feather.bin", "r");
+    size_t bin_size = bin ? bin.size() : 0;
+    if (bin) {
+        bin.close();
+    }
+    if ((sscanf(s.c_str(), "%lu %lx %lu %lu", &size, &crc, &ver, &t) == 4) && (size == bin_size)) {  // 10-31 audit: the .inf of this .bin
         fo_size = size;
         fo_crc = crc;
         fo_ver = (uint8_t) ver;
@@ -4418,7 +4456,7 @@ static void h_feather_go() {
         return ok_json(false, "only on the home network");
     }
     if (server.hasArg("abort")) {
-        if (fo_busy() && (fo_st != FO_RESTART)) {
+        if (fo_busy() && (fo_st != FO_APPLY) && (fo_st != FO_RESTART)) {  // 10-31 audit: once APPLY may have gone, the Feather installs it anyway
             fo_frame(C_OTA_ABORT, nullptr, 0);
             fo_fail("stopped");
         }
@@ -4434,6 +4472,10 @@ static void h_feather_go() {
         if (!link_up || !st_ok) {
             fo_file.close();
             return ok_json(false, "the Feather isn't answering");
+        }
+        if (cq_n > 0) {
+            fo_file.close();
+            return ok_json(false, "the Feather is still taking settings: try again in a moment");  // 10-31 audit
         }
         uint8_t b[24];
         if ((st[56] < 40) || !fo_read(b) || !(b[2] & 1)) {
@@ -4469,7 +4511,7 @@ static void h_feather() {
         String j = "{\"state\":\"" + String(FO_NAMES[fo_st]) + "\",\"err\":\"" + fo_err + "\",\"sent\":" + String(fo_sent) + ",\"size\":" + String(fo_size) +
                    ",\"file\":" + (fo_size ? "{\"size\":" + String(fo_size) + ",\"crc\":\"" + String(crc) + "\",\"ver\":" + String(fo_ver) + ",\"t\":" + String(fo_t) + "}" : String("null")) +
                    ",\"boot\":" + String((fo_boot < 0) ? "null" : fo_boot ? "true" : "false") + ",\"fw\":" + String(st_ok ? st[56] : 0) + ",\"from\":" + String(fo_from) +
-                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + ",\"hz\":" + String(FO_HZ[fo_hz]) + ",\"slower\":" + String(fo_slower_n) + "}";  // fw73: the clock it ran at, steps down
+                   ",\"secs\":" + String(fo_busy() ? (millis() - fo_t0) / 1000 : fo_secs) + ",\"hz\":" + String(FO_HZ[fo_hz]) + ",\"slower\":" + String(fo_slower_n) + ",\"why\":\"" + fo_slow_why + "\"}";  // fw73: the clock it ran at, steps down
         server.send(200, "application/json", j);
         return;
     }
@@ -4511,6 +4553,14 @@ static void h_feather() {
     }
     server.send(200, "application/json", "{\"ok\":true,\"size\":" + String(fo_size) + ",\"ver\":" + String(fo_ver) + "}");
 }
+// 10-31 audit: an upload's mount; formatting only while the partition never held the curve library (it would erase it)
+static bool fs_mount_or_format() {
+    if (FFat.begin(false)) {
+        return true;
+    }
+    return !prefs.getUChar("libfs", 0) && FFat.begin(true);
+}
+
 static void page_fs_load() {  // fw41: is there an uploaded page for this firmware?
     page_fs = false;
     if (!fs_ok || !FFat.exists("/page.gz") || !FFat.exists("/page.fw")) {
@@ -4538,7 +4588,7 @@ static void h_page_upload() {
     if (u.status == UPLOAD_FILE_START) {
         page_up_len = 0;
         if (!fs_ok) {
-            fs_ok = FFat.begin(true);  // the first upload formats the partition (a few seconds)
+            fs_ok = fs_mount_or_format();  // the first upload formats the partition (a few seconds); 10-31 audit: not once curves live there
         }
         page_up = fs_ok ? FFat.open("/page.tmp", "w") : File();
         page_up_ok = (bool) page_up;
@@ -4681,10 +4731,15 @@ void setup() {
         tdpi_restore = true;
     }
     fs_ok = FFat.begin(false);  // fw41: an uploaded page (no format here: an unformatted partition waits for the first upload)
+    if (!fs_ok) {
+        delay(50);
+        fs_ok = FFat.begin(false);  // 10-31 audit: once more before the library falls back to NVS
+    }
     page_fs_load();
     fo_inf_load();  // fw69
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
-    lib_fs = fs_ok && (lib_read("/curves.bin", true) || lib_read("/curves.bak", true));  // fw71: the library's file
+    // fw71: the library's file; 10-31 audit: /curves.tmp is a whole checked copy too (a power cut between lib_write's renames)
+    lib_fs = fs_ok && (lib_read("/curves.bin", true) || lib_read("/curves.tmp", true) || lib_read("/curves.bak", true));
     if (!lib_fs) {  // fw49-70: the library in NVS
     cvlib_blob = prefs.isKey("cvlib");      // fw65: a curve per key; the fw49-64 blob is split up once (below)
     if (!cvlib_blob) {
@@ -4792,7 +4847,20 @@ void setup() {
     }
     }  // fw71: !lib_fs
     if (fs_ok && !lib_fs) {  // fw71: the library moves to its file once; NVS's copies go only after it read back right
+        // 10-31 audit: a library file that's there but didn't read back is set aside (name.bad), never written over
+        const char* lib_files[] = { "/curves.bin", "/curves.tmp", "/curves.bak" };
+        for (const char* p : lib_files) {
+            if (FFat.exists(p)) {
+                String bad = String(p) + ".bad";
+                FFat.remove(bad.c_str());
+                FFat.rename(p, bad.c_str());
+                lib_bad++;
+            }
+        }
         lib_fs = lib_write();
+    }
+    if (lib_fs && !prefs.getUChar("libfs", 0)) {
+        prefs.putUChar("libfs", 1);  // 10-31 audit: the library lives in FFat: an upload never formats it (see fs_mount_or_format)
     }
     if (lib_fs) {
         lib_nvs_clear();

@@ -31,7 +31,7 @@ typedef struct {  // page 0 of the record sector
 #define GW_OTA_DATA 0x14   // [offset uint32, 1-40 bytes]: only the next expected offset is taken (the QT Py goes back to it)
 #define GW_OTA_END 0x15    // []: all sent: checked (CRC-32 of the staged copy), then the record is written
 #define GW_OTA_APPLY 0x16  // []: after a good END: restart into gw_boot, which copies it in
-#define GW_OTA_ABORT 0x17  // []
+#define GW_OTA_ABORT 0x17  // []: stops a transfer; v42: a staged (READY) image is dropped too, so no later reset installs it
 
 // the status block a selected read returns (GW_LINK_SEL, block 3): 0 'U', 1 state, 2 bit 0 this build takes updates
 // (it runs after gw_boot), 3 error, 4-7 next expected offset, 8-11 size, 12-15 CRC-32 wanted, 16-19 CRC-32 of the
@@ -44,6 +44,7 @@ typedef struct {  // page 0 of the record sector
 #define GW_OTA_ERR_SIZE 2
 #define GW_OTA_ERR_CRC 3
 #define GW_OTA_ERR_FLASH 4  // a page didn't read back as written
+#define GW_OTA_ERR_IMAGE 5  // v42: the staged image wouldn't start (its vector table isn't one for the app slot)
 
 // CRC-32 as zlib's (reflected 0xEDB88320, ~0 in and out); crc = 0 to start, or a previous result to continue.
 // Bit by bit: no table in gw_boot's 32 KB, and an image takes well under a second either way.
@@ -62,7 +63,17 @@ static inline uint32_t gw_ota_crc32(const uint8_t* d, uint32_t n, uint32_t crc) 
 // the app side (gw_ota.cc)
 void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now);
 void gw_ota_tick(uint32_t now);  // publishes the status block; the restart after APPLY
-bool gw_ota_busy();              // receiving or about to restart
 #endif
+
+// v42: an image whose vector table (at +0x100, as boot2 starts one) has a stack pointer in RAM and a Thumb reset vector
+// inside the app slot: what gw_boot will start. vt = the image's word at +0x100 wherever it lies (staging or app slot);
+// base = the app slot's address as images are linked: GW_OTA_LINK_BASE
+#ifndef GW_OTA_LINK_BASE
+#define GW_OTA_LINK_BASE ((uint32_t) (XIP_BASE + GW_OTA_APP_OFFSET))  // a host test with real images sets 0x10008000u
+#endif
+static inline int gw_ota_startable(const uint32_t* vt, uint32_t base) {
+    uint32_t sp = vt[0], pc = vt[1];
+    return (sp > 0x20000000u) && (sp <= 0x20042000u) && (pc & 1u) && (pc - base < GW_OTA_SLOT_MAX);
+}
 
 #endif

@@ -96,7 +96,8 @@ endif()
 pico_add_extra_outputs(remapper)
 
 # v40: updates through the QT Py (src/gw_ota.h), Feather only: the same firmware linked after the bootloader, and the
-# bootloader. A first install over USB needs both (feather-build.ps1 merges their UF2s); later updates send only the app.
+# bootloader. A first install over USB copies both, gw_boot first (feather-build.ps1 writes <name>_gwboot.uf2 and
+# <name>_ota.uf2; one merged UF2 didn't take on the Feather, 10-31); later updates send only the app.
 if(PICO_BOARD STREQUAL "feather_host")
     get_target_property(REMAPPER_OTA_SOURCES remapper SOURCES)
     add_executable(remapper_ota ${REMAPPER_OTA_SOURCES})

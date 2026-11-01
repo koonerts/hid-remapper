@@ -46,9 +46,7 @@ static void mark_done(void) {
 
 // the app slot holds something startable: a stack pointer in RAM and a Thumb reset vector inside the slot
 static bool app_ok(void) {
-    const uint32_t* vt = (const uint32_t*) xip(GW_OTA_APP_OFFSET + 0x100);
-    uint32_t sp = vt[0], pc = vt[1], base = (uint32_t) (XIP_BASE + GW_OTA_APP_OFFSET);
-    return (sp > 0x20000000u) && (sp <= 0x20042000u) && (pc & 1u) && (pc - base < GW_OTA_SLOT_MAX);  // (below base wraps high)
+    return gw_ota_startable((const uint32_t*) xip(GW_OTA_APP_OFFSET + 0x100), GW_OTA_LINK_BASE);
 }
 
 // the decision: copy a staged update in if there is one; true = start the app, false = the ROM's USB drive
@@ -56,8 +54,9 @@ bool gw_boot_run(void) {
     const gw_ota_rec_t* r = (const gw_ota_rec_t*) xip(GW_OTA_REC_OFFSET);
     uint32_t done = *(const uint32_t*) xip(GW_OTA_DONE_OFFSET);
     if ((r->magic == GW_OTA_MAGIC) && (done == 0xFFFFFFFFu)) {
-        if ((r->size == 0) || (r->size > GW_OTA_SLOT_MAX) || (crc_at(GW_OTA_STAGE_OFFSET, r->size) != r->crc)) {
-            mark_done();  // a damaged staged copy: dropped, the app there stays
+        if ((r->size < 0x108) || (r->size > GW_OTA_SLOT_MAX) || (crc_at(GW_OTA_STAGE_OFFSET, r->size) != r->crc) ||
+            !gw_ota_startable((const uint32_t*) xip(GW_OTA_STAGE_OFFSET + 0x100), GW_OTA_LINK_BASE)) {
+            mark_done();  // a damaged staged copy, or one that wouldn't start (v42): dropped, the app there stays
         } else {
             bool copied = false;
             for (int k = 0; (k < GW_BOOT_TRIES) && !copied; k++) {

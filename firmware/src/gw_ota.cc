@@ -21,7 +21,7 @@ extern const char gw_fw_tag[];  // gw_mouse.cc: "GWFW:v<version>;"
 #endif
 
 static uint8_t st = GW_OTA_IDLE, err = 0;
-static uint32_t size = 0, crc = 0, expect = 0, got_crc = 0;
+static uint32_t size = 0, crc = 0, expect = 0, got_crc = 0, seq_last = 0;  // v42: seq_last = the record's count before BEGIN dropped it
 static uint8_t page[FLASH_PAGE_SIZE];
 static uint16_t page_n = 0;
 static bool reboot_due = false;
@@ -61,7 +61,7 @@ static bool flash_page(uint32_t off) {
 }
 
 static bool write_record() {
-    gw_ota_rec_t r = { GW_OTA_MAGIC, size, crc, (rec()->magic == GW_OTA_MAGIC) ? rec()->seq + 1 : 1 };
+    gw_ota_rec_t r = { GW_OTA_MAGIC, size, crc, ++seq_last };
     memset(page, 0xFF, sizeof(page));
     memcpy(page, &r, sizeof(r));
     flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
@@ -86,6 +86,9 @@ void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now) {
                 return;
             }
             // an older record goes: a restart mid-transfer must not copy a half-written staging slot
+            if (rec()->magic == GW_OTA_MAGIC) {
+                seq_last = rec()->seq;
+            }
             if (rec()->magic != 0xFFFFFFFFu) {
                 flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
             }
@@ -130,6 +133,10 @@ void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now) {
                 fail(GW_OTA_ERR_CRC);
                 return;
             }
+            if ((size < 0x108) || !gw_ota_startable((const uint32_t*) (XIP_BASE + GW_OTA_STAGE_OFFSET + 0x100), GW_OTA_LINK_BASE)) {
+                fail(GW_OTA_ERR_IMAGE);  // v42: e.g. the plain build (linked at 0): installed, it would leave only the USB drive
+                return;
+            }
             if (!write_record()) {
                 fail(GW_OTA_ERR_FLASH);
                 return;
@@ -147,6 +154,9 @@ void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now) {
             dirty = true;
             return;
         case GW_OTA_ABORT:
+            if (st == GW_OTA_READY) {
+                flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);  // v42: staged but stopped: no later reset installs it
+            }
             if (st != GW_OTA_APPLYING) {
                 st = GW_OTA_IDLE;
                 dirty = true;
@@ -166,7 +176,6 @@ void gw_ota_tick(uint32_t now) {
     if (!dirty && (now - pub_at < 100000)) {
         return;
     }
-    dirty = false;
     pub_at = now;
     uint8_t b[GW_LINK_OTA_LEN];
     memset(b, 0, sizeof(b));
@@ -187,9 +196,6 @@ void gw_ota_tick(uint32_t now) {
     }
     b[22] = v;
     b[GW_LINK_OTA_LEN - 1] = gw_crc8(b, GW_LINK_OTA_LEN - 1);
-    gw_link_set_block(3, b);
+    dirty = !gw_link_set_block(3, b);  // v42: refused while that buffer was being read: again next pass
 }
 
-bool gw_ota_busy() {
-    return (st == GW_OTA_RX) || (st == GW_OTA_APPLYING);
-}

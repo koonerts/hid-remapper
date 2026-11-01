@@ -30,7 +30,7 @@ static uint64_t last_us = 0;
 static bool have_t = false;
 static uint64_t moved_us = 0;  // v31: the last frame with motion
 static bool moved = false;
-static uint8_t last_on = 0xFF;  // v31: the last payload's on byte (an identical resend changes nothing)
+static uint8_t last_p[4 + 4 * GW_CURVE_N], last_len = 0xFF;  // v31: an identical resend changes nothing; v42: the whole payload (a crc8 match let 1 change in 256 through as "the same")
 static float rx = 0, ry = 0;  // carried fractions
 // v32: the live view
 static uint16_t dpi_now = 0;
@@ -44,7 +44,8 @@ static uint32_t hist_ms = 0;
 static uint8_t hist_resets = 0;
 // v39: the slow-down gain
 static bool dc_on = false, dc_got = false;
-static uint8_t dc_n = 0, dc_crc = 0, dc_last_on = 0xFF;
+static uint8_t dc_n = 0, dc_crc = 0;
+static uint8_t dc_last_p[1 + 3 * GW_DECEL_N], dc_last_len = 0xFF;  // v42: the last payload, whole (as last_p)
 static float dc_r[GW_DECEL_N], dc_g[GW_DECEL_N];  // share of the peak (0-1), gain
 static float dc_pk = 0, dc_tr = 0;                 // cm/s: the stroke's peak, the slowest since it
 static float dc_gn = 1.0f;                         // the slow-down gain now (eased)
@@ -80,10 +81,13 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
 
 void gw_curve_link(const uint8_t* d, uint8_t len) {
     uint8_t crc = (len > 1) ? gw_crc8(d + 1, len - 1) : 0;
-    if (got && (len >= 1) && (crc == table_crc) && (d[0] == last_on)) {
+    if (got && (len == last_len) && !memcmp(d, last_p, len)) {
         return;  // v31: the QT Py sent the same again (it resends while it can't confirm): keep the speed and the carry
     }
-    last_on = (len >= 1) ? d[0] : 0xFF;
+    last_len = (len <= sizeof(last_p)) ? len : 0xFF;
+    if (last_len != 0xFF) {
+        memcpy(last_p, d, len);
+    }
     uint16_t sp[GW_CURVE_N] = {}, g[GW_CURVE_N] = {};
     uint8_t n = (len >= 4) ? (len - 4) / 4 : 0;
     bool ok = (len >= 4) && ((len - 4) % 4 == 0) && (n <= GW_CURVE_N);
@@ -117,10 +121,13 @@ void gw_curve_decel_set(bool want, uint8_t n, const uint8_t* pct, const uint16_t
 
 void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
     uint8_t crc = (len > 1) ? gw_crc8(d + 1, len - 1) : 0;
-    if (dc_got && (len >= 1) && (crc == dc_crc) && (d[0] == dc_last_on)) {
+    if (dc_got && (len == dc_last_len) && !memcmp(d, dc_last_p, len)) {
         return;  // the same again (the QT Py resends while it can't confirm): keep the stroke
     }
-    dc_last_on = (len >= 1) ? d[0] : 0xFF;
+    dc_last_len = (len <= sizeof(dc_last_p)) ? len : 0xFF;
+    if (dc_last_len != 0xFF) {
+        memcpy(dc_last_p, d, len);
+    }
     uint8_t pct[GW_DECEL_N] = {};
     uint16_t g[GW_DECEL_N] = {};
     uint8_t n = (len >= 1) ? (len - 1) / 3 : 0;
@@ -153,6 +160,10 @@ static float decel_at(float r) {  // r = the speed's share of the stroke's peak
 // again: a new peak, so only slowing down gets the gain. It eases toward its value by the speed's own smoothing (a =
 // 1 - e^(-dt/tau), 0 for the first frame from rest), so neither the switch at the peak nor a new rise is a step.
 static float decel_step(float a) {
+    if (spd < GW_CURVE_STILL) {  // v42: still: the stroke is over (at 40,000 DPI a resting mouse's stray counts never
+        dc_stroke();             // leave the 50 ms gap, so slow aim after a rest kept the last flick's peak and its lowest gain)
+        return dc_gn;
+    }
     if (spd >= dc_pk) {
         dc_pk = dc_tr = spd;
     } else if (spd < dc_tr) {

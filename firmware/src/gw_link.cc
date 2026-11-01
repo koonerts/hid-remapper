@@ -154,16 +154,17 @@ void gw_link_set_status(const uint8_t* status) {
     status_cur = next;
 }
 
-void gw_link_set_block(uint8_t which, const uint8_t* data) {
+bool gw_link_set_block(uint8_t which, const uint8_t* data) {
     uint8_t* b0 = (which == 1) ? live_buf[0] : (which == 2) ? hist_buf[0] : ota_buf[0];
     uint8_t* b1 = (which == 1) ? live_buf[1] : (which == 2) ? hist_buf[1] : ota_buf[1];
     volatile uint8_t& cur = (which == 1) ? live_cur : (which == 2) ? hist_cur : ota_cur;
     uint8_t next = cur ^ 1;
     if ((tx_i != 0) && (tx_buf == (next ? b1 : b0))) {
-        return;  // being read right now
+        return false;  // being read right now
     }
     memcpy(next ? b1 : b0, data, (which == 1) ? GW_LINK_LIVE_LEN : (which == 2) ? GW_LINK_HIST_LEN : GW_LINK_OTA_LEN);
     cur = next;
+    return true;
 }
 
 #else
@@ -178,7 +179,8 @@ bool gw_link_take_frame(uint8_t* buf, uint8_t* len) {
 void gw_link_set_status(const uint8_t* status) {
 }
 
-void gw_link_set_block(uint8_t which, const uint8_t* data) {
+bool gw_link_set_block(uint8_t which, const uint8_t* data) {
+    return true;
 }
 
 #endif
