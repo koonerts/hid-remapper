@@ -23,6 +23,7 @@
 #include "crc.h"
 #include "descriptor_parser.h"
 #include "globals.h"
+#include "gw_ota.h"
 #include "i2c.h"
 #include "mcp4651.h"
 #include "our_descriptor.h"
@@ -193,8 +194,10 @@ void do_persist_config(uint8_t* buffer) {
 #if !PICO_COPY_TO_RAM
     uint32_t ints = save_and_disable_interrupts();
 #endif
+    uint8_t was = gw_where(GW_AT_PERSIST);  // gw v48
     flash_range_erase(CONFIG_OFFSET_IN_FLASH, PERSISTED_CONFIG_SIZE);
     flash_range_program(CONFIG_OFFSET_IN_FLASH, buffer, PERSISTED_CONFIG_SIZE);
+    gw_where(was);
 #if !PICO_COPY_TO_RAM
     restore_interrupts(ints);
 #endif
@@ -264,12 +267,15 @@ int main() {
     // gw v47: a Feather that stops (11-01: during an update, mouse input and the link to the QT Py both died until it was
     // replugged) restarts by itself. 4 s: longer than any one flash erase here (a 64 KB block, 2 s at most). A watchdog
     // restart leaves the watchdog off, so gw_boot's copy of an update isn't cut short; the idle stage is kept (gw_keep)
+    // v48: first, what a freeze left (block 4 for the QT Py), and the catch that records where the next one is
+    gw_freeze_init();
     watchdog_enable(4000, true);
 
     while (true) {
         watchdog_update();
         bool tick;
         bool new_report;
+        gw_where(GW_AT_LOOP);  // gw v48
         read_report(&new_report, &tick);
         if (new_report) {
             activity_led_on();
@@ -279,6 +285,7 @@ int main() {
             their_descriptor_updated = false;
         }
         if (tick) {
+            gw_where(GW_AT_TICK);
             bool gpio_state_changed = read_gpio(time_us_64());
             if (gpio_state_changed) {
                 activity_led_on();
@@ -292,7 +299,9 @@ int main() {
             mcp4651_write();
 #endif
         }
+        gw_where(GW_AT_TUD);
         tud_task();
+        gw_where(GW_AT_SEND);
         if (boot_protocol_updated) {
             parse_our_descriptor();
             boot_protocol_updated = false;

@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 76    // this firmware's number, shown in /api/status; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 77    // this firmware's number, shown in /api/status; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -1084,6 +1084,7 @@ static void link_tick() {
     if (chords_supported() && (!ch_ok || (ch[1] != st[124]) || (events_supported() && ((st[117] >> 4) != ev_nib)))) {
         read_chords();
     }
+    fz_check((st[56] >= 48) && (st[2] & 16));  // fw77
     // a restarted Feather has lost its tuning flag: re-baseline the counter, give back the settings
     if (feather_init_done && !(st[2] & 1)) {
         feather_init_done = false;
@@ -1680,6 +1681,7 @@ static void h_status() {
         }
         j += ",\"nvs_fail\":" + String(d_nvs_fail) + ",\"nvs_fail_key\":\"" + d_nvs_fail_key + "\",\"lib\":\"" + String(lib_fs_on() ? "file" : lib_off ? "off" : "nvs") + "\",\"lib_writes\":" + String(lib_writes) + ",\"lib_fails\":" + String(lib_fails) + ",\"lib_bad\":" + String(lib_bad) + "}";  // fw65: + its key; fw71: where the curve library is
     }
+    j += fz_json();  // fw77
     j += ",\"pending\":" + String(cq_n);
     j += ",\"radio\":{\"mode\":\"";
     j += (radio == Radio::STA) ? "sta" : (radio == Radio::AP) ? "ap" : (radio == Radio::JOINING) ? "joining" : "off";
@@ -2763,7 +2765,7 @@ static uint8_t read_sel_once(uint8_t which, uint8_t* b, uint8_t len) {  // 0 ok,
         lvf_bad_len = len;
         return 1;
     }
-    if ((b[0] != 'L') && (b[0] != 'H')) {
+    if ((b[0] != 'L') && (b[0] != 'H') && (b[0] != 'F')) {  // fw77: + 'F', block 4
         lvf_mark++;
         return 1;
     }
@@ -2787,6 +2789,71 @@ static bool read_sel(uint8_t which, uint8_t* b, uint8_t len) {
     }
     return r == 0;
 }
+// fw77: what the Feather's last freeze left (Feather v48: block 4, layout in the fork's gw_ota.h). While the Feather says it
+// holds one (status byte 2 bit 4; during an update, block 3 byte 2 bit 2) it's read every 5 s. One that differs from the
+// last read this boot is a new freeze: kept with the time it was read, here and in NVS ("fz"), and counted.
+#define FZ_LEN 32
+struct FzRec {
+    uint32_t t;      // unix time it was read (0: before the clock was known)
+    uint32_t total;  // freezes read since the first one kept
+    uint8_t blk[FZ_LEN];
+};
+static FzRec fz = {};
+static bool fz_have = false, fz_flag = false, fz_flag_ota = false, fz_seen_ok = false;
+static uint8_t fz_seen[FZ_LEN];
+static uint32_t fz_at = 0, fz_ms = 0, fz_reads = 0, fz_fails = 0;
+static uint16_t fz_boot = 0;
+
+static void fz_check(bool flag) {
+    fz_flag = flag;
+    if (!flag || (fz_at && (millis() - fz_at < 5000))) {
+        return;
+    }
+    fz_at = millis() | 1;
+    uint8_t b[FZ_LEN];
+    if (!read_sel(4, b, FZ_LEN) || (b[0] != 'F') || (b[1] != 1)) {
+        fz_fails++;
+        return;
+    }
+    fz_reads++;
+    if (!b[3] || (fz_seen_ok && !memcmp(b, fz_seen, FZ_LEN))) {
+        return;
+    }
+    memcpy(fz_seen, b, FZ_LEN);
+    fz_seen_ok = true;
+    memcpy(fz.blk, b, FZ_LEN);
+    fz.t = now_unix();
+    fz.total++;
+    fz_have = true;
+    fz_ms = millis();
+    fz_boot = (uint16_t) b_boots;
+    nvs_put("fz", &fz, sizeof(fz));
+}
+
+static String hex32(uint32_t v) {
+    char s[11];
+    snprintf(s, sizeof(s), "0x%08lx", (unsigned long) v);
+    return String(s);
+}
+
+static String fz_json() {
+    String j = ",\"fz\":{\"flag\":" + String(fz_flag ? "true" : "false") + ",\"reads\":" + String(fz_reads) + ",\"fails\":" + String(fz_fails) +
+               ",\"total\":" + String(fz.total);
+    if (fz_have) {
+        static const char* const STEP[] = { "start", "USB host task (the mouse)", "tick (mapping, gw_tick)", "USB device task (the XIM)",
+                                            "reports out", "config save", "link frame", "update: erase", "update: page", "update: record",
+                                            "update: CRC", "update: restart", "chord table save" };
+        const uint8_t* b = fz.blk;
+        bool here = fz_ms && (fz_boot == (uint16_t) b_boots);
+        j += ",\"last\":{\"t\":" + String(fz.t) + ",\"ago_s\":" + String(here ? (long) ((millis() - fz_ms) / 1000) : -1L) +
+             ",\"since_power_on\":" + String(b[2]) + ",\"step\":" + String(b[4]) + ",\"step_name\":\"" + String((b[4] < 13) ? STEP[b[4]] : "?") +
+             "\",\"cmd\":" + String(b[5]) + ",\"ota\":" + String(b[6]) + ",\"off\":" + String(le32(b + 10)) + ",\"caught\":\"" +
+             String((b[7] == 1) ? "still" : (b[7] == 2) ? "fault" : "none") + "\",\"exc\":" + String(b[8]) + ",\"times\":" + String(b[9]) +
+             ",\"pc\":\"" + hex32(le32(b + 14)) + "\",\"lr\":\"" + hex32(le32(b + 18)) + "\",\"pc2\":\"" + hex32(le32(b + 22)) + "\"}";
+    }
+    return j + "}";
+}
+
 static void lv_push(uint16_t v) {
     lv_ring[lv_n % LV_RING] = v;
     lv_n++;
@@ -4276,6 +4343,7 @@ static bool fo_read(uint8_t* b) {
         }
         if ((b[0] == 'U') && (crc8(b, 23) == b[23])) {
             fo_rd_n++;
+            fz_flag_ota = (b[22] >= 48) && (b[2] & 4);  // fw77: block 4 holds a freeze (read between frames, loop())
             return true;
         }
         if (b[0] != 'G') {  // fw73: garbled (a pre-v40 Feather's status block isn't the bus's fault)
@@ -4948,6 +5016,13 @@ void setup() {
     prefs.putULong("boots", b_boots);
     edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
+    fz_have = prefs.getBytes("fz", &fz, sizeof(fz)) == sizeof(fz);                  // fw77: the last Feather freeze
+    if (!fz_have) {
+        fz = {};
+    } else {  // review 11-02: a Feather still reporting it after only the QT Py restarted is the same freeze
+        memcpy(fz_seen, fz.blk, FZ_LEN);
+        fz_seen_ok = true;
+    }
     hprof_n = prefs.getBytes("hprof", hprof, sizeof(hprof)) / sizeof(HostProf);     // fw24: a stage per host
     calib_n = prefs.getBytes("calib3", calib, sizeof(calib)) / sizeof(CalibRec);  // fw27: calibration summaries (fw36: + speed, fw64: + src)
     if (!calib_n && prefs.isKey("calib2")) {  // fw64: move the fw36-63 records (47 bytes, no src) over once
@@ -5214,6 +5289,9 @@ void setup() {
 void loop() {
     if (fo_busy()) {  // fw69: an update has the link to itself; the page keeps being served
         fo_tick();
+        if (fz_flag_ota && fo_busy()) {
+            fz_check(true);  // fw77: a Feather that froze mid-update and was restarted by its watchdog
+        }
         radio_tick();
         if (radio != Radio::OFF) {
             server.handleClient();

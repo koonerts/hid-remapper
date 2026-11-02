@@ -34,7 +34,8 @@ typedef struct {  // page 0 of the record sector
 #define GW_OTA_ABORT 0x17  // []: stops a transfer; v42: a staged (READY) image is dropped too, so no later reset installs it
 
 // the status block a selected read returns (GW_LINK_SEL, block 3): 0 'U', 1 state, 2 bit 0 this build takes updates
-// (it runs after gw_boot), bit 1 (v43) it takes data frames of up to GW_OTA_DATA_MAX bytes and erases ahead, 3 error, 4-7 next expected offset, 8-11 size, 12-15 CRC-32 wanted, 16-19 CRC-32 of the
+// (it runs after gw_boot), bit 1 (v43) it takes data frames of up to GW_OTA_DATA_MAX bytes and erases ahead, bit 2 (v48)
+// block 4 holds what a freeze left (the last restart was the watchdog's), 3 error, 4-7 next expected offset, 8-11 size, 12-15 CRC-32 wanted, 16-19 CRC-32 of the
 // staged copy (after END), 20-21 updates staged (the record's seq), 22 this firmware's version, 23 crc8 of 0-22
 #define GW_OTA_IDLE 0
 #define GW_OTA_RX 1
@@ -68,6 +69,33 @@ void gw_ota_tick(uint32_t now);
 // v46: a word kept through the Feather's own restart (an update's, or any watchdog reset); 0 after a power-on
 void gw_keep_set(uint32_t v);
 uint32_t gw_keep_get();  // publishes the status block; the restart after APPLY
+
+// v48: what the Feather was doing when it froze, for after the watchdog's restart (main.cc). gw_where(step) marks each
+// part of the main loop (and returns the step it replaces, to put back); gw_freeze_init() runs once at start, before the
+// watchdog is on: it takes what the frozen run left into block 4 and starts the catch (gw_ota.cc).
+// Block 4 (GW_LINK_SEL 4, GW_LINK_DIAG_LEN bytes): 0 'F'   1 layout (1)   2 freezes since power-on (at most 15)
+//   3 1 = the last restart was a freeze (the rest describes it; else 4-30 are 0)   4 step (GW_AT_*)   5 the last link
+//   command taken   6 the update's state (GW_OTA_*)   7 what the catch found: 0 nothing (it never ran: interrupts off, or
+//   the CPU stalled on the bus), 1 the main loop still for 2.5 s, 2 a hard fault   8 the exception that was running
+//   (0 the main loop, 3 a hard fault, 16 + n IRQ n)   9 times caught (every 0.5 s while still)   10-13 the update's
+//   offset (the next expected; erasing: the next block)   14-17 the first PC caught   18-21 its LR   22-25 the latest
+//   PC   26-30 0   31 crc8 of 0-30
+#define GW_AT_LOOP 1     // the USB host's task (the mouse); a pass of the main loop starts here
+#define GW_AT_TICK 2     // a tick's processing (the mapping, gw_tick)
+#define GW_AT_TUD 3      // the USB device's task (the XIM)
+#define GW_AT_SEND 4     // reports out, the rest of the main loop
+#define GW_AT_PERSIST 5  // HID Remapper's config written to flash
+#define GW_AT_LINK 6     // a link frame applied (byte 5: its command)
+#define GW_AT_ERASE 7    // an update: a staging block erased
+#define GW_AT_PAGE 8     // an update: a page written
+#define GW_AT_RECORD 9   // an update: its record written or dropped
+#define GW_AT_CHECK 10   // an update: the staged copy's CRC-32
+#define GW_AT_HALT 11    // after APPLY: waiting for the restart into gw_boot
+#define GW_AT_CHORDS 12  // the chord table written to flash
+uint8_t gw_where(uint8_t step);
+void gw_where_cmd(uint8_t cmd);
+void gw_freeze_init();
+bool gw_freeze_kept();  // the last restart was a freeze: block 4 says what it left
 #endif
 
 // v42: an image whose vector table (at +0x100, as boot2 starts one) has a stack pointer in RAM and a Thumb reset vector

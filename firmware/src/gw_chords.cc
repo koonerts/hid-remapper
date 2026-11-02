@@ -92,6 +92,7 @@ static bool rec_parse(const uint8_t* b, gw_rule_t* rules, uint8_t* n) {
 
 #if defined(FEATHER_HOST_BOARD)
 
+#include "gw_ota.h"  // v48: gw_where
 #include "hardware/flash.h"
 #include "hardware/regs/addressmap.h"
 #include "hardware/sync.h"
@@ -118,10 +119,12 @@ static bool flash_write(const uint8_t* rec, uint8_t len) {
 #if !PICO_COPY_TO_RAM
     uint32_t ints = save_and_disable_interrupts();
 #endif
+    uint8_t was = gw_where(GW_AT_CHORDS);  // v48
     flash_range_erase(CH_FLASH_OFFSET, FLASH_SECTOR_SIZE);
     if (rec != NULL) {
         flash_range_program(CH_FLASH_OFFSET, page, FLASH_PAGE_SIZE);
     }
+    gw_where(was);
 #if !PICO_COPY_TO_RAM
     restore_interrupts(ints);
 #endif

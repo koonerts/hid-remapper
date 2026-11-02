@@ -13,6 +13,10 @@
 #include "gw_link.h"
 #include "hardware/flash.h"
 #include "hardware/watchdog.h"
+#ifndef GW_NO_CATCH  // v48: the host tests have no timer or interrupts
+#include "hardware/irq.h"
+#include "hardware/timer.h"
+#endif
 
 extern const char gw_fw_tag[];  // gw_mouse.cc: "GWFW:v<version>;"
 
@@ -43,6 +47,27 @@ static bool reboot_due = false;
 static uint32_t reboot_at = 0;
 static bool dirty = true;
 
+// v48: what a freeze left. Watchdog scratch registers outlive the watchdog's restart (main.cc) and gw_boot; a power-on
+// clears them (0 is gw_keep's, 4 the SDK's: watchdog_enable_caused_reboot). 1: where the main loop is (gw_where): bits
+// 0-7 the step, 8-15 the last link command, 16-23 the update's state, 24-27 freezes since power-on, 28-31 0xA. 2: the
+// update's offset. Written only by gw_catch (below): 3 the first PC caught, 5 bits 0-7 the exception that was running,
+// 8-15 1 still / 2 fault, 16-23 times caught, 24-31 0xC7; 6 the LR with the first PC; 7 the latest PC.
+#ifndef GW_SCRATCH
+#define GW_SCRATCH(i) (watchdog_hw->scratch[i])
+#endif
+#define GW_CATCH_EVERY_US 500000u
+#define GW_CATCH_STILL_US 2500000u  // under the watchdog's 4 s, over any one flash erase (a 64 KB block: 2 s at most)
+
+static uint32_t where_hi = 0;
+static uint8_t where_step = 0, where_cmd = 0;
+static volatile uint32_t beat_us = 0;  // the main loop's last pass (gw_catch compares)
+#ifndef GW_NO_CATCH
+static volatile bool caught = false;  // gw_catch recorded something since the main loop's last pass
+static int catch_alarm = -1;
+#endif
+static uint8_t fz[GW_LINK_DIAG_LEN];
+static bool fz_kept = false;
+
 static uint32_t get32(const uint8_t* p) {
     return (uint32_t) p[0] | (uint32_t) p[1] << 8 | (uint32_t) p[2] << 16 | (uint32_t) p[3] << 24;
 }
@@ -63,21 +88,149 @@ static void fail(uint8_t e) {
     dirty = true;
 }
 
+uint8_t gw_where(uint8_t step) {
+    uint8_t was = where_step;
+    where_step = step;
+#ifndef GW_NO_CATCH
+    if (step == GW_AT_LOOP) {
+        beat_us = time_us_32();
+        if (catch_alarm >= 0) {
+            // review 11-02: the catch's alarm goes 2.5 s ahead every pass, so while the loop runs it never fires (its
+            // interrupt is above the USB frame's: a needless one could land inside a packet's handshake)
+            timer_hw->alarm[catch_alarm] = beat_us + GW_CATCH_STILL_US;
+        }
+        if (caught) {  // review 11-02: a stall the loop came out of isn't the freeze a later restart reports
+            caught = false;
+            GW_SCRATCH(3) = 0;
+            GW_SCRATCH(5) = 0;
+            GW_SCRATCH(6) = 0;
+            GW_SCRATCH(7) = 0;
+        }
+    }
+#endif
+    GW_SCRATCH(1) = where_hi | (uint32_t) st << 16 | (uint32_t) where_cmd << 8 | step;
+    GW_SCRATCH(2) = (st == GW_OTA_ERASING) ? erase_at : expect;
+    return was;
+}
+
+void gw_where_cmd(uint8_t cmd) {
+    where_cmd = cmd;
+}
+
+bool gw_freeze_kept() {
+    return fz_kept;
+}
+
+#ifndef GW_NO_CATCH
+// From a top-priority timer interrupt every 0.5 s (kind 1), and the hard-fault handler (kind 2), with the frame the
+// CPU stacked on entry: r0-r3, r12, LR, PC, xPSR. In RAM, as everything an interrupt runs (gw_link.cc). Kind 1 fires
+// only once the main loop has been still for 2.5 s (gw_where pushes its alarm ahead), then every 0.5 s until the
+// watchdog restarts the Feather 1.5 s later.
+extern "C" void __not_in_flash_func(gw_catch_c)(const uint32_t* frame, uint32_t kind) {
+    if (kind == 1) {
+        timer_hw->intr = 1u << catch_alarm;
+        timer_hw->alarm[catch_alarm] = timer_hw->timerawl + GW_CATCH_EVERY_US;
+        if (timer_hw->timerawl - beat_us < GW_CATCH_STILL_US) {
+            return;
+        }
+    }
+    uint32_t info = GW_SCRATCH(5), n = ((info >> 24) == 0xC7) ? (info >> 16) & 0xFF : 0;
+    if (n == 0) {
+        GW_SCRATCH(3) = frame[6];
+        GW_SCRATCH(6) = frame[5];
+    }
+    GW_SCRATCH(7) = frame[6];
+    GW_SCRATCH(5) = 0xC7000000u | ((n < 255) ? n + 1 : 255) << 16 | kind << 8 | (frame[7] & 0x3F);
+    caught = true;
+    if (kind == 2) {
+        __asm volatile("1: b 1b");  // a fault: the watchdog restarts it
+    }
+}
+
+// the stacked frame (MSP, or PSP when the LR says so) and the kind, to gw_catch_c; no prologue, so SP is the frame
+#define GW_CATCH_ENTRY(kind)                                                                                       \
+    "movs r1, #4\n mov r2, lr\n tst r2, r1\n beq 1f\n mrs r0, psp\n b 2f\n1: mrs r0, msp\n2: movs r1, #" #kind "\n" \
+    " ldr r2, =gw_catch_c\n bx r2\n .ltorg\n"
+extern "C" void __attribute__((naked, section(".time_critical.gw_catch_isr"))) gw_catch_isr() {
+    __asm volatile(GW_CATCH_ENTRY(1));
+}
+// in place of crt0's (a bkpt that locks the CPU up until the watchdog restarts it, recording nothing)
+extern "C" void __attribute__((naked, section(".time_critical.isr_hardfault"))) isr_hardfault() {
+    __asm volatile(GW_CATCH_ENTRY(2));
+}
+#endif
+
+void gw_freeze_init() {
+    uint32_t w = GW_SCRATCH(1), info = GW_SCRATCH(5);
+    uint32_t n = ((w >> 28) == 0xA) ? (w >> 24) & 0x0F : 0;
+    fz_kept = watchdog_enable_caused_reboot();
+    memset(fz, 0, sizeof(fz));
+    fz[0] = 'F';
+    fz[1] = 1;
+    if (fz_kept) {
+        n += (n < 15) ? 1 : 0;
+        fz[3] = 1;
+        fz[4] = w & 0xFF;
+        fz[5] = (w >> 8) & 0xFF;
+        fz[6] = (w >> 16) & 0xFF;
+        put32(fz + 10, GW_SCRATCH(2));
+        if ((info >> 24) == 0xC7) {
+            fz[7] = (info >> 8) & 0xFF;
+            fz[8] = info & 0xFF;
+            fz[9] = (info >> 16) & 0xFF;
+            put32(fz + 14, GW_SCRATCH(3));
+            put32(fz + 18, GW_SCRATCH(6));
+            put32(fz + 22, GW_SCRATCH(7));
+        }
+    }
+    fz[2] = n;
+    fz[GW_LINK_DIAG_LEN - 1] = gw_crc8(fz, GW_LINK_DIAG_LEN - 1);
+    gw_link_set_block(4, fz);
+    GW_SCRATCH(2) = 0;
+    GW_SCRATCH(3) = 0;
+    GW_SCRATCH(5) = 0;
+    GW_SCRATCH(6) = 0;
+    GW_SCRATCH(7) = 0;
+    where_hi = 0xA0000000u | n << 24;
+    gw_where(0);
+#ifndef GW_NO_CATCH
+    catch_alarm = hardware_alarm_claim_unused(false);  // the default alarm pool has 3; PIO-USB none (skip_alarm_pool)
+    if (catch_alarm >= 0) {
+        uint irq = TIMER_IRQ_0 + catch_alarm;
+        irq_set_exclusive_handler(irq, gw_catch_isr);
+        irq_set_priority(irq, 0);  // above the USB frame timer and the link: it must get in while one of them is stuck
+        hw_set_bits(&timer_hw->inte, 1u << catch_alarm);
+        timer_hw->alarm[catch_alarm] = timer_hw->timerawl + GW_CATCH_STILL_US;
+        irq_set_enabled(irq, true);
+    }
+#endif
+}
+
 // the page buffer to staging offset off (the bytes after page_n as 0xFF); v43: the slot was erased ahead (ERASING)
 static bool flash_page(uint32_t off) {
     memset(page + page_n, 0xFF, FLASH_PAGE_SIZE - page_n);
     uint32_t a = GW_OTA_STAGE_OFFSET + off;
+    uint8_t was = gw_where(GW_AT_PAGE);  // v48
     flash_range_program(a, page, FLASH_PAGE_SIZE);
+    gw_where(was);
     page_n = 0;
     return !memcmp((const void*) (XIP_BASE + a), page, FLASH_PAGE_SIZE);
+}
+
+static void record_erase() {  // v48: the record dropped, marked
+    uint8_t was = gw_where(GW_AT_RECORD);
+    flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
+    gw_where(was);
 }
 
 static bool write_record() {
     gw_ota_rec_t r = { GW_OTA_MAGIC, size, crc, ++seq_last };
     memset(page, 0xFF, sizeof(page));
     memcpy(page, &r, sizeof(r));
+    uint8_t was = gw_where(GW_AT_RECORD);  // v48
     flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
     flash_range_program(GW_OTA_REC_OFFSET, page, FLASH_PAGE_SIZE);
+    gw_where(was);
     return !memcmp((const void*) (XIP_BASE + GW_OTA_REC_OFFSET), page, FLASH_PAGE_SIZE);
 }
 
@@ -102,7 +255,7 @@ void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now) {
                 seq_last = rec()->seq;
             }
             if (rec()->magic != 0xFFFFFFFFu) {
-                flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
+                record_erase();
             }
             expect = 0;
             page_n = 0;
@@ -144,7 +297,11 @@ void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now) {
                 fail(GW_OTA_ERR_FLASH);
                 return;
             }
-            got_crc = gw_ota_crc32((const uint8_t*) (XIP_BASE + GW_OTA_STAGE_OFFSET), size, 0);
+            {
+                uint8_t was = gw_where(GW_AT_CHECK);  // v48
+                got_crc = gw_ota_crc32((const uint8_t*) (XIP_BASE + GW_OTA_STAGE_OFFSET), size, 0);
+                gw_where(was);
+            }
             if (got_crc != crc) {
                 fail(GW_OTA_ERR_CRC);
                 return;
@@ -171,7 +328,7 @@ void gw_ota_link(uint8_t cmd, const uint8_t* d, uint8_t len, uint32_t now) {
             return;
         case GW_OTA_ABORT:
             if (st == GW_OTA_READY) {
-                flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);  // v42: staged but stopped: no later reset installs it
+                record_erase();  // v42: staged but stopped: no later reset installs it
             }
             if (st != GW_OTA_APPLYING) {
                 st = GW_OTA_IDLE;
@@ -190,8 +347,10 @@ void gw_ota_tick(uint32_t now) {
         if (n > erase_end - erase_at) {
             n = erase_end - erase_at;
         }
+        uint8_t was = gw_where(GW_AT_ERASE);  // v48
         flash_range_erase(GW_OTA_STAGE_OFFSET + erase_at, n);
         erase_at += n;
+        gw_where(was);
         if (erase_at >= erase_end) {
             st = GW_OTA_RX;
         }
@@ -199,6 +358,7 @@ void gw_ota_tick(uint32_t now) {
     }
     if (reboot_due && ((int32_t) (now - reboot_at) >= 0)) {
         reboot_due = false;
+        gw_where(GW_AT_HALT);  // v48
         watchdog_reboot(0, 0, 10);  // through the ROM and gw_boot, as a power-on
         // audit 11-01: and never back to the main loop: in those 10 ms a chord table or config save could start a 4 KB
         // erase (~45 ms) that the reset cuts off. Interrupts (USB, link) keep running until it lands.
@@ -212,7 +372,7 @@ void gw_ota_tick(uint32_t now) {
     memset(b, 0, sizeof(b));
     b[0] = 'U';
     b[1] = st;
-    b[2] = GW_OTA_APP ? 3 : 0;  // bit 1 (v43): 240-byte data frames, erased ahead
+    b[2] = (GW_OTA_APP ? 3 : 0) | (fz_kept ? 4 : 0);  // bit 1 (v43): 240-byte data frames, erased ahead; bit 2 (v48): block 4 holds a freeze
     b[3] = err;
     put32(b + 4, expect);
     put32(b + 8, size);

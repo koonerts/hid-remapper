@@ -1717,7 +1717,8 @@ static void rs_tick(uint32_t now) {
 // ---- QT Py settings link (gw_link.h) ----------------------------------------------------------
 // Status block the QT Py reads (GW_LINK_STATUS_LEN bytes, little-endian):
 //   0 'G'   1 protocol (1)   2 link flags: bit 0 tuning set since boot, bit 1 built-in palette set
-//   since boot, bit 2 refresh running, bit 3 reads paused (last one timed out: mouse asleep?)
+//   since boot, bit 2 refresh running, bit 3 reads paused (last one timed out: mouse asleep?), bit 4 (v48) the last
+//   restart was a freeze (block 4, gw_ota.h)
 //   3 mouse flags: bit 0 Warg, 1 VUK, 2 reads answered,
 //   3 stage known, 4 angle known, 5 position known, 6 colours read from the mouse, 7 DPI table known
 //   4 stage (0-based, 0xFF unknown)   5 angle (int8)   6 position (int8)   7 Mid+Right hold count
@@ -1750,7 +1751,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 47  // v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
+#define GW_FW_VERSION 48  // v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps
@@ -1846,7 +1847,8 @@ void gw_link_status(uint8_t* s) {
     memset(s, 0, GW_LINK_STATUS_LEN);
     s[0] = 'G';
     s[1] = 1;
-    s[2] = (tune_set ? 1 : 0) | (palette_default_set ? 2 : 0) | ((rs_refresh_next >= 0) ? 4 : 0) | ((rs_noread_dev != 0) ? 8 : 0);
+    s[2] = (tune_set ? 1 : 0) | (palette_default_set ? 2 : 0) | ((rs_refresh_next >= 0) ? 4 : 0) | ((rs_noread_dev != 0) ? 8 : 0) |
+           (gw_freeze_kept() ? 16 : 0);  // v48
     const RsSetting& a = rs_settings[RS_ANGLE];
     const RsSetting& p = rs_settings[RS_POS];
     s[3] = (family_present(Family::RS) ? 1 : 0) | (family_present(Family::VUK) ? 2 : 0) | (rs_reads_worked ? 4 : 0) |
@@ -2154,7 +2156,10 @@ static void link_tick(uint32_t now) {
     uint8_t f[GW_LINK_FRAME_MAX];
     uint8_t n;
     if (gw_link_take_frame(f, &n)) {
+        gw_where_cmd(f[0]);  // v48
+        uint8_t was = gw_where(GW_AT_LINK);
         gw_link_apply(f, n, now);
+        gw_where(was);
         if (f[0] != GW_OTA_DATA) {
             status_at = now - 20000;  // show the ack right away (v40: an update's data frames are followed by block 3 instead)
         }
