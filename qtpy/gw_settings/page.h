@@ -1254,16 +1254,20 @@ const S0=c&&c.s10?c.s10/10:n&&n.sc?n.sc.S:Number(cvSrcParse(cc&&cc.src).S)||0;
 cvEd={T,S:S0,tau:c?c.tau:Number($('cvtau').value)||8,sel:-1,rng:null,dc:c&&c.dc?c.dc.map(q=>q.slice()):null,dcBad:false,id:c?c.id:0};$('cveditbar').hidden=false;$('cvedname').value=((c?c.name:'curve')+' edit').slice(0,47);cvRepArm=0;cvEdRepLabel();cvEdDraw();cvDcDraw();$('cvplot').scrollIntoView({block:'nearest'})}
 // fw67 (Feather v39): the slow-down gain in the editor: up to 6 points (as many as the Feather takes) (share of the flick's peak %, gain); 100% = 1.00 implied
 const CV_DC0=[[20,800],[50,900]];  // shares rising, as the QT Py and the Feather want them
+// fw76 (Feather v47): shares in 0.1 % steps (2.5), gains to 3 decimals (0.525): the share with a decimal only when it has one, the gain with 2-3 decimals
+function cvDcPct(p){return String(Math.round(p*10)/10)}
+function cvDcG(g){const s=(Math.round(g)/1000).toFixed(3);return s.endsWith('0')?s.slice(0,-1):s}
 function cvDcGain(P,r){let x0=P[0][0]/100,g0=P[0][1]/1000;if(r<=x0)return g0;for(let k=1;k<=P.length;k++){const x1=k<P.length?P[k][0]/100:1,g1=k<P.length?P[k][1]/1000:1;if(r<x1)return g0+(g1-g0)*(r-x0)/(x1-x0);x0=x1;g0=g1}return 1}
-function cvDcTxt(P){return P.map(q=>q[0]+'% '+(q[1]/1000).toFixed(2)).join(', ')+' (100% = 1.00)'}
-function cvDcSum(){const e=$('cvdcsum'),P=cvEd&&cvEd.dc;if(!e)return;e.textContent=!P?'':cvEd.dcBad?'a value is out of range (share 1-99 %, each different; gain 0.25-4)':'ends at \u00d7'+(P[0][1]/1000).toFixed(2)+' \u00b7 '+P.length+' point'+(P.length>1?'s':'');e.className=cvEd&&cvEd.dcBad?'wn':'mut'}
+function cvDcTxt(P){return P.map(q=>cvDcPct(q[0])+'% '+cvDcG(q[1])).join(', ')+' (100% = 1.00)'}
+function cvDcSum(){const e=$('cvdcsum'),P=cvEd&&cvEd.dc;if(!e)return;e.textContent=!P?'':cvEd.dcBad?'a value is out of range (share 1-99 % in 0.1 % steps, each different; gain 0.25-4)':'ends at \u00d7'+cvDcG(P[0][1])+' \u00b7 '+P.length+' point'+(P.length>1?'s':'');e.className=cvEd&&cvEd.dcBad?'wn':'mut';
+  const n=$('cvdcfw');if(n)n.hidden=!(P&&S&&S.fw&&S.fw<47&&P.some(q=>!Number.isInteger(q[0])))}  // fw76: an older Feather gets whole % (the QT Py rounds them)
 function cvDcDraw(){if(!cvEd)return;const P=cvEd.dc;$('cvdcon').checked=!!P;const S6=[0,1,2,3,4,5],tip=' title="Once the flick has slowed to this share of its top speed, the gain is this multiplier (0.80 = 20% less turn per cm of hand there). Blank columns are unused."';
-if(P){$('cvdcin').innerHTML='<div class="dcgrid"'+tip+'><span class="mut">% of peak</span>'+S6.map(i=>'<input type="number" id="cvdcp'+i+'" min="1" max="99" step="1" value="'+(P[i]?P[i][0]:'')+'" oninput="cvDcIn()" aria-label="point '+(i+1)+': % of the peak">').join('')+
-'<span class="mut">gain \u00d7</span>'+S6.map(i=>'<input type="number" id="cvdcg'+i+'" min="0.25" max="4" step="0.01" value="'+(P[i]?(P[i][1]/1000).toFixed(2):'')+'" oninput="cvDcIn()" aria-label="point '+(i+1)+': gain">').join('')+'</div>';cvDcSum();cvDcPlot();return}
+if(P){$('cvdcin').innerHTML='<div class="dcgrid"'+tip+'><span class="mut">% of peak</span>'+S6.map(i=>'<input type="number" id="cvdcp'+i+'" min="1" max="99" step="0.1" value="'+(P[i]?cvDcPct(P[i][0]):'')+'" oninput="cvDcIn()" aria-label="point '+(i+1)+': % of the peak">').join('')+
+'<span class="mut">gain \u00d7</span>'+S6.map(i=>'<input type="number" id="cvdcg'+i+'" min="0.25" max="4" step="0.001" value="'+(P[i]?cvDcG(P[i][1]):'')+'" oninput="cvDcIn()" aria-label="point '+(i+1)+': gain">').join('')+'</div><p class="mut" id="cvdcfw" style="margin:2px 0 0" hidden>Shares with a decimal are rounded to whole % until the Feather has firmware v47'+(S&&S.fw?' (it has v'+S.fw+')':'')+'.</p>';cvDcSum();cvDcPlot();return}
 $('cvdcin').innerHTML='<p class="mut" style="margin:6px 0 0">Off: the curve\'s gain the whole flick.</p>';cvDcSum();cvDcPlot()}
 function cvDcTog(){if(!cvEd)return;cvEd.dc=$('cvdcon').checked?CV_DC0.map(q=>q.slice()):null;cvEd.dcBad=false;cvDcDraw()}
 // the inputs as points (blank pairs left out), or null when one is out of range or two shares match
-function cvDcRead(){const P=[];for(let i=0;i<6;i++){const pe=$('cvdcp'+i),ge=$('cvdcg'+i);if(!pe||!ge||(pe.value===''&&ge.value===''))continue;const p=Math.round(Number(pe.value)),g=Math.round(Number(ge.value)*1000);
+function cvDcRead(){const P=[];for(let i=0;i<6;i++){const pe=$('cvdcp'+i),ge=$('cvdcg'+i);if(!pe||!ge||(pe.value===''&&ge.value===''))continue;const p=Math.round(Number(pe.value)*10)/10,g=Math.round(Number(ge.value)*1000);  // fw76: shares in 0.1 % steps
 if(pe.value===''||ge.value===''||!(p>=1&&p<=99)||!(g>=250&&g<=4000))return null;P.push([p,g])}P.sort((a,b)=>a[0]-b[0]);for(let i=1;i<P.length;i++)if(P[i][0]===P[i-1][0])return null;return P.length?P:null}
 function cvDcIn(){if(!cvEd||!cvEd.dc)return;const P=cvDcRead();cvEd.dcBad=!P;if(P)cvEd.dc=P;cvDcSum();cvDcPlot()}
 // the gain by the speed as % of the flick's peak, stop (0%) left to peak (100%) right as the table runs; a dot per point,
@@ -1271,7 +1275,7 @@ function cvDcIn(){if(!cvEd||!cvEd.dc)return;const P=cvDcRead();cvEd.dcBad=!P;if(
 function cvDcPlot(){const svg=$('cvdcsvg');if(!svg)return;const P=cvEd&&cvEd.dc;svg.style.display=P?'':'none';if(!P){svg.innerHTML='';return}
 const gs=P.map(q=>q[1]/1000).concat([1]),mn=Math.min(...gs),mx=Math.max(...gs),lo=Math.min(0.95,mn-0.05),hi=Math.max(1.05,mx+0.05),L=40,R=308,X=r=>L+r*(R-L),Y=g=>8+(hi-g)/(hi-lo)*70,c=cvEd.dcBad?'var(--warn)':'var(--acc)';
 const pts=[[0,P[0][1]/1000]].concat(P.map(q=>[q[0]/100,q[1]/1000]),[[1,1]]).map(q=>X(q[0]).toFixed(1)+','+Y(q[1]).toFixed(1)).join(' ');
-const tx=(x,y,s,a,o)=>'<text x="'+x+'" y="'+y+'" font-size="10" fill="currentColor" opacity="'+(o||.75)+'"'+(a?' text-anchor="'+a+'"':'')+'>'+s+'</text>',yl=g=>tx(L-5,(Y(g)+3.5).toFixed(1),g.toFixed(2),'end');
+const tx=(x,y,s,a,o)=>'<text x="'+x+'" y="'+y+'" font-size="10" fill="currentColor" opacity="'+(o||.75)+'"'+(a?' text-anchor="'+a+'"':'')+'>'+s+'</text>',yl=g=>tx(L-5,(Y(g)+3.5).toFixed(1),cvDcG(g*1000),'end');
 let h='<line x1="'+L+'" x2="'+R+'" y1="'+Y(1).toFixed(1)+'" y2="'+Y(1).toFixed(1)+'" stroke="currentColor" stroke-opacity=".35" stroke-dasharray="3 3"/>';
 h+='<line x1="'+L+'" x2="'+R+'" y1="80" y2="80" stroke="currentColor" stroke-opacity=".25"/>'+[0,25,50,75,100].map(v=>'<line x1="'+X(v/100)+'" x2="'+X(v/100)+'" y1="80" y2="83" stroke="currentColor" stroke-opacity=".35"/>'+tx(X(v/100),94,v+'%','middle',.6)).join('');
 h+='<polyline points="'+pts+'" fill="none" stroke="'+c+'" stroke-width="2" stroke-linejoin="round"/>'+P.map(q=>'<circle cx="'+X(q[0]/100).toFixed(1)+'" cy="'+Y(q[1]/1000).toFixed(1)+'" r="3.2" fill="'+c+'"/>').join('');
@@ -1280,8 +1284,8 @@ svg.innerHTML=h+tx(L,108,'stop','start',.6)+tx((L+R)/2,108,'speed, % of the flic
 function cvEdDraw(){cvPlot(null);const T=cvEd.T,i=cvEd.sel;$('cvedinfo').textContent='Editing: '+T.length+' points, '+cvSlowTxt(T.map(q=>q[1]))+(i>=0?'. Point '+(i+1)+': '+(T[i][0]/10)+' cm/s, gain '+(T[i][1]/1000).toFixed(3)+(cvEd.S?' ('+(cvEd.S/(T[i][1]/1000)).toFixed(1)+' cm/360)':''):'.')}
 function cvEdCancel(){cvEd=null;cvDrag=-1;$('cveditbar').hidden=true;cvKey='';cvDraw()}
 // the edited table as add=1 and replace=1 take it (null while the slow-down inputs are out of range)
-function cvEdQ(rep){if(cvEd.dc&&cvEd.dcBad){say({ok:false,err:'slow-down gain: speeds 1-99 % of the peak (each different), gains 0.25-4'});return null}const T=cvEd.T;
-return '&sp='+T.map(q=>q[0]).join(',')+'&g='+T.map(q=>q[1]).join(',')+'&tau='+cvEd.tau+'&s10='+(rep?0:Math.round((cvEd.S||0)*10))+(cvEd.dc?'&dc='+cvEd.dc.slice().sort((a,b)=>a[0]-b[0]).map(q=>q[0]+':'+q[1]).join(','):'')}
+function cvEdQ(rep){if(cvEd.dc&&cvEd.dcBad){say({ok:false,err:'slow-down gain: speeds 1-99 % of the peak in 0.1 % steps (each different), gains 0.25-4'});return null}const T=cvEd.T;
+return '&sp='+T.map(q=>q[0]).join(',')+'&g='+T.map(q=>q[1]).join(',')+'&tau='+cvEd.tau+'&s10='+(rep?0:Math.round((cvEd.S||0)*10))+(cvEd.dc?'&dc='+cvEd.dc.slice().sort((a,b)=>a[0]-b[0]).map(q=>cvDcPct(q[0])+':'+Math.round(q[1])).join(','):'')}
 // fw67: Replace writes over the curve being edited; the first click arms it for 4 s (no confirm() box: a browser can suppress those)
 let cvRepArm=0;
 function cvEdRepLabel(){const b=$('cvedrep');if(!b)return;const c=cvEd&&cvEd.id&&cvLib?cvLib.curves.find(x=>x.id===cvEd.id):null;b.hidden=!c;if(c){b.textContent='Replace original';b.title='Write this over “'+c.name+'” (same name and place). Results already saved under it were measured with the old version.'}}
@@ -1329,7 +1333,7 @@ if(!j.sup){tx.textContent='The live view needs Feather firmware v32'+(j.fw?' (it
 if(blind){tx.textContent='Hidden while BallSheet runs a blind A/B (it would show which curve is on).';return}
 // 10-30: a still mouse at 40,000 DPI still sends a count every few ms, which the Feather calls moving at 0.0 cm/s: that's at rest
 const T=cvlTable(),on=!!j.on,dpi=j.dpi||0,v=(j.v||0)/10,mv=j.mv&&v>=0.1,dg=mv&&on&&j.dcon&&j.dcg?j.dcg/1000:1,g=(on&&T?cvGain(T,v):1)*dg;  // fw67: dg = the slow-down gain now (at rest the next flick starts at 1.00)
-let l1=dpi?(mv?'Now '+cvlFmt(v)+' cm/s':'At rest')+' \u00b7 gain '+g.toFixed(2)+(Math.abs(dg-1)>=0.005?' (slow-down \u00d7'+dg.toFixed(2)+')':'')+' \u2192 '+Math.round(dpi*g).toLocaleString()+' effective DPI (mouse '+dpi.toLocaleString()+' DPI)'+(on?'':' \u00b7 the curve isn\'t applying on this host'):'The Feather doesn\'t know the mouse\'s DPI yet, so it can\'t tell the speed.';
+let l1=dpi?(mv?'Now '+cvlFmt(v)+' cm/s':'At rest')+' \u00b7 gain '+g.toFixed(2)+(Math.abs(dg-1)>=0.0005?' (slow-down \u00d7'+cvDcG(dg*1000)+')':'')+' \u2192 '+Math.round(dpi*g).toLocaleString()+' effective DPI (mouse '+dpi.toLocaleString()+' DPI)'+(on?'':' \u00b7 the curve isn\'t applying on this host'):'The Feather doesn\'t know the mouse\'s DPI yet, so it can\'t tell the speed.';
 let l2='';const h=j.h;if(h&&h.ms){const b=h.b,tot=b.reduce((a,x)=>a+x,0)||1,lo=b[0]/tot*100,hi=b[25]/tot*100;
 l2='Moving '+cvlDur(h.ms)+' since the counts started: half of it between '+cvlFmt(cvlPct(b,.25))+' and '+cvlFmt(cvlPct(b,.75))+' cm/s (median '+cvlFmt(cvlPct(b,.5))+')'+(lo>=0.5?', '+lo.toFixed(0)+'% under 5':'')+(hi>=0.5?', '+hi.toFixed(0)+'% over 160':'')+'.'}else if(h)l2='No movement counted yet: move the mouse (it counts in game too).';
 tx.innerHTML=esc(l1)+'<br>'+esc(l2);

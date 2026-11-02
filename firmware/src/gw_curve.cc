@@ -45,7 +45,7 @@ static uint8_t hist_resets = 0;
 // v39: the slow-down gain
 static bool dc_on = false, dc_got = false;
 static uint8_t dc_n = 0, dc_crc = 0;
-static uint8_t dc_last_p[1 + 3 * GW_DECEL_N], dc_last_len = 0xFF;  // v42: the last payload, whole (as last_p)
+static uint8_t dc_last_p[1 + 4 * GW_DECEL_N], dc_last_len = 0xFF;  // v42: the last payload, whole (as last_p); v47: room for 4-byte points
 static float dc_r[GW_DECEL_N], dc_g[GW_DECEL_N];  // share of the peak (0-1), gain
 static float dc_pk = 0, dc_tr = 0;                 // cm/s: the stroke's peak, the slowest since it
 static float dc_gn = 1.0f;                         // the slow-down gain now (eased)
@@ -99,17 +99,17 @@ void gw_curve_link(const uint8_t* d, uint8_t len) {
     table_crc = crc;
 }
 
-void gw_curve_decel_set(bool want, uint8_t n, const uint8_t* pct, const uint16_t* g) {
+void gw_curve_decel_set(bool want, uint8_t n, const uint16_t* p10, const uint16_t* g) {
     bool ok = (n >= 1) && (n <= GW_DECEL_N);
-    for (uint8_t k = 0; ok && (k < n); k++) {
-        ok = (pct[k] >= 1) && (pct[k] <= 99) && ((k == 0) || (pct[k] > pct[k - 1]));
+    for (uint8_t k = 0; ok && (k < n); k++) {  // v47: shares in 0.1 % (1.0-99.0 %)
+        ok = (p10[k] >= 10) && (p10[k] <= 990) && ((k == 0) || (p10[k] > p10[k - 1]));
     }
     dc_n = 0;
     if (ok) {
         for (uint8_t k = 0; k < n; k++) {
             uint16_t v = g[k];
             v = (v < GW_CURVE_GMIN) ? GW_CURVE_GMIN : (v > GW_CURVE_GMAX) ? GW_CURVE_GMAX : v;
-            dc_r[k] = pct[k] / 100.0f;
+            dc_r[k] = p10[k] / 1000.0f;
             dc_g[k] = v / 1000.0f;
         }
         dc_n = n;
@@ -128,15 +128,18 @@ void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
     if (dc_last_len != 0xFF) {
         memcpy(dc_last_p, d, len);
     }
-    uint8_t pct[GW_DECEL_N] = {};
-    uint16_t g[GW_DECEL_N] = {};
-    uint8_t n = (len >= 1) ? (len - 1) / 3 : 0;
-    bool ok = (len >= 1) && ((len - 1) % 3 == 0) && (n <= GW_DECEL_N);
+    // v47: byte 0 bit 0 = on, bit 1 = 4-byte points (share uint16 in 0.1 %); without it the old 3-byte points (share
+    // in whole %, taken as share * 10), so a QT Py from before v47 still works
+    uint16_t p10[GW_DECEL_N] = {}, g[GW_DECEL_N] = {};
+    uint8_t w = ((len >= 1) && (d[0] & 2)) ? 4 : 3;
+    uint8_t n = (len >= 1) ? (len - 1) / w : 0;
+    bool ok = (len >= 1) && ((len - 1) % w == 0) && (n <= GW_DECEL_N);
     for (uint8_t k = 0; ok && (k < n); k++) {
-        pct[k] = d[1 + 3 * k];
-        g[k] = d[2 + 3 * k] | d[3 + 3 * k] << 8;
+        const uint8_t* q = d + 1 + w * k;
+        p10[k] = (w == 4) ? (uint16_t) (q[0] | q[1] << 8) : (uint16_t) (q[0] * 10);
+        g[k] = q[w - 2] | q[w - 1] << 8;
     }
-    gw_curve_decel_set(ok && (d[0] != 0), ok ? n : 0, pct, g);
+    gw_curve_decel_set(ok && (d[0] & 1), ok ? n : 0, p10, g);
     dc_crc = crc;
 }
 

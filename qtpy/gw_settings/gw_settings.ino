@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 75    // this firmware's number, shown in /api/status; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown)
+#define QT_FW 76    // this firmware's number, shown in /api/status; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -62,7 +62,8 @@
 #define C_SET_DIRGAIN 0x0E  // Feather v24+: [on, 8 gains uint16 per mille] sensitivity per direction (RAM only there)
 #define C_SET_CURVE 0x10    // Feather v30+: [on, tau ms, dpi fallback uint16, n x (speed 0.1 cm/s uint16, gain per mille uint16)] the speed curve
 #define C_CURVE_HIST_RESET 0x11  // Feather v32+: [] its speed histogram starts over
-#define C_SET_DECEL 0x12    // Feather v39+: [on, n x (share of the peak speed %, gain per mille uint16)] the slow-down gain
+#define C_SET_DECEL 0x12    // Feather v39+: [on, n x (share of the peak speed %, gain per mille uint16)] the slow-down gain;
+                            // v47+ also [on | 2, n x (share 0.1 % uint16, gain per mille uint16)] (fw76: dc_payload)
 #define C_TURN 0x0F        // Feather v27+: [total int32, counts a second uint32, hand counts uint32] a measured turn; [] stops it
 
 // chord table limits and action count (gw_chords.h)
@@ -375,12 +376,16 @@ static bool cvdg_save() {
 // by the speed's share of that peak (points in %, rising, below 100; 100% = 1.0 implied); speeding up is left alone.
 // Part of the curve like its table: a different slow-down gain is a different library curve, so BallSheet's results and
 // its curve-vs-curve A/B keep them apart. NVS "cvd<id>".
+// fw76: shares in 0.1 % (10-990, so 2.5 %); fw67-75 kept whole % (uint8, DC_V1_SIZE bytes a curve: LIB_VER 1's file and
+// NVS "cvd<id>"), converted at boot by cvdc_from_v1 (share x 10)
 #define DC_N 6
 struct __attribute__((packed)) CurveDecel {
     uint8_t n;  // 0 = none
-    uint8_t pct[DC_N];
+    uint16_t p10[DC_N];  // fw76: share of the peak speed, 0.1 %
     uint16_t g[DC_N];
 };
+static_assert(sizeof(CurveDecel) == 1 + 4 * DC_N, "LIB_VER 2's layout");
+#define DC_V1_SIZE (1 + 3 * DC_N)  // fw76: fw67-75's CurveDecel { uint8 n; uint8 pct[6]; uint16 g[6] }, 19 bytes
 static CurveDecel cvdc[CVLIB_N];
 static CurveDecel cvdc_nv[CVLIB_N];
 static bool cvdc_blob = false;  // never an old blob (slots_save asks)
@@ -393,6 +398,17 @@ static bool cvdc_save() {
         return false;  // audit 11-01
     }
     return lib_fs_on() ? lib_write() : slots_save("cvd", cvdc, cvdc_nv, sizeof(CurveDecel), cvdc_used, "cvdcx", &cvdc_blob);  // fw71: the file
+}
+// fw76: slot k's slow-down gain from fw67-75's DC_V1_SIZE bytes (raw bytes, not a struct: the Arduino build puts function
+// prototypes above the structs); shares x 10, everything else as it was
+static void cvdc_from_v1(int k, const uint8_t* o) {
+    CurveDecel& d = cvdc[k];
+    memset(&d, 0, sizeof(d));
+    d.n = o[0];
+    for (int i = 0; i < DC_N; i++) {
+        d.p10[i] = (uint16_t) o[1 + i] * 10;
+        d.g[i] = (uint16_t) (o[1 + DC_N + 2 * i] | (o[2 + DC_N + 2 * i] << 8));
+    }
 }
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
 // fw27: the flick calibrations' summaries (the page sends one after each run), newest first; NVS "calib"
@@ -2585,29 +2601,49 @@ static uint8_t dc_slot() {
     return (cvt_cand && cv_cand && cvlib[cv_cand - 1].used) ? cv_cand : cv_id;
 }
 
-static uint8_t dc_payload(uint8_t* d) {  // what C_SET_DECEL carries: [on, n x (share %, gain uint16)]; none = [0]
+// what C_SET_DECEL carries (at most 1 + 4 * DC_N bytes): [on, n x (share %, gain uint16)]; none = [0]
+// fw76: a Feather v47+ gets [on | 2, n x (share 0.1 % uint16, gain uint16)]; an older one whole %: each share rounded,
+// a point whose share isn't above the one kept before it left out
+static uint8_t dc_payload(uint8_t* d) {
     uint8_t id = dc_slot();
     if (!id || !cvdc[id - 1].n) {
         d[0] = 0;
         return 1;
     }
     const CurveDecel& c = cvdc[id - 1];
+    uint8_t n = (c.n > DC_N) ? DC_N : c.n;  // fw76: never past the caller's buffer
     d[0] = cv_wanted() ? 1 : 0;
-    for (uint8_t k = 0; k < c.n; k++) {
-        d[1 + 3 * k] = c.pct[k];
-        d[2 + 3 * k] = c.g[k] & 0xFF;
-        d[3 + 3 * k] = c.g[k] >> 8;
+    if (st[56] >= 47) {
+        d[0] |= 2;
+        for (uint8_t k = 0; k < n; k++) {
+            d[1 + 4 * k] = c.p10[k] & 0xFF;
+            d[2 + 4 * k] = c.p10[k] >> 8;
+            d[3 + 4 * k] = c.g[k] & 0xFF;
+            d[4 + 4 * k] = c.g[k] >> 8;
+        }
+        return 1 + 4 * n;
     }
-    return 1 + 3 * c.n;
+    uint8_t len = 1, last = 0;
+    for (uint8_t k = 0; k < n; k++) {
+        uint8_t p = (uint8_t) std::max(1, std::min(99, (c.p10[k] + 5) / 10));
+        if (p <= last) {
+            continue;
+        }
+        last = p;
+        d[len++] = p;
+        d[len++] = c.g[k] & 0xFF;
+        d[len++] = c.g[k] >> 8;
+    }
+    return len;
 }
 
 static bool dc_applied() {  // status 252 bit 2 applying, bit 3 got one; 254 crc after the "on" byte (0 for none)
     if (!ev_ok || !(evb[60] & 8)) {
         return false;
     }
-    uint8_t d[1 + 3 * DC_N];
+    uint8_t d[1 + 4 * DC_N];
     uint8_t len = dc_payload(d);
-    return (evb[62] == ((len > 1) ? crc8(d + 1, len - 1) : 0)) && (((evb[60] & 4) != 0) == (d[0] != 0));
+    return (evb[62] == ((len > 1) ? crc8(d + 1, len - 1) : 0)) && (((evb[60] & 4) != 0) == ((d[0] & 1) != 0));  // fw76: bit 0 (bit 1 = the format)
 }
 
 // as dg_tick: 252-253 come with the 192-255 block, so after sending, read it once more ourselves
@@ -2963,11 +2999,11 @@ static uint16_t cv_src_s10() {  // the "S=" in the active curve's source, x10
 }
 
 // audit 11-01: cvlib_add would take this table (a curve with the same points and slow-down gain, or a free slot)
-static bool cvlib_fits(uint8_t n, const uint16_t* sp, const uint16_t* g, uint8_t dn, const uint8_t* dp, const uint16_t* dg) {
+static bool cvlib_fits(uint8_t n, const uint16_t* sp, const uint16_t* g, uint8_t dn, const uint16_t* dp, const uint16_t* dg) {
     for (int k = 0; k < CVLIB_N; k++) {
         const CurveLib& c = cvlib[k];
         const CurveDecel& d = cvdc[k];
-        bool same_dc = (d.n == dn) && (!dn || (!memcmp(d.pct, dp, dn) && !memcmp(d.g, dg, 2 * dn)));
+        bool same_dc = (d.n == dn) && (!dn || (!memcmp(d.p10, dp, 2 * dn) && !memcmp(d.g, dg, 2 * dn)));
         if (!c.used || ((c.n == n) && !memcmp(c.sp, sp, 2 * n) && !memcmp(c.g, g, 2 * n) && same_dc)) {
             return true;
         }
@@ -2976,13 +3012,13 @@ static bool cvlib_fits(uint8_t n, const uint16_t* sp, const uint16_t* g, uint8_t
 }
 
 // the library entry with this table (same points), registered if new; 0 = the library is full
-// fw67: dn points of slow-down gain (dp shares %, dg gains; dn 0 = none) are part of what makes a curve the same
-static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s10, const uint16_t* sp, const uint16_t* g, uint8_t dn, const uint8_t* dp, const uint16_t* dg) {
+// fw67: dn points of slow-down gain (dp shares, fw76: 0.1 %; dg gains; dn 0 = none) are part of what makes a curve the same
+static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s10, const uint16_t* sp, const uint16_t* g, uint8_t dn, const uint16_t* dp, const uint16_t* dg) {
     int fr = -1;
     for (int k = 0; k < CVLIB_N; k++) {
         CurveLib& c = cvlib[k];
         const CurveDecel& d = cvdc[k];
-        bool same_dc = (d.n == dn) && (!dn || (!memcmp(d.pct, dp, dn) && !memcmp(d.g, dg, 2 * dn)));
+        bool same_dc = (d.n == dn) && (!dn || (!memcmp(d.p10, dp, 2 * dn) && !memcmp(d.g, dg, 2 * dn)));
         if (c.used && (c.n == n) && !memcmp(c.sp, sp, 2 * n) && !memcmp(c.g, g, 2 * n) && same_dc) {
             if (name.length()) {
                 memset(c.name, 0, sizeof(c.name));
@@ -3016,7 +3052,7 @@ static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s1
     memset(&d, 0, sizeof(d));
     d.n = dn;
     if (dn) {
-        memcpy(d.pct, dp, dn);
+        memcpy(d.p10, dp, 2 * dn);
         memcpy(d.g, dg, 2 * dn);
     }
     cvdc_save();
@@ -3045,14 +3081,23 @@ static uint8_t cvlib_add(const String& name, uint8_t n, uint8_t tau, uint16_t s1
     return fr + 1;
 }
 
+static String dc_share(uint16_t p10) {  // fw76: a share in 0.1 % as JSON's %: 200 -> 20, 25 -> 2.5
+    String s = String(p10 / 10);
+    if (p10 % 10) {
+        s += ".";
+        s += String(p10 % 10);
+    }
+    return s;
+}
+
 static String dc_json(uint8_t id) {  // fw67: a library curve's slow-down gain as [[share %, gain per mille], ...]; "" = none
     if (!id || (id > CVLIB_N) || !cvdc[id - 1].n) {
         return String();
     }
     const CurveDecel& d = cvdc[id - 1];
     String j = "[";
-    for (uint8_t k = 0; k < d.n; k++) {
-        j += (k ? ",[" : "[") + String(d.pct[k]) + "," + String(d.g[k]) + "]";
+    for (uint8_t k = 0; (k < d.n) && (k < DC_N); k++) {
+        j += (k ? ",[" : "[") + dc_share(d.p10[k]) + "," + String(d.g[k]) + "]";  // fw76: shares with one decimal when they have one
     }
     return j + "]";
 }
@@ -3086,8 +3131,30 @@ static String cvlib_json_one(uint8_t id) {
 // GET /api/curves: the library; POST ?use=id (make it the active curve) | ?cand=id (0 = none) | ?del=id | ?id=&name= (fw49)
 // | ?add=1&name=&sp=&g=&tau=&s10=[&setcand=1]: a curve from the page's editor into the library, not running (answers its id)
 // | ?id=&s10= (fw54): its linear cm/360 x10
+// fw76: a slow-down share from a request, "20" or "2.5" (%, one decimal at most), in 0.1 %; -1 = not written that way
+static long dc_p10_arg(String s) {
+    s.trim();
+    long v = 0;
+    int dot = -1;
+    for (int i = 0; i < (int) s.length(); i++) {
+        char c = s[i];
+        if ((c == '.') && (dot < 0) && i) {
+            dot = i;
+            continue;
+        }
+        if (!isdigit((unsigned char) c) || (v > 9999)) {
+            return -1;
+        }
+        v = v * 10 + (c - '0');
+    }
+    if (!s.length() || ((dot >= 0) && (dot != (int) s.length() - 2))) {
+        return -1;  // empty, "2." or more than one decimal
+    }
+    return (dot < 0) ? v * 10 : v;
+}
+
 // fw67: a curve's table from a request (sp, g, tau, s10, dc), as add=1 and replace=1 take it; nullptr = fine, else why not
-static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_t* tau, uint16_t* s10, uint8_t* dn, uint8_t* dp, uint16_t* dgv) {
+static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_t* tau, uint16_t* s10, uint8_t* dn, uint16_t* dp, uint16_t* dgv) {
     long sp[CV_N], g[CV_N];
     uint8_t ng = 0;
     *n = 0;
@@ -3104,17 +3171,17 @@ static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_
     long t = server.hasArg("tau") ? server.arg("tau").toInt() : 8, s = server.arg("s10").toInt();
     *tau = (uint8_t) std::max(1L, std::min(200L, t));
     *s10 = (uint16_t) std::max(0L, std::min(65535L, s));
-    *dn = 0;  // &dc=share:gain,... (shares % 1-99 rising, gains per mille), none = no slow-down gain
+    *dn = 0;  // &dc=share:gain,... (shares % 1-99 in 0.1 % steps, rising, e.g. 2.5:525; gains per mille), none = no slow-down gain
     String ds = server.arg("dc");
     for (int at = 0; at < (int) ds.length();) {
         int comma = ds.indexOf(',', at);
         String one = (comma < 0) ? ds.substring(at) : ds.substring(at, comma);
         int colon = one.indexOf(':');
-        long p = (colon > 0) ? one.substring(0, colon).toInt() : 0, gv = (colon > 0) ? one.substring(colon + 1).toInt() : 0;
-        if ((*dn >= DC_N) || (p < 1) || (p > 99) || (*dn && (p <= dp[*dn - 1])) || (gv < 250) || (gv > 4000)) {
-            return "slow-down gain: 1-6 points share:gain, shares 1-99 % and rising, gains 250-4000 per mille";
+        long p = (colon > 0) ? dc_p10_arg(one.substring(0, colon)) : -1, gv = (colon > 0) ? one.substring(colon + 1).toInt() : 0;  // fw76: p in 0.1 %
+        if ((*dn >= DC_N) || (p < 10) || (p > 990) || (*dn && (p <= dp[*dn - 1])) || (gv < 250) || (gv > 4000)) {
+            return "slow-down gain: 1-6 points share:gain, shares 1-99 % in 0.1 % steps and rising, gains 250-4000 per mille";
         }
-        dp[*dn] = (uint8_t) p;
+        dp[*dn] = (uint16_t) p;
         dgv[(*dn)++] = (uint16_t) gv;
         if (comma < 0) {
             break;
@@ -3175,8 +3242,8 @@ static void h_curves() {
         return ok_json(false, LIB_OFF_WHY);  // audit 11-01
     }
     if (server.hasArg("add")) {
-        uint16_t s16[CV_N] = {}, g16[CV_N] = {}, dgv[DC_N] = {}, s10 = 0;
-        uint8_t n = 0, tau = 8, dn = 0, dp[DC_N] = {};
+        uint16_t s16[CV_N] = {}, g16[CV_N] = {}, dgv[DC_N] = {}, dp[DC_N] = {}, s10 = 0;  // fw76: dp in 0.1 %
+        uint8_t n = 0, tau = 8, dn = 0;
         const char* why = cv_req_table(&n, s16, g16, &tau, &s10, &dn, dp, dgv);
         if (why) {
             return ok_json(false, why);
@@ -3184,7 +3251,7 @@ static void h_curves() {
         for (int k = 0; k < CVLIB_N; k++) {  // 10-31 audit: "Save as copy" of an unchanged curve renamed the original (cvlib_add's match)
             const CurveDecel& o = cvdc[k];
             if (cvlib[k].used && (cvlib[k].n == n) && !memcmp(cvlib[k].sp, s16, 2 * n) && !memcmp(cvlib[k].g, g16, 2 * n) && (o.n == dn) &&
-                (!dn || (!memcmp(o.pct, dp, dn) && !memcmp(o.g, dgv, 2 * dn)))) {
+                (!dn || (!memcmp(o.p10, dp, 2 * dn) && !memcmp(o.g, dgv, 2 * dn)))) {
                 return ok_json(false, (String("that's the same as ") + String(cvlib[k].name) + ": change something first").c_str());  // no quotes: ok_json doesn't escape
             }
         }
@@ -3280,8 +3347,8 @@ static void h_curves() {
         return ok_json(true);
     }
     if (server.hasArg("replace")) {  // fw67: ?id=&replace=1 and the table as add=1 takes it: written over that curve (same id, name, place)
-        uint16_t s16[CV_N] = {}, g16[CV_N] = {}, dgv[DC_N] = {}, s10 = 0;
-        uint8_t n = 0, tau = 8, dn = 0, dp[DC_N] = {};
+        uint16_t s16[CV_N] = {}, g16[CV_N] = {}, dgv[DC_N] = {}, dp[DC_N] = {}, s10 = 0;  // fw76: dp in 0.1 %
+        uint8_t n = 0, tau = 8, dn = 0;
         const char* why = cv_req_table(&n, s16, g16, &tau, &s10, &dn, dp, dgv);
         if (why) {
             return ok_json(false, why);
@@ -3289,7 +3356,7 @@ static void h_curves() {
         for (int k = 0; k < CVLIB_N; k++) {
             const CurveDecel& o = cvdc[k];
             if ((k != id - 1) && cvlib[k].used && (cvlib[k].n == n) && !memcmp(cvlib[k].sp, s16, 2 * n) && !memcmp(cvlib[k].g, g16, 2 * n) && (o.n == dn) &&
-                (!dn || (!memcmp(o.pct, dp, dn) && !memcmp(o.g, dgv, 2 * dn)))) {
+                (!dn || (!memcmp(o.p10, dp, 2 * dn) && !memcmp(o.g, dgv, 2 * dn)))) {
                 return ok_json(false, "that's the same as another saved curve");
             }
         }
@@ -3308,7 +3375,7 @@ static void h_curves() {
         CurveDecel& d = cvdc[id - 1];
         memset(&d, 0, sizeof(d));
         d.n = dn;
-        memcpy(d.pct, dp, dn);
+        memcpy(d.p10, dp, 2 * dn);
         memcpy(d.g, dgv, 2 * dn);
         if (id == cv_id) {  // the running one: the Feather gets it now
             cv.n = n;
@@ -3404,7 +3471,7 @@ static void h_curve() {
         if (cv_id) {
             od = cvdc[cv_id - 1];
         }
-        if (!cvlib_fits(n, s16, g16, od.n, od.pct, od.g)) {
+        if (!cvlib_fits(n, s16, g16, od.n, od.p10, od.g)) {
             return ok_json(false, "the library is full (16): delete a curve first");
         }
     }
@@ -3438,7 +3505,7 @@ static void h_curve() {
         if (was) {
             od = cvdc[was - 1];
         }
-        cv_id = cvlib_add(cvlib_clean(server.arg("name")), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g, od.n, od.pct, od.g);  // fw49
+        cv_id = cvlib_add(cvlib_clean(server.arg("name")), cv.n, cv.tau, cv_src_s10(), cv.sp, cv.g, od.n, od.p10, od.g);  // fw49
         if (cv_id != was) {  // fw60: as Use
             cvdg_stamp(was);
             cvdg_take(cv_id);
@@ -4000,18 +4067,22 @@ static void h_update_done() {
     ESP.restart();
 }
 
-// fw71: the library (cvlib, cvdg, cvmeta, cvdc: 16 curves, ~4.2 KB) lives in one file on the QT Py's FFat area,
+// fw71: the library (cvlib, cvdg, cvmeta, cvdc: 16 curves, ~4.3 KB) lives in one file on the QT Py's FFat area,
 // /curves.bin: written whole to /curves.tmp, read back and checked (CRC-32), then renamed over it (the one before kept as
 // /curves.bak). The 20 KB NVS partition had no room for a 7th curve (10-31); NVS keeps the running curve, its id, the
 // candidate's and cvdg0. At boot: /curves.bin, else /curves.bak, else NVS (fw49-70's keys: moved over once, then removed).
 // No file area (never formatted): it all stays in NVS as before.
 #define LIB_MAGIC 0x56435747u  // "GWCV"
-#define LIB_VER 1
+// fw76: LIB_VER 2: cvdc's shares in 0.1 % (uint16). A v1 file (fw71-75: whole %, DC_V1_SIZE bytes a curve) still reads,
+// its shares x 10; boot then writes the library back as v2 (lib_write: the v1 file stays /curves.bak until the next write)
+#define LIB_VER 2
+#define LIB_V1_BODY (sizeof(cvlib) + sizeof(cvdg) + sizeof(cvmeta) + CVLIB_N * DC_V1_SIZE)
 struct __attribute__((packed)) LibHead {
     uint32_t magic;
     uint16_t ver, n;
-    uint32_t crc;  // CRC-32 of the four tables after it, in this order: cvlib, cvdg, cvmeta, cvdc
+    uint32_t crc;  // CRC-32 of the four tables after it, in this order: cvlib, cvdg, cvmeta, cvdc (as the file holds them)
 };
+static bool lib_v1 = false;  // fw76: the library loaded at boot came from a v1 file (converted; boot writes it back as v2)
 
 static uint32_t lib_crc() {
     uint32_t c = fo_crc32((const uint8_t*) cvlib, sizeof(cvlib), 0);
@@ -4023,13 +4094,15 @@ static uint32_t lib_crc() {
 // a library file's tables, checked; into: false = only check it
 static bool lib_read(const char* path, bool into) {
     static uint8_t body[sizeof(cvlib) + sizeof(cvdg) + sizeof(cvmeta) + sizeof(cvdc)];
+    static_assert(LIB_V1_BODY < sizeof(body), "a v1 body fits the buffer");
     File f = FFat.open(path, "r");
     if (!f) {
         return false;
     }
-    LibHead h;
-    bool ok = (f.read((uint8_t*) &h, sizeof(h)) == sizeof(h)) && (h.magic == LIB_MAGIC) && (h.ver == LIB_VER) && (h.n == CVLIB_N) &&
-              (f.read(body, sizeof(body)) == sizeof(body)) && (fo_crc32(body, sizeof(body), 0) == h.crc);
+    LibHead h = {};
+    bool head = (f.read((uint8_t*) &h, sizeof(h)) == sizeof(h)) && (h.magic == LIB_MAGIC) && ((h.ver == LIB_VER) || (h.ver == 1)) && (h.n == CVLIB_N);
+    size_t len = (h.ver == 1) ? LIB_V1_BODY : sizeof(body);  // fw76: a v1 file's body is shorter (its cvdc)
+    bool ok = head && (f.read(body, len) == len) && (fo_crc32(body, len, 0) == h.crc);
     f.close();
     if (!ok || !into) {
         return ok;
@@ -4041,7 +4114,14 @@ static bool lib_read(const char* path, bool into) {
     p += sizeof(cvdg);
     memcpy(cvmeta, p, sizeof(cvmeta));
     p += sizeof(cvmeta);
-    memcpy(cvdc, p, sizeof(cvdc));
+    lib_v1 = (h.ver == 1);
+    if (lib_v1) {
+        for (int k = 0; k < CVLIB_N; k++) {
+            cvdc_from_v1(k, p + DC_V1_SIZE * k);  // fw76: whole % -> 0.1 %
+        }
+    } else {
+        memcpy(cvdc, p, sizeof(cvdc));
+    }
     return true;
 }
 
@@ -4911,6 +4991,9 @@ void setup() {
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
     // fw71: the library's file; 10-31 audit: /curves.tmp is a whole checked copy too (a power cut between lib_write's renames)
     lib_fs = fs_ok && (lib_read("/curves.bin", true) || lib_read("/curves.tmp", true) || lib_read("/curves.bak", true));
+    if (lib_fs && lib_v1) {  // fw76: converted from a v1 file (whole-% slow-down shares): written back as v2 now; a failure
+        lib_write();         // leaves the v1 files as they were (read and converted again at the next boot) and lib_fs on
+    }
     lib_off = !lib_fs && prefs.getUChar("libfs", 0);  // audit 11-01: in its file, which didn't load: no NVS fallback, nothing written
     lib_dmg = lib_off && fs_ok;
     if (!lib_fs && !lib_off) {  // fw49-70: the library in NVS
@@ -4950,7 +5033,20 @@ void setup() {
     for (int k = 0; k < CVLIB_N; k++) {  // fw67: the slow-down gains (before cvlib_add below: they're part of a curve's match)
         char key[8];
         snprintf(key, sizeof(key), "cvd%d", k + 1);
-        if ((prefs.getBytes(key, &cvdc[k], sizeof(CurveDecel)) != sizeof(CurveDecel)) || !cvlib[k].used || (cvdc[k].n > DC_N)) {
+        // fw76: fw67-75's blob (DC_V1_SIZE bytes, whole %) converted; NVS keeps it until that curve's next save (cvdc_nv
+        // below holds the converted copy, so an unchanged curve isn't rewritten), and it converts the same at every boot
+        size_t len = prefs.isKey(key) ? prefs.getBytesLength(key) : 0;
+        bool got = false;
+        if (len == sizeof(CurveDecel)) {
+            got = prefs.getBytes(key, &cvdc[k], sizeof(CurveDecel)) == sizeof(CurveDecel);
+        } else if (len == DC_V1_SIZE) {
+            uint8_t o[DC_V1_SIZE];
+            got = prefs.getBytes(key, o, sizeof(o)) == sizeof(o);
+            if (got) {
+                cvdc_from_v1(k, o);
+            }
+        }
+        if (!got || !cvlib[k].used || (cvdc[k].n > DC_N)) {
             memset(&cvdc[k], 0, sizeof(CurveDecel));
         }
     }

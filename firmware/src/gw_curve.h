@@ -20,12 +20,13 @@ void gw_curve_set(bool on, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, con
 void gw_curve_link(const uint8_t* d, uint8_t len);
 
 // v39: the slow-down gain, on top of the curve's while the curve applies: once a stroke slows from its peak speed, a gain
-// by the speed as a share of that peak; speeding up is left alone. n points (1-GW_DECEL_N) of share in % (1-99, rising)
-// and gain per mille (clamped to GMIN..GMAX), straight lines between them, the first held below it, and 100% = 1.0
-// implied (so it starts with no step). n = 0 or anything malformed = off.
+// by the speed as a share of that peak; speeding up is left alone. n points (1-GW_DECEL_N) of share in 0.1 % (v47;
+// 10-990 = 1.0-99.0 %, rising; whole % before) and gain per mille (clamped to GMIN..GMAX), straight lines between them,
+// the first held below it, and 100% = 1.0 implied (so it starts with no step). n = 0 or anything malformed = off.
 #define GW_DECEL_N 6
-void gw_curve_decel_set(bool on, uint8_t n, const uint8_t* pct, const uint16_t* g);
-// the payload as LINK_SET_DECEL carries it: [on, n x (share %, gain uint16)]
+void gw_curve_decel_set(bool on, uint8_t n, const uint16_t* p10, const uint16_t* g);
+// the payload as LINK_SET_DECEL carries it: [flags, n x point]. flags bit 0 = on; v47: bit 1 = 4-byte points (share
+// uint16 in 0.1 %, gain uint16), len 1 + 4n; without it 3-byte points (share whole % uint8, gain uint16), len 1 + 3n
 void gw_curve_decel_link(const uint8_t* d, uint8_t len);
 
 // once per frame on the frame's summed relative X and Y, after the turn (whose steady motion is a hand speed too);
