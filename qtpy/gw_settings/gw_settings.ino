@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 79    // this firmware's number, shown in /api/status; fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 80    // this firmware's number, shown in /api/status; fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
