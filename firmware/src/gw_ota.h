@@ -92,6 +92,10 @@ uint32_t gw_keep_get();  // publishes the status block; the restart after APPLY
 #define GW_AT_CHECK 10   // an update: the staged copy's CRC-32
 #define GW_AT_HALT 11    // after APPLY: waiting for the restart into gw_boot
 #define GW_AT_CHORDS 12  // the chord table written to flash
+// v49: flash erase (whole 4 KB sectors; 64 KB blocks where they fit) and program (whole 256-byte pages), as the SDK's
+// flash_range_erase/program but with interrupts off around everything except the ROM's erase/program itself (gw_ota.cc)
+void gw_flash_erase(uint32_t off, uint32_t count);
+void gw_flash_program(uint32_t off, const uint8_t* data, uint32_t count);
 uint8_t gw_where(uint8_t step);
 void gw_where_cmd(uint8_t cmd);
 void gw_freeze_init();

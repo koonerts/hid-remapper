@@ -195,8 +195,8 @@ void do_persist_config(uint8_t* buffer) {
     uint32_t ints = save_and_disable_interrupts();
 #endif
     uint8_t was = gw_where(GW_AT_PERSIST);  // gw v48
-    flash_range_erase(CONFIG_OFFSET_IN_FLASH, PERSISTED_CONFIG_SIZE);
-    flash_range_program(CONFIG_OFFSET_IN_FLASH, buffer, PERSISTED_CONFIG_SIZE);
+    gw_flash_erase(CONFIG_OFFSET_IN_FLASH, PERSISTED_CONFIG_SIZE);  // gw v49: boot2 with interrupts off (gw_ota.cc)
+    gw_flash_program(CONFIG_OFFSET_IN_FLASH, buffer, PERSISTED_CONFIG_SIZE);
     gw_where(was);
 #if !PICO_COPY_TO_RAM
     restore_interrupts(ints);

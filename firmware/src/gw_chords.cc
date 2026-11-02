@@ -120,9 +120,9 @@ static bool flash_write(const uint8_t* rec, uint8_t len) {
     uint32_t ints = save_and_disable_interrupts();
 #endif
     uint8_t was = gw_where(GW_AT_CHORDS);  // v48
-    flash_range_erase(CH_FLASH_OFFSET, FLASH_SECTOR_SIZE);
+    gw_flash_erase(CH_FLASH_OFFSET, FLASH_SECTOR_SIZE);  // v49: boot2 with interrupts off (gw_ota.cc)
     if (rec != NULL) {
-        flash_range_program(CH_FLASH_OFFSET, page, FLASH_PAGE_SIZE);
+        gw_flash_program(CH_FLASH_OFFSET, page, FLASH_PAGE_SIZE);
     }
     gw_where(was);
 #if !PICO_COPY_TO_RAM

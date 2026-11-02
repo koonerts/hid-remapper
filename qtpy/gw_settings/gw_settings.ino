@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 77    // this firmware's number, shown in /api/status; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 79    // this firmware's number, shown in /api/status; fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -4422,7 +4422,7 @@ static void fo_tick() {
             }
             fo_at = now;
             if (!fo_begun) {
-                if (++fo_tries > 10) {
+                if (++fo_tries > 30) {  // fw79: 7.5 s, not 2.5 (a Feather its watchdog is restarting answers block 3 stale meanwhile)
                     return fo_slower("the Feather didn't start taking it");  // fw73: at a slower clock first
                 }
                 uint8_t p[8];
@@ -4434,7 +4434,7 @@ static void fo_tick() {
                 delay(80);  // dropping its old record erases a sector
             }
             if (!fo_read(b)) {
-                if (++fo_bad >= 3) {  // fw73
+                if (++fo_bad >= 24) {  // fw73; fw78: 6 s, not 0.75 (a Feather its watchdog is restarting answers again after ~5 s)
                     fo_slower("the Feather didn't start taking it");
                 }
                 return;

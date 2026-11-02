@@ -15,7 +15,9 @@
 #include "hardware/watchdog.h"
 #ifndef GW_NO_CATCH  // v48: the host tests have no timer or interrupts
 #include "hardware/irq.h"
+#include "hardware/sync.h"
 #include "hardware/timer.h"
+#include "pico/bootrom.h"
 #endif
 
 extern const char gw_fw_tag[];  // gw_mouse.cc: "GWFW:v<version>;"
@@ -87,6 +89,63 @@ static void fail(uint8_t e) {
     err = e;
     dirty = true;
 }
+
+// v49: the freezes during updates (11-01, 11-02; v48's record: the main loop running junk from flash right after a page
+// write's boot2 had finished). The SDK's flash_range_erase/program run boot2 (it puts the flash back into XIP's
+// continuous-read mode) with interrupts on, and boot2 sends each flash command as separate writes to the SSI with
+// nothing holding chip select: an interrupt between two of them lets the FIFO run dry, CS rises and the command is cut.
+// The flash then isn't in continuous-read mode, XIP reads return zeros (movs r0, r0) and the CPU slides through them.
+// During an update the link's interrupt comes once per I2C byte (44k a second at 400 kHz), and boot2 ran after each of
+// ~900 pages. Here interrupts are off for everything but the ROM's erase/program itself (which holds CS by an IO
+// override, so an interrupt there only pauses the clock): a few us before and after, the long part with them on.
+#ifndef GW_NO_CATCH
+static uint32_t gw_boot2[64];  // boot2, copied from flash's first 256 bytes (gw_boot's: the same as the app's)
+static bool gw_boot2_ok = false;
+
+static void __no_inline_not_in_flash_func(gw_flash_op)(uint32_t off, const uint8_t* data, uint32_t count, bool erase) {
+    rom_connect_internal_flash_fn connect = (rom_connect_internal_flash_fn) rom_func_lookup_inline(ROM_FUNC_CONNECT_INTERNAL_FLASH);
+    rom_flash_exit_xip_fn exit_xip = (rom_flash_exit_xip_fn) rom_func_lookup_inline(ROM_FUNC_FLASH_EXIT_XIP);
+    rom_flash_range_erase_fn erase_fn = (rom_flash_range_erase_fn) rom_func_lookup_inline(ROM_FUNC_FLASH_RANGE_ERASE);
+    rom_flash_range_program_fn program_fn = (rom_flash_range_program_fn) rom_func_lookup_inline(ROM_FUNC_FLASH_RANGE_PROGRAM);
+    rom_flash_flush_cache_fn flush = (rom_flash_flush_cache_fn) rom_func_lookup_inline(ROM_FUNC_FLASH_FLUSH_CACHE);
+    if (!gw_boot2_ok) {
+        for (int i = 0; i < 64; i++) {
+            gw_boot2[i] = ((const volatile uint32_t*) XIP_BASE)[i];
+        }
+        gw_boot2_ok = true;
+    }
+    __compiler_memory_barrier();
+    uint32_t irq = save_and_disable_interrupts();
+    connect();
+    exit_xip();
+    restore_interrupts(irq);
+    if (erase) {
+        erase_fn(off, count, 1u << 16, 0xD8);  // as the SDK: 64 KB block erases where they fit, else 4 KB sectors
+    } else {
+        program_fn(off, data, count);
+    }
+    irq = save_and_disable_interrupts();
+    flush();  // also lets go of the CS override
+    ((void (*)(void))((uintptr_t) gw_boot2 + 1))();
+    restore_interrupts(irq);
+}
+
+void gw_flash_erase(uint32_t off, uint32_t count) {
+    gw_flash_op(off, nullptr, count, true);
+}
+
+void gw_flash_program(uint32_t off, const uint8_t* data, uint32_t count) {
+    gw_flash_op(off, data, count, false);
+}
+#else
+void gw_flash_erase(uint32_t off, uint32_t count) {  // the host tests' simulated flash
+    flash_range_erase(off, count);
+}
+
+void gw_flash_program(uint32_t off, const uint8_t* data, uint32_t count) {
+    flash_range_program(off, data, count);
+}
+#endif
 
 uint8_t gw_where(uint8_t step) {
     uint8_t was = where_step;
@@ -211,7 +270,7 @@ static bool flash_page(uint32_t off) {
     memset(page + page_n, 0xFF, FLASH_PAGE_SIZE - page_n);
     uint32_t a = GW_OTA_STAGE_OFFSET + off;
     uint8_t was = gw_where(GW_AT_PAGE);  // v48
-    flash_range_program(a, page, FLASH_PAGE_SIZE);
+    gw_flash_program(a, page, FLASH_PAGE_SIZE);  // v49
     gw_where(was);
     page_n = 0;
     return !memcmp((const void*) (XIP_BASE + a), page, FLASH_PAGE_SIZE);
@@ -219,7 +278,7 @@ static bool flash_page(uint32_t off) {
 
 static void record_erase() {  // v48: the record dropped, marked
     uint8_t was = gw_where(GW_AT_RECORD);
-    flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
+    gw_flash_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
     gw_where(was);
 }
 
@@ -228,8 +287,8 @@ static bool write_record() {
     memset(page, 0xFF, sizeof(page));
     memcpy(page, &r, sizeof(r));
     uint8_t was = gw_where(GW_AT_RECORD);  // v48
-    flash_range_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
-    flash_range_program(GW_OTA_REC_OFFSET, page, FLASH_PAGE_SIZE);
+    gw_flash_erase(GW_OTA_REC_OFFSET, FLASH_SECTOR_SIZE);
+    gw_flash_program(GW_OTA_REC_OFFSET, page, FLASH_PAGE_SIZE);
     gw_where(was);
     return !memcmp((const void*) (XIP_BASE + GW_OTA_REC_OFFSET), page, FLASH_PAGE_SIZE);
 }
@@ -348,7 +407,7 @@ void gw_ota_tick(uint32_t now) {
             n = erase_end - erase_at;
         }
         uint8_t was = gw_where(GW_AT_ERASE);  // v48
-        flash_range_erase(GW_OTA_STAGE_OFFSET + erase_at, n);
+        gw_flash_erase(GW_OTA_STAGE_OFFSET + erase_at, n);
         erase_at += n;
         gw_where(was);
         if (erase_at >= erase_end) {
