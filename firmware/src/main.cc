@@ -11,6 +11,7 @@
 #endif
 #include <hardware/flash.h>
 #include <hardware/gpio.h>
+#include <hardware/watchdog.h>
 #include <pico/bootrom.h>
 #include <pico/mutex.h>
 #include <pico/platform.h>
@@ -260,7 +261,13 @@ int main() {
 
     next_print = time_us_64() + 1000000;
 
+    // gw v47: a Feather that stops (11-01: during an update, mouse input and the link to the QT Py both died until it was
+    // replugged) restarts by itself. 4 s: longer than any one flash erase here (a 64 KB block, 2 s at most). A watchdog
+    // restart leaves the watchdog off, so gw_boot's copy of an update isn't cut short; the idle stage is kept (gw_keep)
+    watchdog_enable(4000, true);
+
     while (true) {
+        watchdog_update();
         bool tick;
         bool new_report;
         read_report(&new_report, &tick);
