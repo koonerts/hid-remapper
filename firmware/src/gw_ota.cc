@@ -13,6 +13,9 @@
 #include "gw_link.h"
 #include "hardware/flash.h"
 #include "hardware/watchdog.h"
+#if !defined(GW_NO_CATCH) && !PICO_RP2040
+#define GW_NO_CATCH 1  // review 11-02: the catch (TIMER_IRQ_*) and gw_flash_op's boot2 (at flash 0) are RP2040's; elsewhere the SDK's flash calls
+#endif
 #ifndef GW_NO_CATCH  // v48: the host tests have no timer or interrupts
 #include "hardware/irq.h"
 #include "hardware/sync.h"
