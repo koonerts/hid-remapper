@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 80    // this firmware's number, shown in /api/status; fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 81    // this firmware's number, shown in /api/status; fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -279,6 +279,12 @@ static bool cv_force = false;  // fw47: as dg_force
 static bool cvt_off = false;
 static uint32_t cvt_keep_at = 0;
 static uint32_t cvt_ab_at = 0;  // fw59: BallSheet runs a blind curve A/B (ab=1 on any cvtemp call, both arms): the page hides the arm
+// fw81: the page's curve editor runs its table (and slow-down gain) live while it's open: sent to the Feather in place of
+// the running curve, on the same hosts, until end=1 (the editor closed, the page went away or another one loaded), a
+// BallSheet run or a restart; never saved. No timeout: a page's keep-alive only finds out whether to send it again
+static bool cvt_try = false;
+static uint8_t try_n = 0, try_tau = 8;
+static uint16_t try_sp[CV_N], try_g[CV_N];
 // fw49: named curves: each saved curve table gets an id (1-16) that cm/360 results carry and BallSheet stamps on its runs,
 // so results under different curves stay apart; one may be the candidate a curve-vs-curve A/B compares the active one
 // with (BallSheet switches to it through /api/cvtemp?cand=1). NVS "cvid", "cvcand"; fw65: each curve under "cvl<id>"
@@ -391,6 +397,7 @@ static CurveDecel cvdc_nv[CVLIB_N];
 static bool cvdc_blob = false;  // never an old blob (slots_save asks)
 static uint16_t dc_sends = 0;
 static bool dc_force = false;  // send it after every curve send (a Use or BallSheet's switch changes both)
+static CurveDecel try_dc;  // fw81: the editor's slow-down gain while it's live (cvt_try)
 static bool cvdc_used(const void* p) { return ((const CurveDecel*) p)->n != 0; }
 static bool lib_write();
 static bool cvdc_save() {
@@ -1595,7 +1602,7 @@ static void h_status() {
         bool sup = cv_supported() && ev_ok;
         j += "],\"src\":\"" + cv_src + "\",\"sup\":" + String(cv_supported() ? "true" : "false") + ",\"on\":" + String(sup && (evb[60] & 1) ? "true" : "false") +
              ",\"got\":" + String(sup && (evb[60] & 2) ? "true" : "false") + ",\"want\":" + String(cv_wanted() ? "true" : "false") +
-             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + ",\"id\":" + String(lib_off ? 0 : cv_id) + ",\"cand\":" + String(lib_off ? 0 : cv_cand) + ",\"tcand\":" + String(cvt_cand ? "true" : "false") + ",\"ab\":" + String((cvt_ab_at && (millis() - cvt_ab_at < 12000)) ? "true" : "false") +
+             ",\"applied\":" + String(cv_applied() ? "true" : "false") + ",\"sends\":" + String(cv_sends) + ",\"temp\":" + String(cvt_off ? "true" : "false") + ",\"id\":" + String(lib_off ? 0 : cv_id) + ",\"cand\":" + String(lib_off ? 0 : cv_cand) + ",\"tcand\":" + String(cvt_cand ? "true" : "false") + ",\"try\":" + String(cvt_try ? "true" : "false") + ",\"ab\":" + String((cvt_ab_at && (millis() - cvt_ab_at < 12000)) ? "true" : "false") +
              ",\"name\":\"" + String(cv_id ? cvlib[cv_id - 1].name : "") + "\",\"cand_name\":\"" + String(cv_cand ? cvlib[cv_cand - 1].name : "") + "\"" + (lib_off ? ",\"liboff\":true" : "");  // audit 11-01: liboff = the library didn't load; fw48: temp = a BallSheet curve-off run; fw49: ids, names, tcand = its candidate block
         String dc = dc_json(cv_id);  // fw67: the running curve's slow-down gain, and the Feather's copy (dcsup = Feather v39+)
         bool dsup = dc_supported() && ev_ok;
@@ -2302,6 +2309,7 @@ static void dg_tick() {
 static void h_dgtemp() {
     touch();
     if (server.hasArg("restore")) {
+        cvt_keep_at = millis() | 1;  // fw81: an arm switch counts as BallSheet checking in (h_cvtry waits 12 s)
         if (dgt_on) {
             dgt_on = false;
             dg_sent_at = 0;
@@ -2558,6 +2566,19 @@ static uint16_t cv_fallback_dpi() {
 
 static uint8_t cv_payload(uint8_t* d) {  // what C_SET_CURVE carries (no points = off)
     uint16_t fb = cv_fallback_dpi();
+    if (cvt_try) {  // fw81: the editor's table, on the same hosts
+        d[0] = cv_wanted() ? 1 : 0;
+        d[1] = try_tau;
+        d[2] = fb & 0xFF;
+        d[3] = fb >> 8;
+        for (uint8_t k = 0; k < try_n; k++) {
+            d[4 + 4 * k] = try_sp[k] & 0xFF;
+            d[5 + 4 * k] = try_sp[k] >> 8;
+            d[6 + 4 * k] = try_g[k] & 0xFF;
+            d[7 + 4 * k] = try_g[k] >> 8;
+        }
+        return 4 + 4 * try_n;
+    }
     if (cvt_cand && cv_cand && cvlib[cv_cand - 1].used) {  // fw49: the candidate, on the same hosts
         const CurveLib& c = cvlib[cv_cand - 1];
         d[0] = cv_wanted() ? 1 : 0;
@@ -2608,11 +2629,12 @@ static uint8_t dc_slot() {
 // a point whose share isn't above the one kept before it left out
 static uint8_t dc_payload(uint8_t* d) {
     uint8_t id = dc_slot();
-    if (!id || !cvdc[id - 1].n) {
+    const CurveDecel* cp = cvt_try ? &try_dc : id ? &cvdc[id - 1] : nullptr;  // fw81: the editor's while it tries
+    if (!cp || !cp->n) {
         d[0] = 0;
         return 1;
     }
-    const CurveDecel& c = cvdc[id - 1];
+    const CurveDecel& c = *cp;
     uint8_t n = (c.n > DC_N) ? DC_N : c.n;  // fw76: never past the caller's buffer
     d[0] = cv_wanted() ? 1 : 0;
     if (st[56] >= 47) {
@@ -2950,10 +2972,17 @@ static void h_live() {
 // POST /api/cvtemp?off=1 | keep=1 | restore=1 (fw48): BallSheet's curve-off runs, see cvt_off
 static void h_cvtemp() {
     touch();
+    if (cvt_try) {  // fw81: any BallSheet curve call (its running-curve arm's restore and keep-alives too) ends the editor's live edit
+        cvt_try = false;
+        cv_force = true;
+        dc_force = true;
+        cv_sent_at = 0;
+    }
     if (server.arg("ab") == "1") {
         cvt_ab_at = millis() | 1;
     }
     if (server.hasArg("restore")) {
+        cvt_keep_at = millis() | 1;  // fw81: an arm switch counts as BallSheet checking in (h_cvtry waits 12 s)
         if (cvt_off || cvt_cand) {
             cvt_off = false;
             cvt_cand = false;
@@ -3256,6 +3285,54 @@ static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_
         at = comma + 1;
     }
     return nullptr;
+}
+// POST /api/cvtry (fw81): the curve editor's live edit. The table as add=1 takes it (sp, g, tau, dc) = run it now (again
+// with each change); keep=1 = is it still live (ok false once a BallSheet run or a restart ended it: the page sends it again); end=1 = the running curve back
+static void h_cvtry() {
+    touch();
+    if (server.hasArg("keep")) {
+        return ok_json(cvt_try, "not live");
+    }
+    if (server.hasArg("end")) {
+        if (cvt_try) {
+            cvt_try = false;
+            cv_force = true;
+            cv_sent_at = 0;
+        }
+        return ok_json(true);
+    }
+    if (!from_current_page()) {
+        return;
+    }
+    if (cvt_off || cvt_cand || (cvt_keep_at && (millis() - cvt_keep_at < 12000))) {  // a BallSheet keep-alive in the last 12 s: a run is on, whatever its arm
+        return ok_json(false, "BallSheet is running a curve test: it goes live after that");
+    }
+    if (!cv_supported()) {
+        return ok_json(false, "the Feather isn't connected, or its firmware is too old for a curve");
+    }
+    uint16_t s16[CV_N] = {}, g16[CV_N] = {}, dgv[DC_N] = {}, dp[DC_N] = {}, s10 = 0;
+    uint8_t n = 0, tau = 8, dn = 0;
+    const char* why = cv_req_table(&n, s16, g16, &tau, &s10, &dn, dp, dgv);
+    if (why) {
+        return ok_json(false, why);
+    }
+    if (lib_off && dn) {  // the Feather's slow-down gain is never sent while the library is off (cvdc didn't load): a try's couldn't be undone
+        return ok_json(false, "the slow-down gain can't run live while the curve library isn't loaded (the table alone can)");
+    }
+    try_n = n;
+    try_tau = tau;
+    memcpy(try_sp, s16, sizeof(try_sp));
+    memcpy(try_g, g16, sizeof(try_g));
+    memset(&try_dc, 0, sizeof(try_dc));
+    try_dc.n = dn;
+    memcpy(try_dc.p10, dp, 2 * dn);
+    memcpy(try_dc.g, dgv, 2 * dn);
+    cvt_try = true;
+    cv_force = true;
+    dc_force = true;
+    cv_sent_at = 0;
+    String j = String("{\"ok\":true,\"want\":") + (cv_wanted() ? "true" : "false") + "}";  // want false: the curve is off on this host, so the try is too
+    server.send(200, "application/json", j);
 }
 static void h_curves() {
     touch();
@@ -3717,6 +3794,7 @@ static bool tdpi_send(const uint16_t* v) {
 static void h_tempdpi() {
     touch();
     if (server.hasArg("restore")) {
+        cvt_keep_at = millis() | 1;  // fw81: an arm switch counts as BallSheet checking in (h_cvtry waits 12 s)
         if (tdpi_active && server.hasArg("force")) {  // fw33: stop owing it (the table stays as the mouse has it)
             tdpi_restore = false;
             tdpi_active = false;
@@ -5249,6 +5327,7 @@ void setup() {
     server.on("/api/c360", HTTP_POST, h_c360);  // fw43
     server.on("/api/curve", HTTP_POST, h_curve);  // fw46
     server.on("/api/cvtemp", HTTP_POST, h_cvtemp);  // fw48
+    server.on("/api/cvtry", HTTP_POST, h_cvtry);  // fw81
   server.on("/api/live", HTTP_GET, h_live);  // fw50
   server.on("/api/live", HTTP_POST, h_live);
     server.on("/api/nvs", HTTP_GET, h_nvs);  // fw65
