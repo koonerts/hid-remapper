@@ -55,6 +55,10 @@ std::vector<reverse_mapping_t> reverse_mapping;
 std::vector<reverse_mapping_t> reverse_mapping_macros;
 std::vector<reverse_mapping_t> reverse_mapping_layers;
 
+// gw v53: process_mapping's walk of reverse_mapping (built in set_mapping_from_config)
+int32_t gw_map_walk_always = 1;
+std::vector<gw_map_walk_t> gw_map_walk = { { &gw_map_walk_always, GW_MAP_WALK_END, 0 } };
+
 std::unordered_map<uint8_t, std::unordered_map<uint32_t, usage_def_t>> our_usages;  // report_id -> usage -> usage_def
 std::unordered_map<uint32_t, usage_def_t> our_usages_flat;
 bool have_dpad = false;
@@ -728,6 +732,24 @@ void set_mapping_from_config() {
         }
     }
 
+    // gw v53: process_mapping's walk of reverse_mapping, so the per-frame check of the plain mappings reads one flat
+    // array instead of every reverse_mapping_t and its sources. Indexes fit 16 bits: under 1024 state slots for the
+    // passthrough mappings plus what fits the persisted config.
+    gw_map_walk.clear();
+    for (uint32_t i = 0; i < reverse_mapping.size(); i++) {
+        reverse_mapping_t const& rev_map = reverse_mapping[i];
+        if (rev_map.gw_plain) {
+            uint16_t next = gw_map_walk.size() + rev_map.sources.size();
+            for (auto const& source : rev_map.sources) {
+                gw_map_walk.push_back((gw_map_walk_t){ .input_state = source.input_state, .index = (uint16_t) i, .next = next });
+            }
+        } else {
+            uint16_t next = gw_map_walk.size() + 1;
+            gw_map_walk.push_back((gw_map_walk_t){ .input_state = &gw_map_walk_always, .index = (uint16_t) i, .next = next });
+        }
+    }
+    gw_map_walk.push_back((gw_map_walk_t){ .input_state = &gw_map_walk_always, .index = GW_MAP_WALK_END, .next = 0 });
+
     set_gpio_inout_masks(gpio_in_mask_, gpio_out_mask_);
     update_their_descriptor_derivates();
 
@@ -1270,19 +1292,21 @@ void __not_in_flash_func(process_mapping)(bool auto_repeat) {
     digipot_state[5] = 0;
     dpad_state = 0;
 
-    for (auto& rev_map : reverse_mapping) {
-        if (rev_map.gw_plain) {  // gw v52: all its inputs 0: nothing to add or write (set_mapping_from_config)
-            bool any = false;
-            for (auto const& source : rev_map.sources) {
-                if (*source.input_state != 0) {
-                    any = true;
-                    break;
-                }
-            }
-            if (!any) {
-                continue;
-            }
+    // gw v53: the mappings v52 ran, in the same order: every one that isn't plain, and a plain one (gw_plain) when one of
+    // its sources' inputs is not 0. gw_map_walk (set_mapping_from_config) holds those inputs in one flat array, the
+    // others an input that is always 1, and a last entry that ends it, so skipping a plain mapping is one load and test.
+    gw_map_walk_t const* const gw_walk = gw_map_walk.data();
+    gw_map_walk_t const* gw_w = gw_walk;
+    while (true) {
+        while (*gw_w->input_state == 0) {
+            gw_w++;
         }
+        uint32_t gw_index = gw_w->index;
+        if (gw_index == GW_MAP_WALK_END) {
+            break;
+        }
+        gw_w = gw_walk + gw_w->next;
+        auto& rev_map = reverse_mapping[gw_index];
         uint32_t target = rev_map.target;
         bool register_target = (target & 0xFFFF0000) == REGISTER_USAGE_PAGE;
         if (rev_map.is_relative) {

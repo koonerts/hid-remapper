@@ -13,6 +13,11 @@
 #include <string.h>
 
 #include "gw_link.h"
+#include "pico.h"  // gw v53: __not_in_flash_func
+
+#ifndef __not_in_flash_func
+#define __not_in_flash_func(f) f  // gw v53: the host test's stand-in pico.h has none
+#endif
 
 #define GW_CURVE_GAP_US 50000
 #define GW_CURVE_STILL 0.1f  // v36: cm/s below which the hand is still: a resting mouse at 40,000 DPI still sends a count every
@@ -49,8 +54,48 @@ static uint8_t dc_last_p[1 + 4 * GW_DECEL_N], dc_last_len = 0xFF;  // v42: the l
 static float dc_r[GW_DECEL_N], dc_g[GW_DECEL_N];  // share of the peak (0-1), gain
 static float dc_pk = 0, dc_tr = 0;                 // cm/s: the stroke's peak, the slowest since it
 static float dc_gn = 1.0f;                         // the slow-down gain now (eased)
+// gw v53: the per-frame float work cut to what changes (soft-float on RP2040: every op is a call), all exact: the same
+// inputs give the same floats, so only repeated work is skipped. The table segments' widths and rises, as gain_at and
+// decel_at took them every frame (the same subtractions, done once per table)
+static float pt_ds[GW_CURVE_N], pt_dg[GW_CURVE_N];          // [k] = point k minus point k - 1
+static float dc_dx[GW_DECEL_N + 1], dc_dg[GW_DECEL_N + 1];  // the same, with the implied (1.0, 1.0) as point dc_n
+// gw v53: dt (ms), e^(-dt/tau) and 1 - that by the frame gap (frames come 1 ms apart, +-1 us: 4 slots by the low bits);
+// a gap of 0 is never looked up, so 0 = empty. Emptied when tau changes.
+#define GW_CURVE_EC 4
+static uint32_t ec_gap[GW_CURVE_EC];
+static float ec_dt[GW_CURVE_EC], ec_e[GW_CURVE_EC], ec_a[GW_CURVE_EC];
+// gw v53: the motion's length (cm) by |dx|, |dy| (smaller first) and the DPI: (float) -d is -(float) d, and the sum
+// doesn't care which is first, so these give the same float. DPI 0 is never looked up, so 0 = empty.
+#define GW_CURVE_CC 8
+static uint32_t cc_lo[GW_CURVE_CC], cc_hi[GW_CURVE_CC];
+static uint16_t cc_dpi[GW_CURVE_CC];
+static float cc_cm[GW_CURVE_CC];
 
-static void dc_stroke() {
+// gw v53: v >= e (v < e, v <= e) for an e that's positive and normal, by the bits: those order as the floats do, and a
+// denormal or negative v (or -0) is below e whether or not the soft-float flushes it to 0. A NaN v takes the float
+// compare. Never a call (a soft-float compare is one).
+static inline __attribute__((always_inline)) int32_t fbits(float f) {
+    int32_t b;
+    memcpy(&b, &f, sizeof(b));
+    return b;
+}
+static inline __attribute__((always_inline)) bool f_nan(int32_t b) {
+    return (b & 0x7FFFFFFF) > 0x7F800000;
+}
+static inline __attribute__((always_inline)) bool ge_pn(float v, float e) {
+    int32_t b = fbits(v);
+    return f_nan(b) ? (v >= e) : (b >= fbits(e));
+}
+static inline __attribute__((always_inline)) bool lt_pn(float v, float e) {
+    int32_t b = fbits(v);
+    return f_nan(b) ? (v < e) : (b < fbits(e));
+}
+static inline __attribute__((always_inline)) bool le_pn(float v, float e) {
+    int32_t b = fbits(v);
+    return f_nan(b) ? (v <= e) : (b <= fbits(e));
+}
+
+static void __not_in_flash_func(dc_stroke)() {
     dc_pk = dc_tr = 0;
     dc_gn = 1.0f;
 }
@@ -68,8 +113,13 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
             pt_sp[k] = sp[k] / 10.0f;
             pt_g[k] = v / 1000.0f;
         }
+        for (uint8_t k = 1; k < n; k++) {  // gw v53: gain_at's subtractions, once
+            pt_ds[k] = pt_sp[k] - pt_sp[k - 1];
+            pt_dg[k] = pt_g[k] - pt_g[k - 1];
+        }
         n_pts = n;
         tau = tau_ms;
+        memset(ec_gap, 0, sizeof(ec_gap));  // gw v53: e^(-dt/tau) is by tau too
         dpi_fb = dpi_fallback;
     }
     got = true;
@@ -112,6 +162,10 @@ void gw_curve_decel_set(bool want, uint8_t n, const uint16_t* p10, const uint16_
             dc_r[k] = p10[k] / 1000.0f;
             dc_g[k] = v / 1000.0f;
         }
+        for (uint8_t k = 1; k <= n; k++) {  // gw v53: decel_at's subtractions, once (point n = the implied 1.0, 1.0)
+            dc_dx[k] = ((k < n) ? dc_r[k] : 1.0f) - dc_r[k - 1];
+            dc_dg[k] = ((k < n) ? dc_g[k] : 1.0f) - dc_g[k - 1];
+        }
         dc_n = n;
     }
     dc_got = true;
@@ -143,18 +197,19 @@ void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
     dc_crc = crc;
 }
 
-static float decel_at(float r) {  // r = the speed's share of the stroke's peak
+// gw v53: this and the rest of the per-frame path run from RAM (firmware/src's code is in flash, through the XIP cache)
+static float __not_in_flash_func(decel_at)(float r) {  // r = the speed's share of the stroke's peak
     float x0 = dc_r[0], g0 = dc_g[0];
-    if (r <= x0) {
+    if (le_pn(r, x0)) {  // gw v53: the shares are 0.01-1.0, so by the bits
         return g0;
     }
     for (uint8_t k = 1; k <= dc_n; k++) {
-        float x1 = (k < dc_n) ? dc_r[k] : 1.0f, g1 = (k < dc_n) ? dc_g[k] : 1.0f;
-        if (r < x1) {
-            return g0 + (g1 - g0) * (r - x0) / (x1 - x0);
+        float x1 = (k < dc_n) ? dc_r[k] : 1.0f;
+        if (lt_pn(r, x1)) {
+            return g0 + dc_dg[k] * (r - x0) / dc_dx[k];  // gw v53: (g1 - g0) and (x1 - x0) from decel_set
         }
         x0 = x1;
-        g0 = g1;
+        g0 = (k < dc_n) ? dc_g[k] : 1.0f;
     }
     return 1.0f;
 }
@@ -162,8 +217,8 @@ static float decel_at(float r) {  // r = the speed's share of the stroke's peak
 // v39: the stroke's peak and the slowest speed since it. A rise of 1.25x and 2 cm/s over that slowest is speeding up
 // again: a new peak, so only slowing down gets the gain. It eases toward its value by the speed's own smoothing (a =
 // 1 - e^(-dt/tau), 0 for the first frame from rest), so neither the switch at the peak nor a new rise is a step.
-static float decel_step(float a) {
-    if (spd < GW_CURVE_STILL) {  // v42: still: the stroke is over (at 40,000 DPI a resting mouse's stray counts never
+static float __not_in_flash_func(decel_step)(float a) {
+    if (lt_pn(spd, GW_CURVE_STILL)) {  // v42: still: the stroke is over (at 40,000 DPI a resting mouse's stray counts never
         dc_stroke();             // leave the 50 ms gap, so slow aim after a rest kept the last flick's peak and its lowest gain)
         return dc_gn;
     }
@@ -179,33 +234,42 @@ static float decel_step(float a) {
     return dc_gn;
 }
 
-static float gain_at(float v) {
-    if (v <= pt_sp[0]) {
+static float __not_in_flash_func(gain_at)(float v) {
+    if (v <= pt_sp[0]) {  // the first point may be 0 cm/s: a float compare (RP2040's flushes a denormal v to 0)
         return pt_g[0];
     }
     for (uint8_t k = 1; k < n_pts; k++) {
-        if (v < pt_sp[k]) {
-            return pt_g[k - 1] + (pt_g[k] - pt_g[k - 1]) * (v - pt_sp[k - 1]) / (pt_sp[k] - pt_sp[k - 1]);
+        if (lt_pn(v, pt_sp[k])) {  // gw v53: points after the first are 0.1 cm/s or more, so by the bits
+            return pt_g[k - 1] + pt_dg[k] * (v - pt_sp[k - 1]) / pt_ds[k];  // gw v53: the subtractions from curve_set
         }
     }
     return pt_g[n_pts - 1];
 }
 
-uint8_t gw_curve_bin(float v) {
+uint8_t __not_in_flash_func(gw_curve_bin)(float v) {
     static float edge[GW_CURVE_BINS - 1];  // edge[k] = where bin k + 1 starts
-    if (edge[0] == 0) {
+    static bool edged = false;             // gw v53: a flag, not a float compare per call (the same edges either way)
+    if (!edged) {
         for (uint8_t k = 0; k < GW_CURVE_BINS - 1; k++) {
             edge[k] = 5.0f * powf(32.0f, k / 24.0f);
         }
+        edged = true;
     }
     uint8_t b = 0;
-    while ((b < GW_CURVE_BINS - 1) && (v >= edge[b])) {
+    int32_t vb = fbits(v);
+    if (f_nan(vb)) {
+        while ((b < GW_CURVE_BINS - 1) && (v >= edge[b])) {
+            b++;
+        }
+        return b;
+    }
+    while ((b < GW_CURVE_BINS - 1) && (vb >= fbits(edge[b]))) {  // gw v53: the edges are 5-139 cm/s: by the bits (ge_pn)
         b++;
     }
     return b;
 }
 
-static void sample(uint64_t now_us) {
+static void __not_in_flash_func(sample)(uint64_t now_us) {
     if (now_us - samp_us < GW_CURVE_SAMPLE_US) {
         return;
     }
@@ -215,8 +279,36 @@ static void sample(uint64_t now_us) {
     ring_n++;
 }
 
+// gw v53: dt = gap / 1000 ms and e = e^(-dt/tau) as the frame computed them, from the cache when the gap was seen
+static inline __attribute__((always_inline)) uint32_t decay_of(uint64_t gap) {
+    uint32_t k = (uint32_t) gap & (GW_CURVE_EC - 1);
+    if (((gap >> 32) == 0) && (ec_gap[k] == (uint32_t) gap)) {
+        return k;
+    }
+    k = ((gap >> 32) == 0) ? k : 0;  // a gap past 32 bits (71 minutes) isn't kept: slot 0, marked empty
+    ec_dt[k] = gap / 1000.0f;
+    ec_e[k] = expf(-ec_dt[k] / tau);
+    ec_a[k] = 1.0f - ec_e[k];
+    ec_gap[k] = ((gap >> 32) == 0) ? (uint32_t) gap : 0;
+    return k;
+}
+
+// gw v53: sqrtf(dx^2 + dy^2) * 2.54 / dpi as the frame computed it, from the cache when the counts and DPI were seen
+static inline __attribute__((always_inline)) float cm_of(int32_t dx, int32_t dy, uint16_t dpi) {
+    uint32_t ax = (dx < 0) ? 0u - (uint32_t) dx : (uint32_t) dx, ay = (dy < 0) ? 0u - (uint32_t) dy : (uint32_t) dy;
+    uint32_t lo = (ax < ay) ? ax : ay, hi = (ax < ay) ? ay : ax;
+    uint32_t k = (hi * 5 + lo) & (GW_CURVE_CC - 1);
+    if ((cc_dpi[k] != dpi) || (cc_lo[k] != lo) || (cc_hi[k] != hi)) {
+        cc_cm[k] = sqrtf((float) dx * dx + (float) dy * dy) * 2.54f / dpi;
+        cc_lo[k] = lo;
+        cc_hi[k] = hi;
+        cc_dpi[k] = dpi;
+    }
+    return cc_cm[k];
+}
+
 // v32: the speed is tracked with the curve off too (the live view), but only an applying curve changes the motion
-void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
+void __not_in_flash_func(gw_curve_filter)(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
     if ((x == nullptr) || (y == nullptr)) {
         return;
     }
@@ -225,7 +317,7 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
     }
     dpi_now = dpi;
     g_now = 1.0f;
-    moving = moved && (now_us - moved_us < GW_CURVE_GAP_US) && (spd >= GW_CURVE_STILL);
+    moving = moved && (now_us - moved_us < GW_CURVE_GAP_US) && ge_pn(spd, GW_CURVE_STILL);  // gw v53: by the bits
     if (dpi == 0) {
         spd = 0;  // v31: no DPI known: the speed can't be, so the motion passes unchanged (it froze the last gain)
         have_t = moved = moving = false;
@@ -238,7 +330,7 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
     have_t = true;
     if ((dx == 0) && (dy == 0)) {
         if (gap > 0) {
-            spd *= expf(-(gap / 1000.0f) / tau);  // a still frame: the speed decays
+            spd *= ec_e[decay_of(gap)];  // a still frame: the speed decays (gw v53: e^(-dt/tau) cached by the gap)
         }
         if (on) {
             g_now = gain_at(spd) * dc_gn;
@@ -251,14 +343,15 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi) {
         spd = 0;  // the first motion after 50 ms without any starts from rest
         dc_stroke();  // v39: and a new stroke
     } else if (gap > 0) {
-        float dt = gap / 1000.0f;  // ms
-        float cm = sqrtf((float) dx * dx + (float) dy * dy) * 2.54f / dpi;
-        a = 1.0f - expf(-dt / tau);
+        uint32_t k = decay_of(gap);  // gw v53: dt (ms) and a = 1 - e^(-dt/tau), cached by the gap
+        float dt = ec_dt[k];
+        float cm = cm_of(dx, dy, dpi);  // gw v53: cached by |dx|, |dy|, DPI
+        a = ec_a[k];
         spd += (cm / dt * 1000.0f - spd) * a;
     }
     moved = true;
     moved_us = now_us;
-    moving = spd >= GW_CURVE_STILL;
+    moving = ge_pn(spd, GW_CURVE_STILL);
     if (moving) {
         hist[gw_curve_bin(spd)]++;
         hist_ms++;

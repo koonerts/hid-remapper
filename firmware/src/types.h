@@ -166,6 +166,15 @@ struct reverse_mapping_t {
     std::vector<map_source_t> sources;
 };
 
+// gw v53: one entry of process_mapping's walk of reverse_mapping (set_mapping_from_config builds it, in reverse_mapping's
+// order): a plain mapping has one entry per source, any other mapping one entry whose input is always 1
+#define GW_MAP_WALK_END 0xFFFF
+struct gw_map_walk_t {
+    const int32_t* input_state;  // the mapping runs if this is not 0
+    uint16_t index;              // the mapping in reverse_mapping (GW_MAP_WALK_END: the walk's last entry)
+    uint16_t next;               // the walk's entry after that mapping's entries
+};
+
 struct tap_hold_usage_t {
     int32_t* input_state;
     tap_hold_state_t* tap_hold_state;
