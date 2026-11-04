@@ -176,6 +176,16 @@ inline int8_t get_bit(const uint8_t* data, int len, uint16_t bitpos) {
 }
 
 inline uint32_t get_bits(const uint8_t* data, int len, uint16_t bitpos, uint8_t size) {
+    // gw v56: whole bytes at once when every bit lies inside data (the same value as bit by bit, below; gwtest/getbits)
+    int first = bitpos / 8, last = (bitpos + size - 1) / 8;
+    if ((size >= 1) && (size <= 32) && (last < len)) {
+        uint64_t v = 0;
+        for (int b = last; b >= first; b--) {
+            v = (v << 8) | data[b];
+        }
+        v >>= (bitpos % 8);
+        return (size == 32) ? (uint32_t) v : (uint32_t) v & ((1u << size) - 1);
+    }
     uint32_t value = 0;
     for (int i = 0; i < size; i++) {
         value |= get_bit(data, len, bitpos + i) << i;
@@ -1738,7 +1748,8 @@ static inline bool is_rollover(const uint8_t* report, int len, uint16_t interfac
     return false;
 }
 
-void do_handle_received_report(const uint8_t* report, int len, uint16_t interface, uint8_t external_report_id) {
+// gw v56: from RAM (this file's code is in flash): every report from the mouse goes through here, ~32 us each
+void __not_in_flash_func(do_handle_received_report)(const uint8_t* report, int len, uint16_t interface, uint8_t external_report_id) {
     if (len == 0) {
         return;
     }

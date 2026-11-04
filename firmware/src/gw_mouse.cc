@@ -1781,7 +1781,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 54  // v54: the speed curve with fewer soft-float calls: cached 1000/dt and 2.54/dpi, the segments' slopes, slow-down thresholds per stroke, the carried fraction in Q16 (output within 1 count of v53, no drift: gwtest curve_round); v53: the mappings loop walks a flat list of the plain mappings' inputs; the speed curve runs from RAM and caches its expf, motion length and table steps (output bit for bit the same: gwtest maptest53, curve_diff, curve_probe); v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
+#define GW_FW_VERSION 56  // v56: the mouse's reports parse faster (get_bits whole bytes at once, do_handle_received_report from RAM; the same values); v55: the profile also times the main loop pass that takes the frame's tick (USB host task, report parsing, the G-Wolves hook, the wait before it); v54: the speed curve with fewer soft-float calls: cached 1000/dt and 2.54/dpi, the segments' slopes, slow-down thresholds per stroke, the carried fraction in Q16 (output within 1 count of v53, no drift: gwtest curve_round); v53: the mappings loop walks a flat list of the plain mappings' inputs; the speed curve runs from RAM and caches its expf, motion length and table steps (output bit for bit the same: gwtest maptest53, curve_diff, curve_probe); v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps
@@ -1836,6 +1836,18 @@ void gw_prof_mark(uint8_t k) {
     pf_last = now;
 }
 
+void gw_prof_set(uint8_t k, uint32_t us) {  // v55
+    if (k < GW_PROF_N) {
+        pf_cur[k] = us;
+    }
+}
+
+void gw_prof_add(uint8_t k, uint32_t us) {  // v55
+    if (k < GW_PROF_N) {
+        pf_cur[k] += us;
+    }
+}
+
 static void prof_sub(uint8_t k) {  // v51: a part of gw_tick, from the last prof_sub (or gw_tick's start)
     uint32_t now = time_us_32();
     if (k < GW_PROF_N) {
@@ -1869,7 +1881,7 @@ static void prof_publish(void) {  // once a second: the block, then the sums sta
     uint32_t ius, in;
     gw_link_irq_take(&ius, &in);
     b[0] = 'P';
-    b[1] = 2;
+    b[1] = 3;  // v55: 24 sections (2: 20, v51-v54)
     b[2] = GW_PROF_N;
     b[3] = (pf_n > 65535) ? 255 : pf_n & 0xFF;
     b[4] = (pf_n > 65535) ? 255 : pf_n >> 8;

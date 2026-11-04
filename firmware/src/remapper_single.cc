@@ -101,14 +101,18 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
 
 void report_received_callback(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
     if (len > 0) {
+        uint32_t t0 = time_us_32();  // gw v55: the parse, for the frame profile
         handle_received_report(report, len, (uint16_t) (dev_addr << 8) | instance);
+        gw_prof_add(21, time_us_32() - t0);
 
         reports_received = true;
     }
 }
 
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
+    uint32_t t0 = time_us_32();  // gw v55
     gw_on_input_report(dev_addr, instance, report, len);
+    gw_prof_add(22, time_us_32() - t0);
     report_received_callback(dev_addr, instance, report, len);
 
     tuh_hid_receive_report(dev_addr, instance);

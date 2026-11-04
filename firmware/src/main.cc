@@ -23,6 +23,7 @@
 #include "crc.h"
 #include "descriptor_parser.h"
 #include "globals.h"
+#include "gw_mouse.h"
 #include "gw_ota.h"
 #include "i2c.h"
 #include "mcp4651.h"
@@ -276,7 +277,15 @@ int main() {
         bool tick;
         bool new_report;
         gw_where(GW_AT_LOOP);  // gw v48
+        gw_prof_set(21, 0);  // gw v55: this pass's report parsing and hook (remapper_single.cc), kept if it takes the tick
+        gw_prof_set(22, 0);
+        uint32_t gw_pass_at = time_us_32();
         read_report(&new_report, &tick);
+        if (tick) {
+            gw_prof_set(20, time_us_32() - gw_pass_at);  // the USB host task (it runs after the tick is taken)
+            int32_t gw_late = (int32_t) (gw_pass_at - tick_taken_time());  // from the tick to this pass's start (v56: 0 when the tick came after it started)
+            gw_prof_set(23, (gw_late > 0) ? gw_late : 0);
+        }
         if (new_report) {
             activity_led_on();
         }

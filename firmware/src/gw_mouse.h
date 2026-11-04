@@ -20,10 +20,15 @@ void gw_frame_time(uint32_t total_us, uint32_t chords_us);
 // frame's total), timed by gw_prof_sub. Layout v2: 'P', 2, GW_PROF_N, frames uint16, the link interrupt's us uint32 and
 // count uint16 (both a second), the heap in use and its size (16-byte units, uint16 each), then per section: average
 // (0.1 us, uint16), worst (4 us steps), its share of the second's worst frame (4 us steps); crc8 last
+// v55: layout 3 (GW_LINK_PROF_LEN 112), sections 20-23 = the main loop pass that took the frame's tick (main.cc,
+// remapper_single.cc): 20 the USB host task (tuh_task: the mouse's reports), 21 of which the reports' parsing, 22 of which
+// the G-Wolves hook, 23 from the tick to that pass's start (the pass before finishing). gw_prof_set / gw_prof_add
 #define GW_PROF_MAIN 13
-#define GW_PROF_N 20
+#define GW_PROF_N 24
 void gw_prof_start(void);
 void gw_prof_mark(uint8_t k);
+void gw_prof_set(uint8_t k, uint32_t us);
+void gw_prof_add(uint8_t k, uint32_t us);
 void gw_on_set_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, uint16_t len);
 void gw_on_get_report_complete(uint8_t dev_addr, uint8_t instance, uint8_t report_id, const uint8_t* report, uint16_t len);
 void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* report, uint16_t len);

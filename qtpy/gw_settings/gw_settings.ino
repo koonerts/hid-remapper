@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 84    // this firmware's number, shown in /api/status; fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 85    // this firmware's number, shown in /api/status; fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -1092,7 +1092,7 @@ static void link_tick() {
         read_chords();
     }
     fz_check((st[56] >= 48) && (st[2] & 16));  // fw77
-    if (st[56] >= 51) {
+    if (st[56] >= 55) {
         pf_check();  // fw82; fw83: layout 2 only (Feather v51)
     }
     // a restarted Feather has lost its tuning flag: re-baseline the counter, give back the settings
@@ -2858,18 +2858,18 @@ static void fz_check(bool flag) {
 
 // fw82: where the Feather's frames go (Feather v50: block 5, layout in the fork's gw_mouse.h), read once a second;
 // fw83: Feather v51's layout 2 (96 bytes: gw_tick's parts, the heap)
-#define PF_LEN 96
+#define PF_LEN 112  // fw85: Feather v55's layout 3 (24 sections); 96 for layout 2
 static uint8_t pf_blk[PF_LEN];
 static bool pf_have = false;
 static uint32_t pf_at = 0, pf_reads = 0, pf_fails = 0;
 
 static void pf_check() {
-    if (fo_busy() || (st[56] < 51) || (pf_at && (millis() - pf_at < 1000))) {
+    if (fo_busy() || (st[56] < 55) || (pf_at && (millis() - pf_at < 1000))) {  // fw85: layout 3 only (Feather v55)
         return;
     }
     pf_at = millis() | 1;
     uint8_t b[PF_LEN];
-    if (!read_sel(5, b, PF_LEN) || (b[0] != 'P') || (b[1] != 2) || (b[2] > 20)) {
+    if (!read_sel(5, b, PF_LEN) || (b[0] != 'P') || (b[1] != 3) || (b[2] > 24)) {
         pf_fails++;
         return;
     }
@@ -2887,13 +2887,14 @@ static String pf_json() {
                                             "tap/sticky/layers", "registers + gw_tick", "macro queue", "mappings", "macros, accumulate",
                                             "reports", "out reports", "tick: wake, events, chords, DPI", "tick: mouse settings",
                                             "tick: idle stage", "tick: link frame + update", "tick: status (every 20 ms)", "tick: status host part + hand-off",
-                                            "tick: live/hist blocks + diag", "?" };  // fw84: Feather v52's gw_tick parts
+                                            "tick: live/hist blocks + diag", "loop: USB host task", "loop: report parsing", "loop: G-Wolves hook",
+                                            "loop: wait for the pass before", "?" };  // fw84: Feather v52's gw_tick parts; fw85: v55's loop pass
         const uint8_t* b = pf_blk;
         j += ",\"frames\":" + String(b[3] | b[4] << 8) + ",\"irq_us\":" + String(le32(b + 5)) + ",\"irq_n\":" + String(b[9] | b[10] << 8) +
              ",\"heap_used\":" + String((uint32_t) (b[11] | b[12] << 8) * 16) + ",\"heap_arena\":" + String((uint32_t) (b[13] | b[14] << 8) * 16) + ",\"sec\":[";
         for (uint8_t k = 0; k < b[2]; k++) {
             const uint8_t* p = b + 15 + 4 * k;
-            j += String(k ? "," : "") + "[\"" + String(NAME[(k < 20) ? k : 20]) + "\"," + String((p[0] | p[1] << 8) / 10.0f, 1) + "," + String(p[2] * 4) + "," + String(p[3] * 4) + "]";
+            j += String(k ? "," : "") + "[\"" + String(NAME[(k < 24) ? k : 24]) + "\"," + String((p[0] | p[1] << 8) / 10.0f, 1) + "," + String(p[2] * 4) + "," + String(p[3] * 4) + "]";
         }
         j += "]";
     }

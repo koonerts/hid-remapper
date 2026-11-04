@@ -161,7 +161,7 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .pt th,.pt td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
 .pt th{font-weight:600;color:var(--mut)}
 .pt th:first-child,.pt td:first-child{text-align:left}
-.pt td.sub{padding-left:20px;color:var(--mut)}.pt td+td{white-space:nowrap}
+.pt td.sub{padding-left:20px;color:var(--mut)}.pt td.sub2{padding-left:34px;color:var(--mut)}.pt td+td{white-space:nowrap}
 .pt .mut{font-size:12px}
 #pskip.bad{color:var(--bad)}.tip{cursor:help}.pt tr.tip td:first-child{text-decoration:underline dotted var(--mut);text-underline-offset:3px}
 #lvc{display:block;width:100%;height:220px;background:#000;border:1px solid var(--line);border-radius:10px;cursor:crosshair;touch-action:none}
@@ -489,9 +489,10 @@ const ps=$('pskip');ps.hidden=!v19;if(v19){ps.textContent='Frames skipped: '+(pf
 // 11-04 (Feather v51+, QT Py fw83+): each part of the frame, from the Feather's profile block (/api/status prof), in frame
 // order; parts 13-19 are inside the housekeeping row
 const PFN=[['Wait before remapping','after its tick: the USB work before it'],['Idle check + chords',''],['Direction gains',''],['Steady turn','cm/360 card'],['Speed curve + slow-down',''],['Turn counting',''],['Tap, sticky, layers',''],['Feather housekeeping','status, LEDs, link'],['Macro queue',''],['Mappings',''],['Macros, sums',''],['Building reports',''],['Output reports',''],
-['events, chords, DPI',''],['mouse settings',''],['idle stage',''],['link commands, updates',''],['status for the QT Py','every 20 ms'],['host capture, hand-off','every 20 ms'],['live view, diagnostics','']];
-function drawProf(pr){const ok=!!(pr&&pr.sec&&pr.sec.length);fprof.hidden=!ok;if(!ok)return;const n=pr.sec.length,row=(k,sub)=>{const s=pr.sec[k],nm=PFN[k]||[s[0],''];return '<tr><td'+(sub?' class="sub"':'')+'>'+esc(nm[0])+(nm[1]?' <span class="mut">'+esc(nm[1])+'</span>':'')+'</td><td>'+s[1].toFixed(1)+' µs</td><td>'+s[2]+' µs</td><td>'+s[3]+' µs</td></tr>'};
-let h='';for(let k=0;k<Math.min(n,13);k++){h+=row(k,false);if(k===7)for(let j=13;j<n;j++)h+=row(j,true)}pfb.innerHTML=h;
+['events, chords, DPI',''],['mouse settings',''],['idle stage',''],['link commands, updates',''],['status for the QT Py','every 20 ms'],['host capture, hand-off','every 20 ms'],['live view, diagnostics',''],
+['reading the mouse','USB host task'],['report parsing',''],['G-Wolves hook',''],['the loop pass before','still running at the tick']];  // 11-04: 20-23 = Feather v55's loop pass
+function drawProf(pr){const ok=!!(pr&&pr.sec&&pr.sec.length);fprof.hidden=!ok;if(!ok)return;const n=pr.sec.length,row=(k,sub)=>{const s=pr.sec[k],nm=PFN[k]||[s[0],''];return '<tr><td'+(sub?' class="sub'+(sub>1?'2':'')+'"':'')+'>'+esc(nm[0])+(nm[1]?' <span class="mut">'+esc(nm[1])+'</span>':'')+'</td><td>'+s[1].toFixed(1)+' µs</td><td>'+s[2]+' µs</td><td>'+s[3]+' µs</td></tr>'};
+let h='';for(let k=0;k<Math.min(n,13);k++){h+=row(k,0);if(k===0&&n>23)h+=row(23,1)+row(20,1)+row(21,2)+row(22,2);if(k===7)for(let j=13;j<Math.min(n,20);j++)h+=row(j,1)}pfb.innerHTML=h;
 $('pfnote').textContent='Worst: the longest that part took in any frame of the second. Worst frame: its time in the second\'s slowest frame. Link interrupt: '+(pr.irq_us/1000).toFixed(2)+' ms a second ('+pr.irq_n+' interrupts)'+(pr.heap_arena?' · heap: '+Math.round(pr.heap_used/1024)+' of '+Math.round(pr.heap_arena/1024)+' KB in use':'')+'.'}
 // recent actions (Feather v21): [age s, source, buttons, action, value], newest first
 const EVSRC=['','tap','hold','double tap','wheel up','wheel down'],DEV=['device','Windows','Android','iPhone','Mac','Linux','script','automatic'];
