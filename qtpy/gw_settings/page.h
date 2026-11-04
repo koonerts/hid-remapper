@@ -929,11 +929,14 @@ $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
 // address answers and move there, so reloads and button presses don't need another .local name
 // lookup (those fail on some phones and PCs). If the address doesn't answer, stay on .local.
+// 11-04: and if the move itself doesn't finish in 4 s, stop it and stay, and don't try that address again in this browser:
+// with the Mozilla VPN extension the check went direct (gwolves.local's bypass covers its requests) but the move to the bare
+// IP went into the tunnel and hung, so Firefox showed the page loading forever
 let ipTried=false,touched=false;['input','pointerdown','keydown'].forEach(e=>document.addEventListener(e,()=>{touched=true},true));
 async function toIp(j){if(ipTried||touched)return false;ipTried=true;const ip=j&&j.radio&&j.radio.mode==='sta'?j.radio.ip:'';
-if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;
+if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;try{if(localStorage.getItem('gwNoIp')===ip)return false}catch(e){}
 const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch('http://'+ip+'/api/status',{mode:'no-cors',cache:'no-store',signal:c.signal})}catch(e){return false}finally{clearTimeout(tm)}
-if(touched)return false;location.replace('http://'+ip+'/');return true}
+if(touched)return false;setTimeout(()=>{window.stop();try{localStorage.setItem('gwNoIp',ip)}catch(e){}},4000);location.replace('http://'+ip+'/');return true}
 // A new page on the QT Py (an upload, or new firmware): a style-only change is swapped in place; anything else
 // reloads this page by itself once nothing is being edited (tab and fold-outs live on the QT Py, the scroll position
 // comes back), otherwise a chip in the status bar offers it. page_gz.ps1 stamps <meta name="gw-rest"> with a hash of
