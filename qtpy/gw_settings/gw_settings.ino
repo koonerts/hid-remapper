@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 85    // this firmware's number, shown in /api/status; fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 86    // this firmware's number, shown in /api/status; fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -3298,6 +3298,113 @@ static long dc_p10_arg(String s) {
     return (dot < 0) ? v * 10 : v;
 }
 
+// fw86: what each curve Replace changed, before and after (an edit log entry has 15 characters: "R<id>:<what>"). The last
+// EDIT_LOG of them, newest first, in /cvhist.bin (RAM only without the file system); GET /api/curvehist
+#define CVH_POINTS 1  // what: the curve's points
+#define CVH_DECEL 2   // its slow-down gain
+#define CVH_TAU 4     // its smoothing
+#define CVH_S10 8     // the XIM linear cm/360 it goes with
+struct __attribute__((packed)) CvHist {
+    uint32_t t;  // as the edit log entry's (now_unix)
+    uint8_t id, what;
+    uint8_t n0, n1, tau0, tau1;
+    uint16_t s10_0, s10_1;
+    uint16_t sp0[CV_N], g0[CV_N], sp1[CV_N], g1[CV_N];
+    CurveDecel d0, d1;
+};
+static_assert(sizeof(CvHist) == 144, "/cvhist.bin's layout");
+static CvHist cvhist[EDIT_LOG];
+static uint8_t cvhist_n = 0;
+
+static void cvhist_load() {
+    if (!fs_ok || !FFat.exists("/cvhist.bin")) {
+        return;
+    }
+    File f = FFat.open("/cvhist.bin", "r");
+    uint8_t n = 0;
+    if (f && (f.read(&n, 1) == 1) && (n <= EDIT_LOG) && (f.read((uint8_t*) cvhist, sizeof(CvHist) * n) == sizeof(CvHist) * n)) {
+        cvhist_n = n;
+    }
+    if (f) {
+        f.close();
+    }
+}
+
+static void cvhist_save() {
+    if (!fs_ok) {
+        return;
+    }
+    File f = FFat.open("/cvhist.bin", "w");
+    if (f) {
+        f.write(&cvhist_n, 1);
+        f.write((const uint8_t*) cvhist, sizeof(CvHist) * cvhist_n);
+        f.close();
+    }
+}
+
+// curve id's old version (cvh_was, cvh_dwas: set before the replace; no struct parameters, as the sketch's generated
+// prototypes come before the structs) against its new one in the library; returns what changed (CVH_*)
+static CurveLib cvh_was;
+static CurveDecel cvh_dwas;
+static uint8_t cvhist_add(uint8_t id) {
+    const CurveLib& o = cvh_was;
+    const CurveDecel& od = cvh_dwas;
+    const CurveLib& c = cvlib[id - 1];
+    const CurveDecel& d = cvdc[id - 1];
+    uint8_t what = 0;
+    if ((o.n != c.n) || memcmp(o.sp, c.sp, 2 * c.n) || memcmp(o.g, c.g, 2 * c.n)) {
+        what |= CVH_POINTS;
+    }
+    if ((od.n != d.n) || memcmp(od.p10, d.p10, 2 * d.n) || memcmp(od.g, d.g, 2 * d.n)) {
+        what |= CVH_DECEL;
+    }
+    what |= (o.tau != c.tau) ? CVH_TAU : 0;
+    what |= (o.s10 != c.s10) ? CVH_S10 : 0;
+    memmove(cvhist + 1, cvhist, sizeof(CvHist) * (EDIT_LOG - 1));
+    CvHist& h = cvhist[0];
+    memset(&h, 0, sizeof(h));
+    h.t = now_unix();
+    h.id = id;
+    h.what = what;
+    h.n0 = o.n;
+    h.n1 = c.n;
+    h.tau0 = o.tau;
+    h.tau1 = c.tau;
+    h.s10_0 = o.s10;
+    h.s10_1 = c.s10;
+    memcpy(h.sp0, o.sp, sizeof(h.sp0));
+    memcpy(h.g0, o.g, sizeof(h.g0));
+    memcpy(h.sp1, c.sp, sizeof(h.sp1));
+    memcpy(h.g1, c.g, sizeof(h.g1));
+    h.d0 = od;
+    h.d1 = d;
+    if (cvhist_n < EDIT_LOG) {
+        cvhist_n++;
+    }
+    cvhist_save();
+    return what;
+}
+
+static String cvhist_pts(const uint16_t* x, const uint16_t* y, uint8_t n) {
+    String j = "[";
+    for (uint8_t k = 0; k < n; k++) {
+        j += String(k ? ",[" : "[") + String(x[k]) + "," + String(y[k]) + "]";
+    }
+    return j + "]";
+}
+
+static void h_curvehist() {
+    String j = "[";
+    for (uint8_t i = 0; i < cvhist_n; i++) {
+        const CvHist& h = cvhist[i];
+        uint8_t n0 = (h.n0 > CV_N) ? CV_N : h.n0, n1 = (h.n1 > CV_N) ? CV_N : h.n1, e0 = (h.d0.n > DC_N) ? DC_N : h.d0.n, e1 = (h.d1.n > DC_N) ? DC_N : h.d1.n;
+        j += String(i ? "," : "") + "{\"t\":" + String(h.t) + ",\"id\":" + String(h.id) + ",\"what\":" + String(h.what) + ",\"tau\":[" + String(h.tau0) + "," +
+             String(h.tau1) + "],\"s10\":[" + String(h.s10_0) + "," + String(h.s10_1) + "],\"c0\":" + cvhist_pts(h.sp0, h.g0, n0) + ",\"c1\":" +
+             cvhist_pts(h.sp1, h.g1, n1) + ",\"d0\":" + cvhist_pts(h.d0.p10, h.d0.g, e0) + ",\"d1\":" + cvhist_pts(h.d1.p10, h.d1.g, e1) + "}";
+    }
+    server.send(200, "application/json", j + "]");
+}
+
 // fw67: a curve's table from a request (sp, g, tau, s10, dc), as add=1 and replace=1 take it; nullptr = fine, else why not
 static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_t* tau, uint16_t* s10, uint8_t* dn, uint16_t* dp, uint16_t* dgv) {
     long sp[CV_N], g[CV_N];
@@ -3512,7 +3619,7 @@ static void h_curves() {
         prefs.putString("cvsrc", cv_src);
         nvs_put("curve", &cv, sizeof(cv));
         cvlib_ids_save();
-        log_edit(EK_CURVE, String("use ") + String(c.name));
+        log_edit(EK_CURVE, String("U") + String(id) + " " + String(c.name));  // fw86: the id first, so the page names it in full
         cv_sent_at = 0;
         cv_force = true;
         return ok_json(true);
@@ -3556,6 +3663,8 @@ static void h_curves() {
         if (!lib_fs_on() && (nvs_room() < NVS_KEEP + 5 + ((dn && !cvdc[id - 1].n) ? 3 : 0))) {  // fw71: in NVS only; the curve's blob is written anew before the old goes; a new slow-down gain adds its own
             return ok_json(false, "the QT Py's settings storage is full: delete a curve first");
         }
+        cvh_was = c;  // fw86: for the change history (cvhist_add)
+        cvh_dwas = cvdc[id - 1];
         c.n = n;
         c.tau = tau;
         if (s10) {
@@ -3588,7 +3697,9 @@ static void h_curves() {
         cvmeta_touch(id);
         bool saved = cvdc_save();
         saved = cvlib_save() && saved;
-        log_edit(EK_CURVE, String("replace ") + String(c.name));
+        uint8_t what = cvhist_add(id);  // fw86: the log says which curve and what changed (the page names it)
+        log_edit(EK_CURVE, String("R") + String(id) + ":" + ((what & CVH_POINTS) ? "c" : "") + ((what & CVH_DECEL) ? "d" : "") + ((what & CVH_TAU) ? "t" : "") +
+                               ((what & CVH_S10) ? "l" : ""));
         return saved ? ok_json(true) : ok_json(false, "replaced, but the QT Py couldn't save it: the old version comes back at the next power-off");
     }    if (server.hasArg("s10")) {  // fw54: ?id=&s10=: the XIM's linear cm/360 (x10) the curve goes with
         long v = server.arg("s10").toInt();
@@ -3602,7 +3713,7 @@ static void h_curves() {
             prefs.putString("cvsrc", cv_src);
         }
         cvlib_save();
-        log_edit(EK_CURVE, String("linear ") + String(c.name) + " " + String(c.s10 / 10.0f, 1));
+        log_edit(EK_CURVE, String("L") + String(id) + " " + String(c.s10 / 10.0f, 1));  // fw86: the id, so the page names it in full
         return ok_json(true);
     }
     String nm = cvlib_clean(server.arg("name"));
@@ -5193,6 +5304,7 @@ void setup() {
     cv_src = prefs.getString("cvsrc", "");  // fw46: the speed curve
     // fw71: the library's file; 10-31 audit: /curves.tmp is a whole checked copy too (a power cut between lib_write's renames)
     lib_fs = fs_ok && (lib_read("/curves.bin", true) || lib_read("/curves.tmp", true) || lib_read("/curves.bak", true));
+    cvhist_load();  // fw86
     if (lib_fs && lib_v1) {  // fw76: converted from a v1 file (whole-% slow-down shares): written back as v2 now; a failure
         lib_write();         // leaves the v1 files as they were (read and converted again at the next boot) and lib_fs on
     }
@@ -5377,6 +5489,7 @@ void setup() {
     server.on("/api/curve", HTTP_POST, h_curve);  // fw46
     server.on("/api/cvtemp", HTTP_POST, h_cvtemp);  // fw48
     server.on("/api/cvtry", HTTP_POST, h_cvtry);  // fw81
+    server.on("/api/curvehist", HTTP_GET, h_curvehist);  // fw86
   server.on("/api/live", HTTP_GET, h_live);  // fw50
   server.on("/api/live", HTTP_POST, h_live);
     server.on("/api/nvs", HTTP_GET, h_nvs);  // fw65

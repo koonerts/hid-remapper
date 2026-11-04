@@ -161,7 +161,7 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .pt th,.pt td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
 .pt th{font-weight:600;color:var(--mut)}
 .pt th:first-child,.pt td:first-child{text-align:left}
-.pt td.sub{padding-left:20px;color:var(--mut)}.pt td.sub2{padding-left:34px;color:var(--mut)}.pt td+td{white-space:nowrap}
+.pt td.sub{padding-left:20px;color:var(--mut)}.pt td.sub2{padding-left:34px;color:var(--mut)}.edd{font-size:13px;margin:1px 0 3px}.pt td+td{white-space:nowrap}
 .pt .mut{font-size:12px}
 #pskip.bad{color:var(--bad)}.tip{cursor:help}.pt tr.tip td:first-child{text-decoration:underline dotted var(--mut);text-underline-offset:3px}
 #lvc{display:block;width:100%;height:220px;background:#000;border:1px solid var(--line);border-radius:10px;cursor:crosshair;touch-action:none}
@@ -512,7 +512,7 @@ else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap
 else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';
 else if(k===10){const[n,w]=v.split('=');return 'Auto ('+(n||'host')+'): DPI stage → stage '+(Number(w)+1)+na}
 else if(k===11){const[n,w]=v.split('=');s=(n||'a host')+' → '+(w==='0'?'leave the stage':'stage '+w)}
-else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':v==='dropped'?'calibration DPI: stopped putting the table back':/^unverified/.test(v)?'calibration DPI: gave up putting the table back (the mouse kept reporting '+v.slice(11)+')':'calibration DPI → '+v+' for the test';else if(k===14)s='refused '+v+' from an out-of-date page (reload that tab)';else s='edit '+k;
+else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':v==='dropped'?'calibration DPI: stopped putting the table back':/^unverified/.test(v)?'calibration DPI: gave up putting the table back (the mouse kept reporting '+v.slice(11)+')':'calibration DPI → '+v+' for the test';else if(k===14)s='refused '+v+' from an out-of-date page (reload that tab)';else if(k===15)s=edCurve(v);else s='edit '+k;
 return (d===7?'QT Py: ':'Page ('+DEV[d]+' '+ip+'): ')+s+na}
 // QT Py fw26 + Feather v24: sensitivity per direction (like Corsair's PureVector). Direction k = 0..7 every 45 degrees
 // clockwise on screen from "right" (screen y grows downwards, as in the Feather's atan2).
@@ -855,7 +855,29 @@ $('hlist').innerHTML=h.map(c=>'<details class="cap"><summary><span>'+esc(c.when)
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function whenText(ms){if(!ms)return 'earlier (time unknown)';const d=new Date(ms),t=d.toLocaleTimeString();
 return d.toDateString()===new Date().toDateString()?t:d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+t}
-function liHtml(a){return a.map(i=>'<li>'+(whenText(i.at)+'  '+i.s).replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</li>').join('')}
+function liHtml(a){const e=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;');return a.map(i=>'<li>'+e(whenText(i.at)+'  '+i.s)+(i.d?'<div class="mut edd">'+e(i.d)+'</div>':'')+'</li>').join('')}
+// 11-04 (QT Py fw86): curve entries (kind 15). Text: R<id>:<what> a Replace (c points, d slow-down, t smoothing, l linear
+// cm/360), U<id> <name> Use, L<id> <S> linear cm/360 set, "N hosts"/"off" the running curve's hosts; before fw86 "replace "/"use "/
+// "linear " and a name cut to 15 characters. Replace's before and after come from /api/curvehist (cvHist), matched by time and id
+let cvHist=null,cvHistKey='';
+function cvNameOf(id,fb){const c=cvLib&&cvLib.curves?cvLib.curves.find(x=>x.id===id):null;return c?c.name:(fb||'curve '+id)}
+function edCurve(v){let m;
+if((m=/^R(\d+):([cdtl]*)$/.exec(v))){const w=m[2],a=[];if(w.includes('c'))a.push('curve points');if(w.includes('d'))a.push('slow-down gain');if(w.includes('t'))a.push('smoothing');if(w.includes('l'))a.push('linear cm/360');
+return 'replaced curve \u201c'+cvNameOf(Number(m[1]))+'\u201d: '+(a.length?a.join(', '):'saved unchanged')}
+if((m=/^U(\d+) ?(.*)$/.exec(v)))return 'running curve \u201c'+cvNameOf(Number(m[1]),m[2])+'\u201d';
+if((m=/^L(\d+) (.*)$/.exec(v)))return 'linear cm/360 of \u201c'+cvNameOf(Number(m[1]))+'\u201d \u2192 '+m[2];
+if((m=/^(replace|use|linear) (.*)$/.exec(v))){const p=m[2].replace(/ [\d.]+$/,'').trim(),c=cvLib&&cvLib.curves?cvLib.curves.filter(x=>x.name.startsWith(p)):[];  // before fw86: the name cut to 15 characters
+return {replace:'replaced curve',use:'running curve',linear:'linear cm/360 of curve'}[m[1]]+' \u201c'+(c.length===1?c[0].name:p+'\u2026')+'\u201d'}
+return v==='off'?'speed curve off':/hosts?$/.test(v)?'speed curve on '+v:'speed curve: '+v}
+// a list of changed points: same x with a new y, added and removed ones (x and y as fx and fy show them)
+function cvPtsDiff(a,b,fx,fy){const ax=new Map(a.map(p=>[p[0],p[1]])),bx=new Map(b.map(p=>[p[0],p[1]])),xs=[...new Set([...ax.keys(),...bx.keys()])].sort((p,q)=>p-q),o=[];
+if(!a.length)return 'on: '+b.map(p=>fx(p[0])+' '+fy(p[1])).join(', ');if(!b.length)return 'off (was '+a.map(p=>fx(p[0])+' '+fy(p[1])).join(', ')+')';
+xs.forEach(x=>{const p=ax.get(x),q=bx.get(x);if(p===undefined)o.push('+'+fx(x)+' '+fy(q));else if(q===undefined)o.push('\u2212'+fx(x)+' '+fy(p));else if(p!==q)o.push(fx(x)+' '+fy(p)+' \u2192 '+fy(q))});return o.join(', ')}
+function cvHistText(h){const o=[];if(h.what&2)o.push('slow-down: '+cvPtsDiff(h.d0,h.d1,p=>cvDcPct(p/10)+'%',cvDcG));
+if(h.what&1)o.push('curve: '+cvPtsDiff(h.c0,h.c1,s=>s/10+' cm/s',g=>(g/1000).toFixed(3)));if(h.what&4)o.push('smoothing '+h.tau[0]+' \u2192 '+h.tau[1]+' ms');
+if(h.what&8)o.push('linear cm/360 '+h.s10[0]/10+' \u2192 '+h.s10[1]/10);return o.join(' \u00b7 ')}
+function edDetail(x){if(x[2]!==15||!cvHist||!/^R\d+:/.test(x[5]))return '';const id=Number(x[5].slice(1,x[5].indexOf(':'))),h=cvHist.find(c=>c.id===id&&Math.abs(c.t-x[0])<=1);return h?cvHistText(h):''}
+function cvHistLoad(ed){const k=(ed||[]).filter(x=>x[2]===15).map(x=>x[0]).join(',');if(k===cvHistKey||!k)return;cvHistKey=k;fetchJ('/api/curvehist').then(j=>{if(Array.isArray(j)){cvHist=j;drawEvents()}}).catch(()=>{cvHistKey=''})}
 // Sensor list: the Feather's events since it powered on (chords, wakes) plus the saved page edits of stage, angle and
 // position. With saved edits the Feather's own "Page" events are left out: the saved ones are the same edits, with the sender.
 function drawEvents(){const ed=S.edits,items=[];
@@ -863,7 +885,7 @@ function drawEvents(){const ed=S.edits,items=[];
 (ed||[]).forEach(x=>{if((x[2]>=1&&x[2]<=3)||x[2]===10)items.push({at:edAt(x),s:edText(x)})});
 items.sort((p,q)=>q.at-p.at);const sh=items.slice(0,8),box=$('evbox');box.hidden=!sh.length;
 if(sh.length){$('evlast').textContent='Last change: '+whenText(sh[0].at)+'  '+sh[0].s;$('evlist').innerHTML=liHtml(sh)}
-const fe=$('fedits');fe.hidden=!ed||!ed.length;if(ed&&ed.length){const all=ed.map(x=>({at:edAt(x),s:edText(x)}));
+const fe=$('fedits');fe.hidden=!ed||!ed.length;cvHistLoad(ed);if(ed&&ed.length){const all=ed.map(x=>({at:edAt(x),s:edText(x),d:edDetail(x)}));
 $('edlast').textContent='Last: '+whenText(all[0].at)+'  '+all[0].s;$('edlist').innerHTML=liHtml(all)}}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
 drawPerf(pf);
