@@ -168,6 +168,10 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 #lvwrap{position:relative}#lvhint{display:none;position:absolute;top:14px;left:0;right:0;text-align:center;color:#bbb;font-size:14px;pointer-events:none}
 #lvwrap.full{position:fixed;inset:0;z-index:1000;background:#000}#lvwrap.full #lvc{height:100vh;border:0;border-radius:0;cursor:none}#lvwrap.full #lvhint{display:block}
 #lvr b{color:var(--fg)}#evbox summary{cursor:pointer;color:var(--mut)}#evlist{margin:6px 0 0;padding-left:18px;color:var(--mut)}#evlist li{margin:2px 0}
+.edday{font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin:12px 0 2px}.edday:first-child{margin-top:6px}
+.edr{display:grid;grid-template-columns:6.6em 1fr;gap:0 12px;padding:5px 0;border-bottom:1px solid var(--line);align-items:baseline}
+.edt{color:var(--mut);font-variant-numeric:tabular-nums;font-size:13px;line-height:1.25}.edby{font-size:12px;color:var(--mut);white-space:nowrap}
+.edn{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:0 6px;margin-left:6px;color:var(--mut);white-space:nowrap}.edr .edd{margin:2px 0 0}
 @media (max-width:540px){.cdo{grid-template-columns:1fr}}
 .cerr{color:var(--bad);font-size:12.5px;margin:6px 0 0}
 .cerr:empty{display:none}
@@ -327,7 +331,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut" id="perfnone">Needs Feather firmware v19 or later.</p></div>
 
 <details class="card" id="fedits" hidden><summary><div><h2>Recent page edits</h2><div class="mut" id="edlast"></div></div></summary>
-<ol id="edlist"></ol><p class="mut">The last 20 edits made through this page, from any device. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
+<div id="edlist"></div><p class="mut" style="margin-top:10px">The last 20 edits made through this page, from any device. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
 </div>
 <details class="card" id="fhosts" hidden><summary><div><h2>Hosts</h2><div class="mut" id="hauto"></div></div></summary>
 <p class="mut">What the ATEN can connect the mouse to. The Feather recognises each kind of host by how it asks for its USB details, so both XIMs look the same and share one entry. Rename a host here; choose its stage under DPI stages.</p>
@@ -855,7 +859,7 @@ $('hlist').innerHTML=h.map(c=>'<details class="cap"><summary><span>'+esc(c.when)
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}
 function whenText(ms){if(!ms)return 'earlier (time unknown)';const d=new Date(ms),t=d.toLocaleTimeString();
 return d.toDateString()===new Date().toDateString()?t:d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+t}
-function liHtml(a){const e=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;');return a.map(i=>'<li>'+e(whenText(i.at)+'  '+i.s)+(i.d?'<div class="mut edd">'+e(i.d)+'</div>':'')+'</li>').join('')}
+function liHtml(a){const e=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');return a.map(i=>'<li'+(i.tip?' title="'+e(i.tip)+'"':'')+'>'+e(whenText(i.at)+'  '+i.s)+(i.d?'<div class="mut edd">'+e(i.d)+'</div>':'')+'</li>').join('')}
 // 11-04 (QT Py fw86): curve entries (kind 15). Text: R<id>:<what> a Replace (c points, d slow-down, t smoothing, l linear
 // cm/360), U<id> <name> Use, L<id> <S> linear cm/360 set, "N hosts"/"off" the running curve's hosts; before fw86 "replace "/"use "/
 // "linear " and a name cut to 15 characters. Replace's before and after come from /api/curvehist (cvHist), matched by time and id
@@ -885,8 +889,22 @@ function drawEvents(){const ed=S.edits,items=[];
 (ed||[]).forEach(x=>{if((x[2]>=1&&x[2]<=3)||x[2]===10)items.push({at:edAt(x),s:edText(x)})});
 items.sort((p,q)=>q.at-p.at);const sh=items.slice(0,8),box=$('evbox');box.hidden=!sh.length;
 if(sh.length){$('evlast').textContent='Last change: '+whenText(sh[0].at)+'  '+sh[0].s;$('evlist').innerHTML=liHtml(sh)}
-const fe=$('fedits');fe.hidden=!ed||!ed.length;cvHistLoad(ed);if(ed&&ed.length){const all=ed.map(x=>({at:edAt(x),s:edText(x),d:edDetail(x)}));
-$('edlast').textContent='Last: '+whenText(all[0].at)+'  '+all[0].s;$('edlist').innerHTML=liHtml(all)}}
+const fe=$('fedits');fe.hidden=!ed||!ed.length;cvHistLoad(ed);if(ed&&ed.length){{const p=edSplit(ed[0]),at=edAt(ed[0]);$('edlast').textContent='Last: '+(at?edDay(at)+' '+edClock(at):'time unknown')+' \u00b7 '+p.what+(p.who?' ('+p.who+')':'')}$('edlist').innerHTML=edListHtml(ed)}}
+// 11-04: the edit log by day: time, what, who (muted, the full address on hover); a curve Replace's changes under it.
+// Runs of the same entry without details (curve saves before fw86) fold into one row with a count and their time span
+function edSplit(x){const f=edText(x),m=/^(Page \(([^ )]*) ?([^)]*)\)|QT Py|Auto \(([^)]*)\)): ([\s\S]*)$/.exec(f);if(!m)return {what:f,who:'',ip:''};
+const ip=m[3]||'',who=m[1]==='QT Py'?'QT Py':m[4]!==undefined?'automatic, '+m[4]:(m[2]||'device')+(ip?' \u00b7 .'+ip.split('.').pop():'');return {what:m[5],who,ip}}
+function edDay(at){if(!at)return 'Time unknown';const d=new Date(at),t=new Date(),y=new Date(t.getFullYear(),t.getMonth(),t.getDate()-1);
+return d.toDateString()===t.toDateString()?'Today':d.toDateString()===y.toDateString()?'Yesterday':d.toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'})}
+function edClock(at){return at?new Date(at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'\u2014'}
+function edListHtml(ed){const e=t=>String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'),rows=[];
+ed.forEach(x=>{const at=edAt(x),p=edSplit(x),d=edDetail(x),last=rows[rows.length-1],day=(!at&&last)?last.day:edDay(at);  // a time unknown stays in the day it sits in
+if(last&&!d&&!last.d&&last.day===day&&last.what===p.what&&last.who===p.who){last.n++;last.first=at;return}
+rows.push({at,first:at,n:1,day,d,...p})});let h='',day=null;
+rows.forEach(r=>{if(r.day!==day){day=r.day;h+='<div class="edday">'+e(day)+'</div>'}
+const a=edClock(r.first),b=edClock(r.at),sa=a.replace(/^[\d:]+\s*/,''),t=r.n<2?e(b):sa&&sa===b.replace(/^[\d:]+\s*/,'')?e(a.slice(0,a.length-sa.length).trim()+'\u2013'+b):e(a)+'\u2013<br>'+e(b),full=r.at?new Date(r.at).toLocaleString():'time unknown';
+h+='<div class="edr" title="'+e(full+(r.ip?' \u00b7 '+r.ip:''))+'"><span class="edt">'+t+'</span><div><span>'+e(r.what)+'</span>'+(r.n>1?'<span class="edn">\u00d7'+r.n+'</span>':'')+
+(r.who?' <span class="edby">'+e(r.who)+'</span>':'')+(r.d?'<div class="mut edd">'+e(r.d)+'</div>':'')+'</div></div>'});return h}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
 drawPerf(pf);
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
