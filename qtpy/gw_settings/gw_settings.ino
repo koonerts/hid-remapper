@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 86    // this firmware's number, shown in /api/status; fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 87    // this firmware's number, shown in /api/status; fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -281,8 +281,13 @@ static uint32_t cvt_keep_at = 0;
 static uint32_t cvt_ab_at = 0;  // fw59: BallSheet runs a blind curve A/B (ab=1 on any cvtemp call, both arms): the page hides the arm
 // fw81: the page's curve editor runs its table (and slow-down gain) live while it's open: sent to the Feather in place of
 // the running curve, on the same hosts, until end=1 (the editor closed, the page went away or another one loaded), a
-// BallSheet run or a restart; never saved. No timeout: a page's keep-alive only finds out whether to send it again
+// BallSheet run or a restart; never saved. fw81 had no timeout (a page's keep-alive only finds out whether to send it again)
+// fw87: owned by the page that sent it (tok, one per page load: a newer try takes over, keep/end from another page change
+// nothing) and leased: 90 s without its page's try/keep (a page gone without pagehide) ends it (cv_tick)
 static bool cvt_try = false;
+static char cvt_tok[17] = "";
+static uint32_t cvt_seen = 0;
+#define CVT_LEASE_MS 90000
 static uint8_t try_n = 0, try_tau = 8;
 static uint16_t try_sp[CV_N], try_g[CV_N];
 // fw49: named curves: each saved curve table gets an id (1-16) that cm/360 results carry and BallSheet stamps on its runs,
@@ -398,6 +403,17 @@ static bool cvdc_blob = false;  // never an old blob (slots_save asks)
 static uint16_t dc_sends = 0;
 static bool dc_force = false;  // send it after every curve send (a Use or BallSheet's switch changes both)
 static CurveDecel try_dc;  // fw81: the editor's slow-down gain while it's live (cvt_try)
+static bool cvt_stop() {  // fw87: end the editor's live edit (the running curve and its slow-down gain back); true if it was live
+    if (!cvt_try) {
+        return false;
+    }
+    cvt_try = false;
+    cvt_tok[0] = 0;
+    cv_force = true;
+    dc_force = true;
+    cv_sent_at = 0;
+    return true;
+}
 static bool cvdc_used(const void* p) { return ((const CurveDecel*) p)->n != 0; }
 static bool lib_write();
 static bool cvdc_save() {
@@ -1047,6 +1063,7 @@ static void link_tick() {
         feather_init_done = false;
         ch_ok = false;  // the Feather may come back restarted: its table number starts at 1 again
         hc_known = false;  // fw35: and its capture counters too
+        pf_stale();  // fw87: nor is its profile current
         // A Feather that resets in the middle of a read (flashed, or restarted on its own) can leave this I2C master
         // stuck: every read then comes back empty until the QT Py restarts (seen 2026-10-16). Start the bus over every
         // 3 s while nothing answers.
@@ -1094,6 +1111,8 @@ static void link_tick() {
     fz_check((st[56] >= 48) && (st[2] & 16));  // fw77
     if (st[56] >= 55) {
         pf_check();  // fw82; fw83: layout 2 only (Feather v51)
+    } else {
+        pf_stale();  // fw87: an older Feather has no profile: the last one isn't current
     }
     // a restarted Feather has lost its tuning flag: re-baseline the counter, give back the settings
     if (feather_init_done && !(st[2] & 1)) {
@@ -2338,6 +2357,7 @@ static void h_dgtemp() {
     for (int k = 0; k < 8; k++) {
         dgt_g[k] = v[k];
     }
+    cvt_stop();  // fw87: a BallSheet test starting ends the editor's live edit, as /api/cvtemp does
     dgt_on = true;
     dgt_keep_at = millis();
     dg_sent_at = 0;  // send now
@@ -2684,6 +2704,9 @@ static void cv_tick() {
         dg_force = true;  // fw60
         dg_sent_at = 0;
     }
+    if (cvt_try && (millis() - cvt_seen > CVT_LEASE_MS)) {
+        cvt_stop();  // fw87: the live edit's page stopped checking in (gone without pagehide)
+    }
     if (!link_up || !cv_supported() || (cq_n > 0)) {
         return;
     }
@@ -2862,6 +2885,11 @@ static void fz_check(bool flag) {
 static uint8_t pf_blk[PF_LEN];
 static bool pf_have = false;
 static uint32_t pf_at = 0, pf_reads = 0, pf_fails = 0;
+static uint32_t pf_good_at = 0;  // fw87: the last good read (prof age_ms)
+
+static void pf_stale() {  // fw87: no current profile (a failed read, an older Feather, the link down)
+    pf_have = false;
+}
 
 static void pf_check() {
     if (fo_busy() || (st[56] < 55) || (pf_at && (millis() - pf_at < 1000))) {  // fw85: layout 3 only (Feather v55)
@@ -2871,10 +2899,12 @@ static void pf_check() {
     uint8_t b[PF_LEN];
     if (!read_sel(5, b, PF_LEN) || (b[0] != 'P') || (b[1] != 3) || (b[2] > 24)) {
         pf_fails++;
+        pf_have = false;  // fw87: the last good one isn't this second's
         return;
     }
     memcpy(pf_blk, b, PF_LEN);
     pf_have = true;
+    pf_good_at = millis();
     pf_reads++;
 }
 
@@ -2882,7 +2912,10 @@ static void pf_check() {
 // its us in the second's worst frame]
 static String pf_json() {
     String j = ",\"prof\":{\"reads\":" + String(pf_reads) + ",\"fails\":" + String(pf_fails);
-    if (pf_have) {
+    if (pf_reads) {
+        j += ",\"age_ms\":" + String(millis() - pf_good_at);  // fw87: since the last good read (none yet: left out)
+    }
+    if (pf_have && !fo_busy()) {  // fw87: not while a Feather update runs (nothing reads the block then)
         static const char* const NAME[] = { "wait from tick", "idle stage + chords", "direction gains", "turn", "speed curve", "turn count",
                                             "tap/sticky/layers", "registers + gw_tick", "macro queue", "mappings", "macros, accumulate",
                                             "reports", "out reports", "tick: wake, events, chords, DPI", "tick: mouse settings",
@@ -3021,12 +3054,7 @@ static void h_live() {
 // POST /api/cvtemp?off=1 | keep=1 | restore=1 (fw48): BallSheet's curve-off runs, see cvt_off
 static void h_cvtemp() {
     touch();
-    if (cvt_try) {  // fw81: any BallSheet curve call (its running-curve arm's restore and keep-alives too) ends the editor's live edit
-        cvt_try = false;
-        cv_force = true;
-        dc_force = true;
-        cv_sent_at = 0;
-    }
+    const bool was_try = cvt_stop();  // fw81: any BallSheet curve call (its running-curve arm's restore and keep-alives too) ends the editor's live edit
     if (server.arg("ab") == "1") {
         cvt_ab_at = millis() | 1;
     }
@@ -3046,6 +3074,9 @@ static void h_cvtemp() {
         cvt_keep_at = millis();
         const String want = server.arg("arm");  // fw63: the arm BallSheet's A/B or run expects: cand, off, or on (the active curve)
         if (want.length()) {
+            if (was_try) {  // fw87: the editor's table ran instead of this arm since the last keep-alive: BallSheet drops the block
+                return ok_json(false, "that arm isn't held any more (the curve editor's live edit ran in it)");
+            }
             const bool held = (want == "cand") ? cvt_cand : (want == "off") ? (cvt_off && !cvt_cand) : !(cvt_off || cvt_cand);
             return held ? ok_json(true) : ok_json(false, "that arm isn't held any more (12 s without a keep-alive, or a restart)");
         }
@@ -3316,30 +3347,50 @@ static_assert(sizeof(CvHist) == 144, "/cvhist.bin's layout");
 static CvHist cvhist[EDIT_LOG];
 static uint8_t cvhist_n = 0;
 
-static void cvhist_load() {
-    if (!fs_ok || !FFat.exists("/cvhist.bin")) {
-        return;
+static bool cvhist_read(const char* path) {  // fw87: true if the file holds a whole log (cvhist_n left as it was if not)
+    if (!FFat.exists(path)) {
+        return false;
     }
-    File f = FFat.open("/cvhist.bin", "r");
+    File f = FFat.open(path, "r");
+    if (!f) {
+        return false;
+    }
     uint8_t n = 0;
-    if (f && (f.read(&n, 1) == 1) && (n <= EDIT_LOG) && (f.read((uint8_t*) cvhist, sizeof(CvHist) * n) == sizeof(CvHist) * n)) {
+    bool ok = (f.read(&n, 1) == 1) && (n <= EDIT_LOG) && (f.read((uint8_t*) cvhist, sizeof(CvHist) * n) == sizeof(CvHist) * n);
+    f.close();
+    if (ok) {
         cvhist_n = n;
     }
-    if (f) {
-        f.close();
+    return ok;
+}
+
+static void cvhist_load() {
+    if (!fs_ok) {
+        return;
+    }
+    if (!cvhist_read("/cvhist.bin")) {
+        cvhist_read("/cvhist.tmp");  // fw87: a save cut off between its remove and rename left the new log here
     }
 }
 
+// fw87: a whole new /cvhist.tmp first, then it replaces /cvhist.bin (a power cut mid-write no longer empties the log)
 static void cvhist_save() {
     if (!fs_ok) {
         return;
     }
-    File f = FFat.open("/cvhist.bin", "w");
-    if (f) {
-        f.write(&cvhist_n, 1);
-        f.write((const uint8_t*) cvhist, sizeof(CvHist) * cvhist_n);
-        f.close();
+    File f = FFat.open("/cvhist.tmp", "w");
+    if (!f) {
+        return;
     }
+    const size_t len = sizeof(CvHist) * cvhist_n;
+    bool ok = (f.write(&cvhist_n, 1) == 1) && (f.write((const uint8_t*) cvhist, len) == len);
+    f.close();
+    if (!ok) {
+        FFat.remove("/cvhist.tmp");  // a full disk: the old log stays
+        return;
+    }
+    FFat.remove("/cvhist.bin");
+    FFat.rename("/cvhist.tmp", "/cvhist.bin");
 }
 
 // curve id's old version (cvh_was, cvh_dwas: set before the replace; no struct parameters, as the sketch's generated
@@ -3444,16 +3495,28 @@ static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_
 }
 // POST /api/cvtry (fw81): the curve editor's live edit. The table as add=1 takes it (sp, g, tau, dc) = run it now (again
 // with each change); keep=1 = is it still live (ok false once a BallSheet run or a restart ended it: the page sends it again); end=1 = the running curve back
+// fw87: each carries &tok= (the page load's token, cvt_tok): keep from another page = "another editor" (that page waits for
+// its own user's next change, whose try takes over), end from another page changes nothing
 static void h_cvtry() {
     touch();
+    String tok = server.arg("tok");
+    if (tok.length() >= sizeof(cvt_tok)) {
+        tok = tok.substring(0, sizeof(cvt_tok) - 1);
+    }
+    const bool mine = cvt_try && (tok == cvt_tok);
     if (server.hasArg("keep")) {
-        return ok_json(cvt_try, "not live");
+        if (!cvt_try) {
+            return ok_json(false, "not live");
+        }
+        if (!mine) {
+            return ok_json(false, "another editor");
+        }
+        cvt_seen = millis();  // fw87: the lease goes on
+        return ok_json(true);
     }
     if (server.hasArg("end")) {
-        if (cvt_try) {
-            cvt_try = false;
-            cv_force = true;
-            cv_sent_at = 0;
+        if (mine) {
+            cvt_stop();
         }
         return ok_json(true);
     }
@@ -3462,6 +3525,9 @@ static void h_cvtry() {
     }
     if (cvt_off || cvt_cand || (cvt_keep_at && (millis() - cvt_keep_at < 12000))) {  // a BallSheet keep-alive in the last 12 s: a run is on, whatever its arm
         return ok_json(false, "BallSheet is running a curve test: it goes live after that");
+    }
+    if (dgt_on || (tdpi_active && !tdpi_restore)) {  // fw87: its gains or DPI test too (they end a live edit as they start)
+        return ok_json(false, "BallSheet is running a test: it goes live after that");
     }
     if (!cv_supported()) {
         return ok_json(false, "the Feather isn't connected, or its firmware is too old for a curve");
@@ -3483,6 +3549,8 @@ static void h_cvtry() {
     try_dc.n = dn;
     memcpy(try_dc.p10, dp, 2 * dn);
     memcpy(try_dc.g, dgv, 2 * dn);
+    strlcpy(cvt_tok, tok.c_str(), sizeof(cvt_tok));  // fw87: the newest editor's page owns it (a live one from another page is taken over)
+    cvt_seen = millis();
     cvt_try = true;
     cv_force = true;
     dc_force = true;
@@ -4019,6 +4087,7 @@ static void h_tempdpi() {
     tdpi_active = true;
     tdpi_val = v;
     tdpi_keep_at = millis();
+    cvt_stop();  // fw87: a BallSheet test starting ends the editor's live edit, as /api/cvtemp does
     log_edit(EK_TEMP_DPI, String(v));
     ok_json(true);
 }

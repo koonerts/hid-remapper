@@ -495,9 +495,12 @@ const ps=$('pskip');ps.hidden=!v19;if(v19){ps.textContent='Frames skipped: '+(pf
 const PFN=[['Wait before remapping','after its tick: the USB work before it'],['Idle check + chords',''],['Direction gains',''],['Steady turn','cm/360 card'],['Speed curve + slow-down',''],['Turn counting',''],['Tap, sticky, layers',''],['Feather housekeeping','status, LEDs, link'],['Macro queue',''],['Mappings',''],['Macros, sums',''],['Building reports',''],['Output reports',''],
 ['events, chords, DPI',''],['mouse settings',''],['idle stage',''],['link commands, updates',''],['status for the QT Py','every 20 ms'],['host capture, hand-off','every 20 ms'],['live view, diagnostics',''],
 ['reading the mouse','USB host task'],['report parsing',''],['G-Wolves hook',''],['the loop pass before','still running at the tick']];  // 11-04: 20-23 = Feather v55's loop pass
-function drawProf(pr){const ok=!!(pr&&pr.sec&&pr.sec.length);fprof.hidden=!ok;if(!ok)return;const n=pr.sec.length,row=(k,sub)=>{const s=pr.sec[k],nm=PFN[k]||[s[0],''];return '<tr><td'+(sub?' class="sub'+(sub>1?'2':'')+'"':'')+'>'+esc(nm[0])+(nm[1]?' <span class="mut">'+esc(nm[1])+'</span>':'')+'</td><td>'+s[1].toFixed(1)+' µs</td><td>'+s[2]+' µs</td><td>'+s[3]+' µs</td></tr>'};
+// 11-04: Worst and Worst frame come in 4 µs steps capped at 1020 and the average caps at 6553.5, so a capped value shows as ≥;
+// a reading older than 3 s (age_ms) greys the table and says so
+function drawProf(pr){const ok=!!(pr&&pr.sec&&pr.sec.length);fprof.hidden=!ok;if(!ok)return;const cap=(v,c,t)=>(v>=c?'≥':'')+t+' µs',n=pr.sec.length,row=(k,sub)=>{const s=pr.sec[k],nm=PFN[k]||[s[0],''];return '<tr><td'+(sub?' class="sub'+(sub>1?'2':'')+'"':'')+'>'+esc(nm[0])+(nm[1]?' <span class="mut">'+esc(nm[1])+'</span>':'')+'</td><td>'+cap(s[1],6553.5,s[1].toFixed(1))+'</td><td>'+cap(s[2],1020,s[2])+'</td><td>'+cap(s[3],1020,s[3])+'</td></tr>'};
 let h='';for(let k=0;k<Math.min(n,13);k++){h+=row(k,0);if(k===0&&n>23)h+=row(23,1)+row(20,1)+row(21,2)+row(22,2);if(k===7)for(let j=13;j<Math.min(n,20);j++)h+=row(j,1)}pfb.innerHTML=h;
-$('pfnote').textContent='Worst: the longest that part took in any frame of the second. Worst frame: its time in the second\'s slowest frame. Link interrupt: '+(pr.irq_us/1000).toFixed(2)+' ms a second ('+pr.irq_n+' interrupts)'+(pr.heap_arena?' · heap: '+Math.round(pr.heap_used/1024)+' of '+Math.round(pr.heap_arena/1024)+' KB in use':'')+'.'}
+const old=pr.age_ms>3000;pfb.closest('table').style.opacity=old?'.5':'';
+$('pfnote').textContent='Worst: the longest that part took in any frame of the second. Worst frame: its time in the second\'s slowest frame. Link interrupt: '+(pr.irq_us/1000).toFixed(2)+' ms a second ('+pr.irq_n+' interrupts)'+(pr.heap_arena?' · heap: '+Math.round(pr.heap_used/1024)+' of '+Math.round(pr.heap_arena/1024)+' KB in use':'')+'.'+(old?' (stale: last read '+Math.round(pr.age_ms/1000)+' s ago)':'')}
 // recent actions (Feather v21): [age s, source, buttons, action, value], newest first
 const EVSRC=['','tap','hold','double tap','wheel up','wheel down'],DEV=['device','Windows','Android','iPhone','Mac','Linux','script','automatic'];
 function evText(e){const[age,src,b,a,v]=e;let s,ang,stg=false;
@@ -516,7 +519,7 @@ else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap
 else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';
 else if(k===10){const[n,w]=v.split('=');return 'Auto ('+(n||'host')+'): DPI stage → stage '+(Number(w)+1)+na}
 else if(k===11){const[n,w]=v.split('=');s=(n||'a host')+' → '+(w==='0'?'leave the stage':'stage '+w)}
-else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':v==='dropped'?'calibration DPI: stopped putting the table back':/^unverified/.test(v)?'calibration DPI: gave up putting the table back (the mouse kept reporting '+v.slice(11)+')':'calibration DPI → '+v+' for the test';else if(k===14)s='refused '+v+' from an out-of-date page (reload that tab)';else if(k===15)s=edCurve(v);else s='edit '+k;
+else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':v==='dropped'?'calibration DPI: stopped putting the table back':/^unverified/.test(v)?'calibration DPI: gave up putting the table back (the mouse kept reporting '+v.slice(11)+')':'calibration DPI → '+v+' for the test';else if(k===14)s='refused '+v+' from an out-of-date page (reload that tab)';else if(k===15)s=edCurve(v,x[0]);else s='edit '+k;
 return (d===7?'QT Py: ':'Page ('+DEV[d]+' '+ip+'): ')+s+na}
 // QT Py fw26 + Feather v24: sensitivity per direction (like Corsair's PureVector). Direction k = 0..7 every 45 degrees
 // clockwise on screen from "right" (screen y grows downwards, as in the Feather's atan2).
@@ -864,13 +867,20 @@ function liHtml(a){const e=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 // cm/360), U<id> <name> Use, L<id> <S> linear cm/360 set, "N hosts"/"off" the running curve's hosts; before fw86 "replace "/"use "/
 // "linear " and a name cut to 15 characters. Replace's before and after come from /api/curvehist (cvHist), matched by time and id
 let cvHist=null,cvHistKey='';
-function cvNameOf(id,fb){const c=cvLib&&cvLib.curves?cvLib.curves.find(x=>x.id===id):null;return c?c.name:(fb||'curve '+id)}
-function edCurve(v){let m;
+// 11-04: library ids are reused after a delete, so a library curve names an entry only if it was added at or before the
+// entry's time t (Unix s; 0 = unknown, no check). U entries keep their logged name unless the library name starts with it
+function cvAddedBy(c,t){return !t||!c.added||c.added<=t+120}/* 2 min for page clocks that differ (now_unix follows the sender's clock) */
+function cvNameOf(id,fb,t,pre){const L=cvLib&&cvLib.curves,c=L?L.find(x=>x.id===id):null;
+if(c&&cvAddedBy(c,t)&&(pre==null||c.name.startsWith(pre)))return c.name;return fb||'curve '+id+(L&&pre==null?' (since deleted)':'')}
+function edCurve(v,t){let m;
 if((m=/^R(\d+):([cdtl]*)$/.exec(v))){const w=m[2],a=[];if(w.includes('c'))a.push('curve points');if(w.includes('d'))a.push('slow-down gain');if(w.includes('t'))a.push('smoothing');if(w.includes('l'))a.push('linear cm/360');
-return 'replaced curve \u201c'+cvNameOf(Number(m[1]))+'\u201d: '+(a.length?a.join(', '):'saved unchanged')}
-if((m=/^U(\d+) ?(.*)$/.exec(v)))return 'running curve \u201c'+cvNameOf(Number(m[1]),m[2])+'\u201d';
-if((m=/^L(\d+) (.*)$/.exec(v)))return 'linear cm/360 of \u201c'+cvNameOf(Number(m[1]))+'\u201d \u2192 '+m[2];
-if((m=/^(replace|use|linear) (.*)$/.exec(v))){const p=m[2].replace(/ [\d.]+$/,'').trim(),c=cvLib&&cvLib.curves?cvLib.curves.filter(x=>x.name.startsWith(p)):[];  // before fw86: the name cut to 15 characters
+return 'replaced curve \u201c'+cvNameOf(Number(m[1]),'',t)+'\u201d: '+(a.length?a.join(', '):'saved unchanged')}
+if((m=/^U(\d+) ?(.*)$/.exec(v)))return 'running curve \u201c'+cvNameOf(Number(m[1]),m[2],t,m[2])+'\u201d';
+if((m=/^L(\d+) (.*)$/.exec(v)))return 'linear cm/360 of \u201c'+cvNameOf(Number(m[1]),'',t)+'\u201d \u2192 '+m[2];
+/* before fw86: the name cut to 15 characters; only linear has a number after it (its cm/360), so only linear strips one, and only
+   when the whole text matches no curve (11-04: a name ending in a number lost it) */
+if((m=/^(replace|use|linear) (.*)$/.exec(v))){const L=cvLib&&cvLib.curves||[],f=p=>L.filter(x=>x.name.startsWith(p)&&cvAddedBy(x,t));let p=m[2].trim(),c=f(p);
+if(m[1]==='linear'&&!c.length){const q=p.replace(/ [\d.]+$/,'').trim();if(q!==p){p=q;c=f(p)}}
 return {replace:'replaced curve',use:'running curve',linear:'linear cm/360 of curve'}[m[1]]+' \u201c'+(c.length===1?c[0].name:p+'\u2026')+'\u201d'}
 return v==='off'?'speed curve off':/hosts?$/.test(v)?'speed curve on '+v:'speed curve: '+v}
 // a list of changed points: same x with a new y, added and removed ones (x and y as fx and fy show them)
@@ -970,7 +980,7 @@ const bt=S.battery;if(bt)b.push(ch(bt.pct<=15?'bad':'','Battery '+bt.pct+'%'));
 let cbFollowKey='';function cbFollow(){if(!S||!S.cv||!S.dg)return;const k=(S.cv.id||0)+'|'+S.dg.g.join(',');if(k===cbFollowKey)return;const first=!cbFollowKey,curveNow=cbFollowKey.split('|')[0]!==String(S.cv.id||0);cbFollowKey=k;if(cb||!cbRuns.length)return;if(curveNow&&!first&&cbCurveSel==='run'){cbPoolSel=null;cbLastKind=''}cbDrawRuns()}  // 10-26 audit: also the first time (a draw before the status showed nothing)
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
-else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')}
+else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')+(S.cv&&S.cv.try&&!cvTry&&Date.now()-cvTryEndAt>3000?'<span class="chip" title="A curve edit is running live on the mouse (not saved), from another page or one that closed: the QT Py ends it by itself 90 s after that page last checked in. Open Edit on a curve here to take it over.">Curve edit live</span>':'')}  // 11-04: a live curve edit this page isn't running (another page's, or a stale one) shows
 if(pgNew)st.insertAdjacentHTML('beforeend','<button class="chip" onclick="pgGo()">New page version: reload</button>');
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
@@ -983,11 +993,13 @@ $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw
 // 11-04: and if the move itself doesn't finish in 4 s, stop it and stay, and don't try that address again in this browser:
 // with the Mozilla VPN extension the check went direct (gwolves.local's bypass covers its requests) but the move to the bare
 // IP went into the tunnel and hung, so Firefox showed the page loading forever
-let ipTried=false,touched=false;['input','pointerdown','keydown'].forEach(e=>document.addEventListener(e,()=>{touched=true},true));
+// 11-04 review: while the move is pending (ipMove) poll() schedules nothing, so window.stop() can't abort a status read in
+// flight; polling starts again after the stop. gwNoIp is "ip|ms" and lapses after 24 h (the VPN may be gone by then)
+let ipTried=false,touched=false,ipMove=false;['input','pointerdown','keydown'].forEach(e=>document.addEventListener(e,()=>{touched=true},true));
 async function toIp(j){if(ipTried||touched)return false;ipTried=true;const ip=j&&j.radio&&j.radio.mode==='sta'?j.radio.ip:'';
-if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;try{if(localStorage.getItem('gwNoIp')===ip)return false}catch(e){}
+if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;try{const w=(localStorage.getItem('gwNoIp')||'').split('|');if(w[0]===ip&&Date.now()-Number(w[1])<864e5)return false}catch(e){}
 const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch('http://'+ip+'/api/status',{mode:'no-cors',cache:'no-store',signal:c.signal})}catch(e){return false}finally{clearTimeout(tm)}
-if(touched)return false;setTimeout(()=>{window.stop();try{localStorage.setItem('gwNoIp',ip)}catch(e){}},4000);location.replace('http://'+ip+'/');return true}
+if(touched)return false;ipMove=true;setTimeout(()=>{window.stop();ipMove=false;try{localStorage.setItem('gwNoIp',ip+'|'+Date.now())}catch(e){}poll()},4000);location.replace('http://'+ip+'/');return true}
 // A new page on the QT Py (an upload, or new firmware): a style-only change is swapped in place; anything else
 // reloads this page by itself once nothing is being edited (tab and fold-outs live on the QT Py, the scroll position
 // comes back), otherwise a chip in the status bar offers it. page_gz.ps1 stamps <meta name="gw-rest"> with a hash of
@@ -1006,7 +1018,7 @@ if(k===pgKey||pgFetching)return;if(pgNew){if(!pgBusy())pgGo();return}
 pgFetching=true;try{const t=await(await fetch('/',{cache:'no-store'})).text(),m=t.match(/<meta name="gw-rest" content="([0-9a-f]+)">/),mine=document.querySelector('meta[name=gw-rest]'),s=t.match(/<style>([\s\S]*?)<\/style>/);
 if(m&&s&&mine&&mine.content===m[1]){document.querySelector('style').textContent=s[1];pgKey=k;toast('Page style updated');return}
 pgNew=true;if(!pgBusy())pgGo();else render()}catch(e){}finally{pgFetching=false}}
-function poll(){fetchJ(tq('/api/status')).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}pgCheck(j);nvsWarn(j)}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>setTimeout(poll,document.hidden?5000:1000))}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
+function poll(){if(ipMove)return;fetchJ(tq('/api/status')).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}pgCheck(j);nvsWarn(j)}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>{if(!ipMove)setTimeout(poll,document.hidden?5000:1000)})}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
 buildStages();bindSlider('angle');bindSlider('pos');
 $('ms').addEventListener('pointerdown',e=>{if(!S||e.target===$('ms'))return;msDrag=e.target.id==='msh'?'angle':'pos';msOff=0;if(msDrag==='pos'&&$('mss').contains(e.target))msOff=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse()).y-msY(Number($('pos').value));$('ms').setPointerCapture(e.pointerId);e.preventDefault();msMove(e)});
 $('ms').addEventListener('pointermove',msMove);['pointerup','pointercancel'].forEach(t=>$('ms').addEventListener(t,()=>{msDrag=null}));
@@ -1349,18 +1361,24 @@ function cvTblQ(){const T=cvEd.T;return '&sp='+T.map(q=>q[0]).join(',')+'&g='+T.
 // 11-02 (QT Py fw81): the edit runs live while the editor is open: its table and slow-down gain on the Feather (/api/cvtry,
 // never saved), sent again 250 ms after each change. Every 5 s (and when the tab shows again) a check sends it again if a
 // BallSheet run or a QT Py restart ended it. Cancel, a save, another edit or closing the page puts the running curve back
+// 11-04 (QT Py fw87): one token per page load goes with try, keep and end (&tok=). The newest try wins; keep from a page
+// that lost it answers "another editor" and that page waits (no resends) until its own table changes, which takes it back.
+// end only ends this page's own edit, and the QT Py ends one by itself 90 s after the last try or keep (a page that vanished),
+// so the load-time end=1 is gone
+const cvTok=Array.from(crypto.getRandomValues(new Uint8Array(4)),b=>b.toString(16).padStart(2,'0')).join(''),CVOTHER=['Another page is editing live: change something here to take over','wn'];
 let cvTry=null;
 function cvTryMsg(m,c){const e=$('cvtrys');if(e){e.textContent=m||'';e.className=c||'mut'}}
-function cvTryStart(){if(cvTry){clearTimeout(cvTry.tm);cvTry.last='';cvTrySend();return}cvTry={busy:0,again:0,last:'',tm:0,ka:setInterval(cvTryKeep,5000)};cvTryMsg('Sending it to the mouse\u2026');cvTrySend()}
-function cvTryOff(){if(!cvTry)return;clearInterval(cvTry.ka);clearTimeout(cvTry.tm);cvTry=null;post('/api/cvtry?end=1');cvTryMsg('')}
-function cvTryKeep(){if(!cvTry)return;const t=cvTry;post('/api/cvtry?keep=1').then(r=>{if(cvTry!==t||!cvEd)return;if(r&&r.ok===false&&r.err==='not live')t.last='';if(cvTblQ()!==t.last)cvTrySend()})}  // review 11-02: a failed send is retried too
+function cvTryStart(){if(cvTry){clearTimeout(cvTry.tm);cvTry.last='';cvTry.oq=null;cvTrySend();return}cvTry={busy:0,again:0,last:'',tm:0,oq:null,n:0,ka:setInterval(cvTryKeep,5000)};cvTryMsg('Sending it to the mouse\u2026');cvTrySend()}
+let cvTryEndAt=0;
+function cvTryOff(){if(!cvTry)return;clearInterval(cvTry.ka);clearTimeout(cvTry.tm);cvTry=null;cvTryEndAt=Date.now();post('/api/cvtry?end=1&tok='+cvTok);cvTryMsg('')}
+function cvTryKeep(){if(!cvTry||cvTry.oq!=null)return;const t=cvTry,n=t.n;post('/api/cvtry?keep=1&tok='+cvTok).then(r=>{if(cvTry!==t||!cvEd)return;const e=r&&r.ok===false?r.err:'';
+if(e==='another editor'){if(!t.busy&&t.n===n){t.oq=t.last;/* the table this page last had taken: a change still in the 250 ms wait goes out and takes over */cvTryMsg(...CVOTHER)}return}/* not when a try went after this keep: that took it back */if(e==='not live')t.last='';if(cvTblQ()!==t.last)cvTrySend()})}  // review 11-02: a failed send is retried too
 function cvTrySched(){if(!cvTry)return;clearTimeout(cvTry.tm);cvTry.tm=setTimeout(cvTrySend,250)}
-function cvTrySend(){if(!cvTry||!cvEd)return;if(cvTry.busy){cvTry.again=1;return}const q=cvTblQ(),W=['A slow-down value is out of range: the mouse keeps the last good version','wn'];if(q===cvTry.last){const m=cvEd.dc&&cvEd.dcBad?W:cvTry.ok;if(m)cvTryMsg(...m);return}/* review 11-02: cvTblQ has the last good slow-down while one is out of range, so a resend still goes */const t=cvTry;t.busy=1;
-post('/api/cvtry?try=1'+q).then(r=>{t.busy=0;if(cvTry!==t){if(r&&r.ok&&!cvTry)post('/api/cvtry?end=1');return}if(r&&r.ok){t.last=q;t.ok=r.want===false?['The curve is off on the host connected now, so this edit is too','wn']:['Live on the mouse: not saved until you save','mut'];cvTryMsg(...(cvEd&&cvEd.dc&&cvEd.dcBad?W:t.ok))}else cvTryMsg('Not live yet: '+((r&&r.err)||'no answer')+' (trying again every 5 s)','wn');if(t.again){t.again=0;cvTrySend()}})}
-addEventListener('pagehide',()=>{if(cvTry)navigator.sendBeacon('/api/cvtry?end=1')})
+function cvTrySend(){if(!cvTry||!cvEd)return;if(cvTry.busy){cvTry.again=1;return}const q=cvTblQ(),W=['A slow-down value is out of range: the mouse keeps the last good version','wn'];if(cvTry.oq!=null){if(q===cvTry.oq){cvTryMsg(...CVOTHER);return}cvTry.oq=null}/* 11-04: another page has it: only a change here sends (and takes it back) */if(q===cvTry.last){const m=cvEd.dc&&cvEd.dcBad?W:cvTry.ok;if(m)cvTryMsg(...m);return}/* review 11-02: cvTblQ has the last good slow-down while one is out of range, so a resend still goes */const t=cvTry;t.busy=1;
+t.n++;post('/api/cvtry?try=1&tok='+cvTok+q).then(r=>{t.busy=0;if(cvTry!==t){if(r&&r.ok&&!cvTry)post('/api/cvtry?end=1&tok='+cvTok);return}if(r&&r.ok){t.last=q;t.ok=r.want===false?['The curve is off on the host connected now, so this edit is too','wn']:['Live on the mouse: not saved until you save','mut'];cvTryMsg(...(cvEd&&cvEd.dc&&cvEd.dcBad?W:t.ok))}else cvTryMsg('Not live yet: '+((r&&r.err)||'no answer')+' (trying again every 5 s)','wn');if(t.again){t.again=0;cvTrySend()}})}
+addEventListener('pagehide',()=>{if(cvTry)navigator.sendBeacon('/api/cvtry?end=1&tok='+cvTok)})
 addEventListener('pageshow',e=>{if(e.persisted&&cvTry){cvTry.last='';cvTrySend()}})
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)cvTryKeep()})
-post('/api/cvtry?end=1');  // a page that closed without saying so (a lid shut mid-edit) left its edit live: this page isn't editing
 // fw67: Replace writes over the curve being edited; the first click arms it for 4 s (no confirm() box: a browser can suppress those)
 let cvRepArm=0;
 function cvEdRepLabel(){const b=$('cvedrep');if(!b)return;const c=cvEd&&cvEd.id&&cvLib?cvLib.curves.find(x=>x.id===cvEd.id):null;b.hidden=!c;if(c){b.textContent='Replace original';b.title='Write this over “'+c.name+'” (same name and place). Results already saved under it were measured with the old version.'}}

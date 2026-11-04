@@ -36,7 +36,7 @@ static bool have_t = false;
 static uint64_t moved_us = 0;  // v31: the last frame with motion
 static bool moved = false;
 static uint8_t last_p[4 + 4 * GW_CURVE_N], last_len = 0xFF;  // v31: an identical resend changes nothing; v42: the whole payload (a crc8 match let 1 change in 256 through as "the same")
-static int32_t rxq = 0, ryq = 0;  // carried fractions (gw v54 (e): Q16 counts)
+static int64_t rxq = 0, ryq = 0;  // carried fractions (gw v54 (e): Q16 counts; gw v57: Q32, exact)
 // v32: the live view
 static uint16_t dpi_now = 0;
 static float g_now = 1.0f;
@@ -109,6 +109,12 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
     for (uint8_t k = 0; ok && (k < n); k++) {
         ok = (k == 0) || (sp[k] > sp[k - 1]);
     }
+    // gw v57: only a new smoothing (tau), the curve turning on or off, or a refused table starts the motion over. New
+    // points alone (the QT Py's live editor sends the curve 250 ms after each edit) keep the speed, the carried
+    // fractions and the slow-down stroke, so the next frame takes the new table's gain at the same speed; v30-v56 reset
+    // them all: mid-motion the gain dropped to the first point's and ramped back over tau
+    bool tau_new = ok && ((float) tau_ms != tau);
+    bool fresh = !got || !ok || tau_new || ((want && ok) != on);
     n_pts = 0;
     if (ok) {
         for (uint8_t k = 0; k < n; k++) {
@@ -123,16 +129,20 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
             pt_sl[k] = pt_dg[k] / pt_ds[k];
         }
         n_pts = n;
-        tau = tau_ms;
-        memset(ec_gap, 0, sizeof(ec_gap));  // gw v53: e^(-dt/tau) is by tau too
+        if (tau_new) {
+            tau = tau_ms;
+            memset(ec_gap, 0, sizeof(ec_gap));  // gw v53: e^(-dt/tau) is by tau too (gw v57: kept while tau is)
+        }
         dpi_fb = dpi_fallback;
     }
     got = true;
     on = want && ok;
-    spd = 0;
-    rxq = ryq = 0;
-    have_t = moved = false;
-    dc_stroke();
+    if (fresh) {
+        spd = 0;
+        rxq = ryq = 0;
+        have_t = moved = false;
+        dc_stroke();
+    }
 }
 
 void gw_curve_link(const uint8_t* d, uint8_t len) {
@@ -176,8 +186,15 @@ void gw_curve_decel_set(bool want, uint8_t n, const uint16_t* p10, const uint16_
         dc_n = n;
     }
     dc_got = true;
-    dc_on = want && ok;
-    dc_stroke();
+    // gw v57: new points alone (on stays on, or off stays off) keep the stroke's peak, its slowest and the eased gain,
+    // so the gain eases into the new table; only the peak's thresholds (decel_spd's, from the old shares) are redone.
+    // Turning it on or off starts a new stroke, as before (v39-v56 did on every change: mid-stroke, a step to 1.0)
+    if (dc_on == (want && ok)) {
+        dc_tpk = -1.0f;
+    } else {
+        dc_on = want && ok;
+        dc_stroke();
+    }
 }
 
 void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
@@ -340,32 +357,36 @@ static inline __attribute__((always_inline)) float cm_of(int32_t dx, int32_t dy,
     return cc_cm[k];
 }
 
-// gw v54 (e): f * 2^17 rounded toward -infinity: the RP2040's float2fix(f, 17) (pico/float.h documents the rounding), floorf on
-// the host (the same result)
+// gw v57: f * 2^32 rounded toward -infinity, in 64 bits: the RP2040's float2fix64(f, 32) (pico/float.h documents the
+// rounding), floor on the host (the same: a float times 2^32 is exact in a double). gwtest curve_round's soft-float
+// counter (sfcount.h, GW_HAVE_ROMF) brings its own
 #if PICO_RP2040
 #include "pico/float.h"
-static inline int32_t gw_f2fix17(float f) {
-    return float2fix(f, 17);
+static inline int64_t gw_f2fix32(float f) {
+    return float2fix64(f, 32);
 }
-#else
-static inline int32_t gw_f2fix17(float f) {
-    return (int32_t) floorf(ldexpf(f, 17));
+#elif !defined(GW_HAVE_ROMF)
+static inline int64_t gw_f2fix32(float f) {
+    return (int64_t) floor(ldexp((double) f, 32));
 }
 #endif
-// gw v54 (e): d * g + the carried Q16 fraction, rounded (floor(x + 0.5)), the new fraction left in *q. d * g goes to Q16
-// rounded to nearest, (floor(2^17 x) + 1) >> 1 = floor(2^16 x + 0.5), so the fraction carries no bias
-static inline __attribute__((always_inline)) int32_t round_q16(int32_t d, float g, int32_t* q) {
+// gw v57: d * g + the carried fraction, rounded (floor(x + 0.5)), the new fraction left in *q (Q32 counts, -0.5 to
+// under 0.5). d * g is a float of 2^-9 or more (|d| >= 1, the gain >= 0.25 x 0.25), so p * 2^32 is a whole number: the
+// conversion is exact and the rest is integer adds, and the outputs' sum stays within half a count of the exact sum
+// of the d * g, with no drift either way (gwtest curve_bias). v54-v56's Q16 rounded d * g to 2^-16 with exact ties up
+// (from 64 to 128 counts a float's last bit is 2^-17, so half of all frames there were a tie): +3 counts per million
+// frames at 50 counts a frame, toward +x/+y
+static inline __attribute__((always_inline)) int32_t round_q32(int32_t d, float g, int64_t* q) {
     float p = d * g;
-    if ((fbits(p) & 0x7FFFFFFF) < 0x46000000) {  // |p| < 8192 (and not NaN): p * 2^17 fits 31 bits
-        int32_t acc = ((gw_f2fix17(p) + 1) >> 1) + *q;
-        int32_t n = (acc + 0x8000) >> 16;  // arithmetic shift: floor
-        *q = acc - n * 65536;
-        return n;
+    int32_t b = fbits(p);
+    if ((b & 0x7FFFFFFF) < 0x4F000000) {  // |p| < 2^31 (and not NaN): p * 2^32 plus the carry fits 63 bits
+        int64_t acc = gw_f2fix32(p) + *q;
+        int64_t n = (acc + 0x80000000LL) >> 32;  // arithmetic shift: floor
+        *q = acc - n * 0x100000000LL;
+        return (int32_t) n;
     }
-    float f = p + (float) *q * (1.0f / 65536.0f);  // huge counts: as v53, in float
-    int32_t n = (int32_t) floorf(f + 0.5f);
-    *q = (gw_f2fix17(f - n) + 1) >> 1;
-    return n;
+    // 2^31 counts or more (past any report: the caller clamps to 16 bits) or NaN: saturated, the carry kept as it was
+    return f_nan(b) ? 0 : (b < 0) ? -2147483647 : 2147483647;
 }
 
 // v32: the speed is tracked with the curve off too (the live view), but only an applying curve changes the motion
@@ -424,11 +445,11 @@ void __not_in_flash_func(gw_curve_filter)(int32_t* x, int32_t* y, uint64_t now_u
     g_now = g;
     // as in gw_dirgain.cc: an axis that didn't move stays 0, floor(x + 0.5) rounding, clamped to a 16-bit report
     if (dx != 0) {
-        int32_t nx = round_q16(dx, g, &rxq);  // gw v54 (e)
+        int32_t nx = round_q32(dx, g, &rxq);  // gw v54 (e), v57: Q32
         *x = (nx > 32767) ? 32767 : (nx < -32767) ? -32767 : nx;
     }
     if (dy != 0) {
-        int32_t ny = round_q16(dy, g, &ryq);  // gw v54 (e)
+        int32_t ny = round_q32(dy, g, &ryq);  // gw v54 (e), v57: Q32
         *y = (ny > 32767) ? 32767 : (ny < -32767) ? -32767 : ny;
     }
 }
