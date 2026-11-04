@@ -21,6 +21,9 @@
 #include "remapper.h"
 #include "tick.h"
 #include "pico/time.h"
+#if defined(__NEWLIB__)
+#include <malloc.h>  // v51: mallinfo, the heap in use (profile block)
+#endif
 
 // Arm's prebuilt toolchains ship libstdc++ with the verbose terminate handler, which drags in
 // the 33 KB demangler (cp-demangle.o). In this copy_to_ram image that comes straight out of
@@ -153,20 +156,48 @@ static uint16_t pid_of(uint8_t dev_addr) {
     return pid;
 }
 
+static uint32_t dev_mounts = 0, dev_umounts = 0;
+
 // Every HID interface the remapper parsed (some declare only inputs, some only outputs).
-static std::set<uint16_t> known_interfaces() {
-    std::set<uint16_t> itfs;
+// v52: kept, and built again only when what it comes from may have changed: the three maps' sizes or a device mounted or
+// unmounted since (and once a second from gw_tick, known_itf_refresh). It was built (a std::set, so heap allocations) on
+// every call: family_present from idle_tick each frame cost ~37 us. Callers iterate it: nothing changes those maps meanwhile
+static std::set<uint16_t> known_itfs;
+static size_t known_k1 = SIZE_MAX, known_k2 = SIZE_MAX, known_k3 = SIZE_MAX;
+static uint32_t known_km = UINT32_MAX;
+
+static void known_itf_build() {
+    known_itfs.clear();
     for (auto const& [itf, reports] : their_usages) {
-        itfs.insert(itf);
+        known_itfs.insert(itf);
     }
     for (auto const& [itf, reports] : their_feature_usages) {
-        itfs.insert(itf);
+        known_itfs.insert(itf);
     }
     for (auto const& [key, size] : out_report_sizes) {
-        itfs.insert(key >> 16);
+        known_itfs.insert(key >> 16);
     }
-    itfs.erase(OUR_OUT_INTERFACE);
-    return itfs;
+    known_itfs.erase(OUR_OUT_INTERFACE);
+    known_k1 = their_usages.size();
+    known_k2 = their_feature_usages.size();
+    known_k3 = out_report_sizes.size();
+    known_km = dev_mounts + dev_umounts;
+}
+
+static const std::set<uint16_t>& known_interfaces() {
+    if ((their_usages.size() != known_k1) || (their_feature_usages.size() != known_k2) || (out_report_sizes.size() != known_k3) ||
+        (dev_mounts + dev_umounts != known_km)) {
+        known_itf_build();
+    }
+    return known_itfs;
+}
+
+static void known_itf_refresh(uint32_t now) {  // the once-a-second rebuild, outside any caller's loop
+    static uint32_t at = 0;
+    if (now - at >= 1000000) {
+        at = now;
+        known_itf_build();
+    }
 }
 
 static bool family_present(Family f) {
@@ -217,8 +248,7 @@ static int32_t mount_log[MOUNT_LOG];
 static uint8_t mount_log_n = 0;
 static int32_t umount_log[MOUNT_LOG];
 static uint8_t umount_log_n = 0;
-static int32_t dev_mounts = 0;
-static int32_t dev_umounts = 0;
+// dev_mounts, dev_umounts: before known_interfaces (v52)
 
 static void rs_forget(uint8_t dev_addr, bool mounted);
 
@@ -1751,7 +1781,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 49  // v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
+#define GW_FW_VERSION 52  // v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps
@@ -1787,8 +1817,102 @@ static uint8_t in_4us(uint32_t us) {
     return (q > 255) ? 255 : q;
 }
 
+// v50: gw_prof_* (gw_mouse.h)
+static uint32_t pf_last = 0, pf_sub_last = 0, pf_n = 0, pf_sum[GW_PROF_N], pf_cur[GW_PROF_N], pf_max[GW_PROF_N], pf_worst[GW_PROF_N], pf_worst_t = 0;
+static uint8_t pf_blk[GW_LINK_PROF_LEN];
+static bool pf_dirty = false;
+
+void gw_prof_start(void) {
+    uint32_t now = time_us_32();
+    pf_cur[0] = now - tick_taken_time();
+    pf_last = now;
+}
+
+void gw_prof_mark(uint8_t k) {
+    uint32_t now = time_us_32();
+    if (k < GW_PROF_N) {
+        pf_cur[k] = now - pf_last;
+    }
+    pf_last = now;
+}
+
+static void prof_sub(uint8_t k) {  // v51: a part of gw_tick, from the last prof_sub (or gw_tick's start)
+    uint32_t now = time_us_32();
+    if (k < GW_PROF_N) {
+        pf_cur[k] = now - pf_sub_last;
+    }
+    pf_sub_last = now;
+}
+
+static void prof_frame(void) {  // the frame's sections into the second's sums
+    uint32_t t = 0;
+    for (uint8_t k = 0; k < GW_PROF_N; k++) {
+        pf_sum[k] += pf_cur[k];
+        if (pf_cur[k] > pf_max[k]) {
+            pf_max[k] = pf_cur[k];
+        }
+        if (k < GW_PROF_MAIN) {
+            t += pf_cur[k];  // v51: gw_tick's parts are inside section 7 already
+        }
+    }
+    if (t > pf_worst_t) {
+        pf_worst_t = t;
+        memcpy(pf_worst, pf_cur, sizeof(pf_worst));
+    }
+    memset(pf_cur, 0, sizeof(pf_cur));
+    pf_n++;
+}
+
+static void prof_publish(void) {  // once a second: the block, then the sums start again
+    uint8_t* b = pf_blk;
+    memset(b, 0, GW_LINK_PROF_LEN);
+    uint32_t ius, in;
+    gw_link_irq_take(&ius, &in);
+    b[0] = 'P';
+    b[1] = 2;
+    b[2] = GW_PROF_N;
+    b[3] = (pf_n > 65535) ? 255 : pf_n & 0xFF;
+    b[4] = (pf_n > 65535) ? 255 : pf_n >> 8;
+    for (uint8_t i = 0; i < 4; i++) {
+        b[5 + i] = (ius >> (8 * i)) & 0xFF;
+    }
+    uint16_t in16 = (in > 65535) ? 65535 : in;
+    b[9] = in16 & 0xFF;
+    b[10] = in16 >> 8;
+    uint32_t used = 0, arena = 0;
+#if defined(__NEWLIB__)
+    struct mallinfo mi = mallinfo();
+    used = mi.uordblks / 16;
+    arena = mi.arena / 16;
+#endif
+    used = (used > 65535) ? 65535 : used;
+    arena = (arena > 65535) ? 65535 : arena;
+    b[11] = used & 0xFF;
+    b[12] = used >> 8;
+    b[13] = arena & 0xFF;
+    b[14] = arena >> 8;
+    for (uint8_t k = 0; k < GW_PROF_N; k++) {
+        uint32_t a = pf_n ? pf_sum[k] * 10 / pf_n : 0;
+        uint16_t a16 = (a > 65535) ? 65535 : a;
+        b[15 + 4 * k] = a16 & 0xFF;
+        b[16 + 4 * k] = a16 >> 8;
+        b[17 + 4 * k] = in_4us(pf_max[k]);
+        b[18 + 4 * k] = in_4us(pf_worst[k]);
+    }
+    b[GW_LINK_PROF_LEN - 1] = gw_crc8(b, GW_LINK_PROF_LEN - 1);
+    pf_dirty = true;
+    pf_n = pf_worst_t = 0;
+    memset(pf_sum, 0, sizeof(pf_sum));
+    memset(pf_max, 0, sizeof(pf_max));
+    memset(pf_worst, 0, sizeof(pf_worst));
+}
+
 void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
     static bool started = false;
+    prof_frame();  // v50
+    if (pf_dirty) {
+        pf_dirty = !gw_link_set_block(5, pf_blk);  // refused while that buffer was being read: again next frame
+    }
     if (!started) {  // v25: the first window starts here, not at boot (it counted the ~0.5 s USB enumeration as one second: 255 skipped)
         started = true;
         ft_at = time_us_32();
@@ -1825,6 +1949,7 @@ void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
         merged_1s = ((m - merged_at) > 255) ? 255 : (m - merged_at);
         merged_total = (m > 65535) ? 65535 : m;
         merged_at = m;
+        prof_publish();  // v50
         ft_sum = ft_n = ft_max = fc_sum = fc_max = td_sum = td_max = 0;
         ft_at = now;
     }
@@ -1936,6 +2061,7 @@ void gw_link_status(uint8_t* s) {
     gw_turn_status(s + 246);  // v27: 246 state, 247 run number, 248-251 counts sent
     gw_curve_status(s + 252);  // v30: 252 bit 0 applying, bit 1 got a table; 253 crc8 of the curve as received; v39: 252 bits 2-3 and 254 the same for the slow-down gain
     s[255] = gw_crc8(s + 192, 63);
+    prof_sub(17);  // v52: the status up to here (link_tick)
     gw_hostcap_fill(s + 256);  // v23
 }
 
@@ -2165,12 +2291,14 @@ static void link_tick(uint32_t now) {
         }
     }
     gw_ota_tick(now);  // v40
+    prof_sub(16);  // v52: the link's frame and the update
     if ((now - status_at) >= 20000) {
         status_at = now;
         uint8_t s[GW_LINK_STATUS_LEN];
-        gw_link_status(s);
+        gw_link_status(s);  // v52: its bytes 0-255 are section 17 (prof_sub before gw_hostcap_fill)
         gw_link_set_status(s);
     }
+    prof_sub(18);  // v52: the host capture's half of the status, and handing the block over
     // v32: the live view's blocks (read only when the QT Py selects them)
     static uint32_t live_at = 0, hist_at = 0;
     if ((now - live_at) >= 10000) {
@@ -2420,12 +2548,17 @@ void gw_tick(const int32_t* regs) {
         started = true;
         idle_keep_load();  // v46
     }
+    known_itf_refresh(now);  // v52
+    pf_sub_last = now;  // v51: gw_tick's parts (profile sections 13-19)
     wake_tick(now);
     ev_tick(now);
     gw_chords_service();
     dpi_tick(now);
+    prof_sub(13);  // v52: 13 wake, events, chords, DPI; 14 mouse settings; 15 idle stage; 16-19 in link_tick
     rs_tick(now);
+    prof_sub(14);
     idle_tick(now);
+    prof_sub(15);
     link_tick(now);
     // Also dump everything every 3 s while the Monitor tab is open, so a device that
     // never mounts (no Mid+Left possible) still shows its enumeration trace.
@@ -2435,4 +2568,5 @@ void gw_tick(const int32_t* regs) {
         diag_all();
     }
     diag_flush();
+    prof_sub(19);
 }

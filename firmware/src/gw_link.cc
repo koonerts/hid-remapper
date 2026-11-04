@@ -45,6 +45,8 @@ uint8_t gw_crc8(const uint8_t* data, uint8_t len) {
 #include "hardware/gpio.h"
 #include "hardware/i2c.h"
 #include "hardware/irq.h"
+#include "hardware/sync.h"
+#include "hardware/timer.h"
 #include "pico/i2c_slave.h"
 
 // Everything the interrupt touches. One frame mailbox: a frame that arrives while the previous
@@ -64,7 +66,9 @@ static uint8_t live_buf[2][GW_LINK_LIVE_LEN];
 static uint8_t hist_buf[2][GW_LINK_HIST_LEN];
 static uint8_t ota_buf[2][GW_LINK_OTA_LEN];  // v40
 static uint8_t diag_buf[2][GW_LINK_DIAG_LEN];  // v48
-static volatile uint8_t live_cur = 0, hist_cur = 0, ota_cur = 0, diag_cur = 0;
+static uint8_t prof_buf[2][GW_LINK_PROF_LEN];  // v50
+static volatile uint8_t live_cur = 0, hist_cur = 0, ota_cur = 0, diag_cur = 0, prof_cur = 0;
+static volatile uint32_t irq_us = 0, irq_n = 0;  // v50: the interrupt's own time (gw_link_irq_take)
 static volatile uint8_t sel = 0;
 static const uint8_t* volatile tx_buf = nullptr;
 static volatile uint16_t tx_len = 0;
@@ -122,6 +126,7 @@ static bool __not_in_flash_func(link_pull)(i2c_inst_t* i2c, bool finishing) {
 }
 
 static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t event) {
+    const uint32_t t0 = timer_hw->timerawl;  // v50
     switch (event) {
         case I2C_SLAVE_RECEIVE:
             link_pull(i2c, false);
@@ -146,6 +151,9 @@ static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t eve
                 } else if (sel == 4) {
                     tx_buf = diag_buf[diag_cur];
                     tx_len = GW_LINK_DIAG_LEN;
+                } else if (sel == 5) {  // v50
+                    tx_buf = prof_buf[prof_cur];
+                    tx_len = GW_LINK_PROF_LEN;
                 } else {
                     status_reading = status_cur;
                     tx_buf = status_buf[status_reading];
@@ -163,6 +171,16 @@ static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t eve
         default:
             break;
     }
+    irq_us += timer_hw->timerawl - t0;
+    irq_n++;
+}
+
+void gw_link_irq_take(uint32_t* us, uint32_t* n) {
+    uint32_t s = save_and_disable_interrupts();
+    *us = irq_us;
+    *n = irq_n;
+    irq_us = irq_n = 0;
+    restore_interrupts(s);
 }
 
 void gw_link_init() {
@@ -210,6 +228,9 @@ bool gw_link_set_block(uint8_t which, const uint8_t* data) {
         case 4:  // v48
             b0 = diag_buf[0], b1 = diag_buf[1], cur = &diag_cur, len = GW_LINK_DIAG_LEN;
             break;
+        case 5:  // v50
+            b0 = prof_buf[0], b1 = prof_buf[1], cur = &prof_cur, len = GW_LINK_PROF_LEN;
+            break;
         default:
             b0 = ota_buf[0], b1 = ota_buf[1], cur = &ota_cur, len = GW_LINK_OTA_LEN;
             break;
@@ -237,6 +258,10 @@ void gw_link_set_status(const uint8_t* status) {
 
 bool gw_link_set_block(uint8_t which, const uint8_t* data) {
     return true;
+}
+
+void gw_link_irq_take(uint32_t* us, uint32_t* n) {
+    *us = *n = 0;
 }
 
 #endif

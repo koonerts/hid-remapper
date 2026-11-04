@@ -15,6 +15,7 @@
 #include "globals.h"
 #include "our_descriptor.h"
 #include "platform.h"
+#include <pico.h>  // gw v51: __not_in_flash_func
 #include "remapper.h"
 #include "gw_mouse.h"
 #include "gw_chords.h"
@@ -709,6 +710,15 @@ void set_mapping_from_config() {
                 }
             }
         }
+        // gw v52: with unmapped passthrough every usage of our descriptor gets a mapping (all the keyboard and consumer
+        // keys), and process_mapping walked them all each frame (~160 us). One with a default of 0, no register target and
+        // only plain sources (no sticky, tap or hold) adds nothing and writes nothing while every source's input is 0
+        rev_map.gw_plain = (rev_map.default_value == 0) && ((target & 0xFFFF0000) != REGISTER_USAGE_PAGE);
+        for (auto const& source : rev_map.sources) {
+            if (source.sticky || source.tap || source.hold) {
+                rev_map.gw_plain = false;
+            }
+        }
         if ((target & 0xFFFF0000) == MACRO_USAGE_PAGE) {
             reverse_mapping_macros.push_back(rev_map);
         } else if ((target & 0xFFFF0000) == LAYERS_USAGE_PAGE) {
@@ -1113,22 +1123,30 @@ int32_t eval_expr(uint8_t expr, uint64_t now, bool auto_repeat) {
     return 0;
 }
 
-void process_mapping(bool auto_repeat) {
+// gw v51: from RAM. The linker script keeps this file's code in flash (remapper_single*.ld), so every frame ran this
+// ~4.7 KB through the 16 KB flash cache next to the rest of the fork's code: the generic mappings loop alone took ~170 us
+void __not_in_flash_func(process_mapping)(bool auto_repeat) {
     if (suspended) {
         return;
     }
 
     uint64_t now = get_time();
     frame_counter++;
+    gw_prof_start();  // gw v50: sections timed for the QT Py (gw_mouse.h); 0 = the wait from the tick
 
     gw_idle_frame(gw_ch_in, gw_xy_in[0], gw_xy_in[1]);  // v37: use, for the idle stage (before the chords take buttons)
     // chords take their buttons and the wheel out of what the mappings see (put back at the end)
     gw_chords_filter(gw_ch_in);
     uint32_t gw_chords_us = (uint32_t) (get_time() - now);  // the chord filter alone (v25: not the gains too)
+    gw_prof_mark(1);
     gw_dirgain_filter(gw_xy_in[0], gw_xy_in[1]);  // v24: the frame's X/Y, before any mapping reads them
+    gw_prof_mark(2);
     gw_turn_filter(gw_xy_in[0], gw_xy_in[1], now);  // v27: the cm/360 card's steady turn, after the gains
+    gw_prof_mark(3);
     gw_curve_filter(gw_xy_in[0], gw_xy_in[1], now, gw_mouse_dpi());  // v30: the speed curve, on hand and turn alike
+    gw_prof_mark(4);
     gw_turn_count_out(gw_xy_in[0], now);  // v34: count mode after the curve (the page's hand correction)
+    gw_prof_mark(5);
 
     for (auto& tap_hold : tap_hold_usages) {
         if ((*tap_hold.input_state != 0) && (*(tap_hold.input_state + PREV_STATE_OFFSET) == 0)) {
@@ -1200,6 +1218,7 @@ void process_mapping(bool auto_repeat) {
     }
 
     layer_state_mask = new_layer_state_mask;
+    gw_prof_mark(6);
 
     // evaluate all expressions
     // XXX should we do this before or after tap-hold/sticky/layer logic?
@@ -1219,6 +1238,7 @@ void process_mapping(bool auto_repeat) {
     }
 
     gw_tick(registers);
+    gw_prof_mark(7);
 
     // queue triggered macros
     for (auto const& rev_map : reverse_mapping_macros) {
@@ -1240,6 +1260,7 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
+    gw_prof_mark(8);
     memcpy(input_state + PREV_STATE_OFFSET, input_state, used_state_slots * sizeof(input_state[0]));
     digipot_state[0] = 128;
     digipot_state[1] = 128;
@@ -1250,6 +1271,18 @@ void process_mapping(bool auto_repeat) {
     dpad_state = 0;
 
     for (auto& rev_map : reverse_mapping) {
+        if (rev_map.gw_plain) {  // gw v52: all its inputs 0: nothing to add or write (set_mapping_from_config)
+            bool any = false;
+            for (auto const& source : rev_map.sources) {
+                if (*source.input_state != 0) {
+                    any = true;
+                    break;
+                }
+            }
+            if (!any) {
+                continue;
+            }
+        }
         uint32_t target = rev_map.target;
         bool register_target = (target & 0xFFFF0000) == REGISTER_USAGE_PAGE;
         if (rev_map.is_relative) {
@@ -1359,6 +1392,7 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
+    gw_prof_mark(9);
     // execute queued macros
     if (!macro_queue.empty()) {
         for (uint32_t usage : macro_queue.front().items) {
@@ -1430,6 +1464,7 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
+    gw_prof_mark(10);
     for (unsigned int i = 0; i < report_ids.size(); i++) {  // XXX what order should we go in? maybe keyboard first so that mappings to ctrl-left click work as expected?
         uint8_t report_id = report_ids[i];
         if (our_descriptor->sanitize_report != nullptr) {
@@ -1460,6 +1495,7 @@ void process_mapping(bool auto_repeat) {
         }
     }
 
+    gw_prof_mark(11);
     for (auto const [interface_report_id, report] : out_reports) {
         // XXX we assume everything is absolute
         if (memcmp(report, prev_out_reports[interface_report_id], out_report_sizes[interface_report_id])) {
@@ -1470,6 +1506,7 @@ void process_mapping(bool auto_repeat) {
     }
 
     gw_chords_restore(gw_ch_in);
+    gw_prof_mark(12);
     gw_frame_time((uint32_t) (get_time() - now), gw_chords_us);
 
     processing_time += get_time() - now;

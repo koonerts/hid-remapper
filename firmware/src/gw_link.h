@@ -19,6 +19,7 @@
 #define GW_LINK_HIST_LEN 116
 #define GW_LINK_OTA_LEN 24  // v40: block 3, the update status (gw_ota.h)
 #define GW_LINK_DIAG_LEN 32  // v48: block 4, what the last freeze left (gw_ota.h)
+#define GW_LINK_PROF_LEN 96  // 64 in v50; v50: block 5, where each frame's time goes (gw_mouse.cc, gw_prof_*)
 
 void gw_link_init();
 // a complete frame written by the QT Py, if there is one; len = bytes in buf
@@ -30,5 +31,7 @@ void gw_link_set_status(const uint8_t* status);
 bool gw_link_set_block(uint8_t which, const uint8_t* data);  // v42: false = that buffer was being read (try again)
 // CRC-8, polynomial 0x07, init 0 (the QT Py uses the same)
 uint8_t gw_crc8(const uint8_t* data, uint8_t len);
+// v50: the time the link's interrupt took (its callback, us) and how many there were, since the last call
+void gw_link_irq_take(uint32_t* us, uint32_t* n);
 
 #endif
