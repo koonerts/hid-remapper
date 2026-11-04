@@ -36,7 +36,7 @@ static bool have_t = false;
 static uint64_t moved_us = 0;  // v31: the last frame with motion
 static bool moved = false;
 static uint8_t last_p[4 + 4 * GW_CURVE_N], last_len = 0xFF;  // v31: an identical resend changes nothing; v42: the whole payload (a crc8 match let 1 change in 256 through as "the same")
-static float rx = 0, ry = 0;  // carried fractions
+static int32_t rxq = 0, ryq = 0;  // carried fractions (gw v54 (e): Q16 counts)
 // v32: the live view
 static uint16_t dpi_now = 0;
 static float g_now = 1.0f;
@@ -58,12 +58,14 @@ static float dc_gn = 1.0f;                         // the slow-down gain now (ea
 // inputs give the same floats, so only repeated work is skipped. The table segments' widths and rises, as gain_at and
 // decel_at took them every frame (the same subtractions, done once per table)
 static float pt_ds[GW_CURVE_N], pt_dg[GW_CURVE_N];          // [k] = point k minus point k - 1
+static float pt_sl[GW_CURVE_N], dc_sl[GW_DECEL_N + 1];      // gw v54 (c): the segments' slopes (rise / width)
 static float dc_dx[GW_DECEL_N + 1], dc_dg[GW_DECEL_N + 1];  // the same, with the implied (1.0, 1.0) as point dc_n
 // gw v53: dt (ms), e^(-dt/tau) and 1 - that by the frame gap (frames come 1 ms apart, +-1 us: 4 slots by the low bits);
 // a gap of 0 is never looked up, so 0 = empty. Emptied when tau changes.
 #define GW_CURVE_EC 4
 static uint32_t ec_gap[GW_CURVE_EC];
 static float ec_dt[GW_CURVE_EC], ec_e[GW_CURVE_EC], ec_a[GW_CURVE_EC];
+static float ec_ka[GW_CURVE_EC];  // gw v54 (a2): a * 1000 / dt, by the gap
 // gw v53: the motion's length (cm) by |dx|, |dy| (smaller first) and the DPI: (float) -d is -(float) d, and the sum
 // doesn't care which is first, so these give the same float. DPI 0 is never looked up, so 0 = empty.
 #define GW_CURVE_CC 8
@@ -95,9 +97,11 @@ static inline __attribute__((always_inline)) bool le_pn(float v, float e) {
     return f_nan(b) ? (v <= e) : (b <= fbits(e));
 }
 
+static float dc_tpk = -1.0f;  // gw v54 (d): the peak decel_spd's speeds are for (-1 = none)
 static void __not_in_flash_func(dc_stroke)() {
     dc_pk = dc_tr = 0;
     dc_gn = 1.0f;
+    dc_tpk = -1.0f;  // gw v54 (d): a new table or stroke: the peak's speeds are stale
 }
 
 void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, const uint16_t* sp, const uint16_t* g) {
@@ -116,6 +120,7 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
         for (uint8_t k = 1; k < n; k++) {  // gw v53: gain_at's subtractions, once
             pt_ds[k] = pt_sp[k] - pt_sp[k - 1];
             pt_dg[k] = pt_g[k] - pt_g[k - 1];
+            pt_sl[k] = pt_dg[k] / pt_ds[k];
         }
         n_pts = n;
         tau = tau_ms;
@@ -124,7 +129,8 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
     }
     got = true;
     on = want && ok;
-    spd = rx = ry = 0;
+    spd = 0;
+    rxq = ryq = 0;
     have_t = moved = false;
     dc_stroke();
 }
@@ -165,6 +171,7 @@ void gw_curve_decel_set(bool want, uint8_t n, const uint16_t* p10, const uint16_
         for (uint8_t k = 1; k <= n; k++) {  // gw v53: decel_at's subtractions, once (point n = the implied 1.0, 1.0)
             dc_dx[k] = ((k < n) ? dc_r[k] : 1.0f) - dc_r[k - 1];
             dc_dg[k] = ((k < n) ? dc_g[k] : 1.0f) - dc_g[k - 1];
+            dc_sl[k] = dc_dg[k] / dc_dx[k];
         }
         dc_n = n;
     }
@@ -198,18 +205,31 @@ void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
 }
 
 // gw v53: this and the rest of the per-frame path run from RAM (firmware/src's code is in flash, through the XIP cache)
-static float __not_in_flash_func(decel_at)(float r) {  // r = the speed's share of the stroke's peak
-    float x0 = dc_r[0], g0 = dc_g[0];
-    if (le_pn(r, x0)) {  // gw v53: the shares are 0.01-1.0, so by the bits
-        return g0;
+// gw v54 (d): the shares' speeds for this stroke's peak (dc_tk[k] = peak * share k, dc_tk[dc_n] = the peak), worked out on
+// the first slow-down frame after the peak changed; a segment's slope per cm/s (rise / (width * peak)) on the first
+// frame in it. dc_tpk (above dc_stroke) = the peak they are for (-1 = none)
+static float dc_tk[GW_DECEL_N + 1], dc_ts[GW_DECEL_N + 1];
+static uint8_t dc_tok = 0;
+static float __not_in_flash_func(decel_spd)(float v) {  // v = the speed, below the stroke's peak (both 0.1 cm/s or more)
+    if (fbits(dc_tpk) != fbits(dc_pk)) {
+        for (uint8_t k = 0; k < dc_n; k++) {
+            dc_tk[k] = dc_pk * dc_r[k];
+        }
+        dc_tk[dc_n] = dc_pk;
+        dc_tok = 0;
+        dc_tpk = dc_pk;
+    }
+    if (le_pn(v, dc_tk[0])) {  // all positive and normal: by the bits
+        return dc_g[0];
     }
     for (uint8_t k = 1; k <= dc_n; k++) {
-        float x1 = (k < dc_n) ? dc_r[k] : 1.0f;
-        if (lt_pn(r, x1)) {
-            return g0 + dc_dg[k] * (r - x0) / dc_dx[k];  // gw v53: (g1 - g0) and (x1 - x0) from decel_set
+        if (lt_pn(v, dc_tk[k])) {
+            if (!(dc_tok & (1u << k))) {
+                dc_ts[k] = dc_dg[k] / (dc_dx[k] * dc_pk);
+                dc_tok |= (uint8_t) (1u << k);
+            }
+            return dc_g[k - 1] + dc_ts[k] * (v - dc_tk[k - 1]);
         }
-        x0 = x1;
-        g0 = (k < dc_n) ? dc_g[k] : 1.0f;
     }
     return 1.0f;
 }
@@ -229,7 +249,8 @@ static float __not_in_flash_func(decel_step)(float a) {
     } else if ((spd > dc_tr * 1.25f) && (spd > dc_tr + 2.0f)) {
         dc_pk = dc_tr = spd;
     }
-    float want = (dc_on && (dc_pk > 0)) ? decel_at(spd / dc_pk) : 1.0f;
+    // gw v54 (d): spd is the peak (just set) = share 1.0 = gain 1.0, as v53's decel_at(1.0) gives; else below the peak
+    float want = (dc_on && lt_pn(spd, dc_pk)) ? decel_spd(spd) : 1.0f;
     dc_gn += (want - dc_gn) * a;
     return dc_gn;
 }
@@ -240,7 +261,7 @@ static float __not_in_flash_func(gain_at)(float v) {
     }
     for (uint8_t k = 1; k < n_pts; k++) {
         if (lt_pn(v, pt_sp[k])) {  // gw v53: points after the first are 0.1 cm/s or more, so by the bits
-            return pt_g[k - 1] + pt_dg[k] * (v - pt_sp[k - 1]) / pt_ds[k];  // gw v53: the subtractions from curve_set
+            return pt_g[k - 1] + pt_sl[k] * (v - pt_sp[k - 1]);  // gw v54 (c): the segment's slope from curve_set (v53 divided by its width here)
         }
     }
     return pt_g[n_pts - 1];
@@ -289,8 +310,20 @@ static inline __attribute__((always_inline)) uint32_t decay_of(uint64_t gap) {
     ec_dt[k] = gap / 1000.0f;
     ec_e[k] = expf(-ec_dt[k] / tau);
     ec_a[k] = 1.0f - ec_e[k];
+    ec_ka[k] = ec_a[k] * (1000.0f / ec_dt[k]);
     ec_gap[k] = ((gap >> 32) == 0) ? (uint32_t) gap : 0;
     return k;
+}
+
+// gw v54 (b): 2.54 / dpi, by the DPI
+static uint16_t kd_dpi = 0;
+static float kd_cm = 0;
+static inline __attribute__((always_inline)) float cm_per(uint16_t dpi) {
+    if (dpi != kd_dpi) {
+        kd_cm = 2.54f / dpi;
+        kd_dpi = dpi;
+    }
+    return kd_cm;
 }
 
 // gw v53: sqrtf(dx^2 + dy^2) * 2.54 / dpi as the frame computed it, from the cache when the counts and DPI were seen
@@ -299,12 +332,40 @@ static inline __attribute__((always_inline)) float cm_of(int32_t dx, int32_t dy,
     uint32_t lo = (ax < ay) ? ax : ay, hi = (ax < ay) ? ay : ax;
     uint32_t k = (hi * 5 + lo) & (GW_CURVE_CC - 1);
     if ((cc_dpi[k] != dpi) || (cc_lo[k] != lo) || (cc_hi[k] != hi)) {
-        cc_cm[k] = sqrtf((float) dx * dx + (float) dy * dy) * 2.54f / dpi;
+        cc_cm[k] = sqrtf((float) dx * dx + (float) dy * dy) * cm_per(dpi);  // gw v54 (b)
         cc_lo[k] = lo;
         cc_hi[k] = hi;
         cc_dpi[k] = dpi;
     }
     return cc_cm[k];
+}
+
+// gw v54 (e): f * 2^17 rounded toward -infinity: the RP2040's float2fix(f, 17) (pico/float.h documents the rounding), floorf on
+// the host (the same result)
+#if PICO_RP2040
+#include "pico/float.h"
+static inline int32_t gw_f2fix17(float f) {
+    return float2fix(f, 17);
+}
+#else
+static inline int32_t gw_f2fix17(float f) {
+    return (int32_t) floorf(ldexpf(f, 17));
+}
+#endif
+// gw v54 (e): d * g + the carried Q16 fraction, rounded (floor(x + 0.5)), the new fraction left in *q. d * g goes to Q16
+// rounded to nearest, (floor(2^17 x) + 1) >> 1 = floor(2^16 x + 0.5), so the fraction carries no bias
+static inline __attribute__((always_inline)) int32_t round_q16(int32_t d, float g, int32_t* q) {
+    float p = d * g;
+    if ((fbits(p) & 0x7FFFFFFF) < 0x46000000) {  // |p| < 8192 (and not NaN): p * 2^17 fits 31 bits
+        int32_t acc = ((gw_f2fix17(p) + 1) >> 1) + *q;
+        int32_t n = (acc + 0x8000) >> 16;  // arithmetic shift: floor
+        *q = acc - n * 65536;
+        return n;
+    }
+    float f = p + (float) *q * (1.0f / 65536.0f);  // huge counts: as v53, in float
+    int32_t n = (int32_t) floorf(f + 0.5f);
+    *q = (gw_f2fix17(f - n) + 1) >> 1;
+    return n;
 }
 
 // v32: the speed is tracked with the curve off too (the live view), but only an applying curve changes the motion
@@ -344,10 +405,9 @@ void __not_in_flash_func(gw_curve_filter)(int32_t* x, int32_t* y, uint64_t now_u
         dc_stroke();  // v39: and a new stroke
     } else if (gap > 0) {
         uint32_t k = decay_of(gap);  // gw v53: dt (ms) and a = 1 - e^(-dt/tau), cached by the gap
-        float dt = ec_dt[k];
         float cm = cm_of(dx, dy, dpi);  // gw v53: cached by |dx|, |dy|, DPI
         a = ec_a[k];
-        spd += (cm / dt * 1000.0f - spd) * a;
+        spd = spd * ec_e[k] + cm * ec_ka[k];  // gw v54 (a2): the same smoothing in 2 multiplies and an add
     }
     moved = true;
     moved_us = now_us;
@@ -364,15 +424,11 @@ void __not_in_flash_func(gw_curve_filter)(int32_t* x, int32_t* y, uint64_t now_u
     g_now = g;
     // as in gw_dirgain.cc: an axis that didn't move stays 0, floor(x + 0.5) rounding, clamped to a 16-bit report
     if (dx != 0) {
-        float fx = dx * g + rx;
-        int32_t nx = (int32_t) floorf(fx + 0.5f);
-        rx = fx - nx;
+        int32_t nx = round_q16(dx, g, &rxq);  // gw v54 (e)
         *x = (nx > 32767) ? 32767 : (nx < -32767) ? -32767 : nx;
     }
     if (dy != 0) {
-        float fy = dy * g + ry;
-        int32_t ny = (int32_t) floorf(fy + 0.5f);
-        ry = fy - ny;
+        int32_t ny = round_q16(dy, g, &ryq);  // gw v54 (e)
         *y = (ny > 32767) ? 32767 : (ny < -32767) ? -32767 : ny;
     }
 }
