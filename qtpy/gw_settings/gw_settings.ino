@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 89    // this firmware's number, shown in /api/status; fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 90    // this firmware's number, shown in /api/status; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -2957,8 +2957,154 @@ static void pf_stale() {  // fw87: no current profile (a failed read, an older F
     pf_have = false;
 }
 
+// fw90: frame timing over the last minute, hour and 24 hours. The Feather keeps one second (the status's perf bytes and
+// the profile block); each new second the QT Py reads is kept here (RAM only: a QT Py restart starts it over). Averages
+// are the seconds' averages averaged, Worst the largest, Worst frame the parts of the slowest frame seen (the second whose
+// worst frame summed highest), frames skipped from the Feather's since-start counter (exact, whatever was read).
+#define PW_NS 24
+struct PwSec {  // one Feather second
+    uint16_t avg10, mx;   // remapping (0.1 us) and its worst (us): status 84-87
+    uint8_t cavg10, cmx;  // chord check: 88-89
+    uint8_t tavg4, tmx4;  // frame finished after its tick (4 us): 113-114
+    uint8_t uavg4, umx4;  // the 1 ms USB interrupt (4 us): 115-116
+    uint16_t missed;      // frames skipped since the reading before (status 111-112)
+    uint8_t blk[15 + 4 * PW_NS];  // the profile block's head and sections, as read
+};
+struct PwAgg {
+    uint32_t n, missed;
+    float avg10, cavg10, tavg4, uavg4, frames, irq_us, irq_n;  // sums over the n seconds
+    uint16_t mx, tmx4, umx4, heap_u, heap_a, wtot;  // largest; wtot = the worst frame's parts summed (4 us)
+    uint8_t cmx, ns;
+    float savg[PW_NS];  // sums of each part's average (0.1 us)
+    uint8_t smx[PW_NS], swf[PW_NS];  // each part's worst, and its time in the worst frame (4 us)
+};
+static PwSec pw_s[60];
+static uint8_t pw_sh = 0, pw_sn = 0;  // next slot, how many
+static PwAgg pw_m[60], pw_h[24], pw_cm, pw_ch;  // finished minutes and hours; the minute and hour running now
+static uint8_t pw_mh = 0, pw_mn = 0, pw_hh = 0, pw_hn = 0;
+static uint32_t pw_cm_at = 0, pw_ch_at = 0;
+static uint16_t pw_mtot = 0;
+static bool pw_mtot_ok = false;
+
+// (void* parameters: the Arduino build puts its function prototypes above these structs)
+static void pw_add(void* ap, const void* sp) {
+    PwAgg& a = *(PwAgg*) ap;
+    const PwSec& s = *(const PwSec*) sp;
+    const uint8_t* b = s.blk;
+    uint8_t ns = (b[2] <= PW_NS) ? b[2] : PW_NS;
+    a.n++;
+    a.missed += s.missed;
+    a.avg10 += s.avg10;
+    a.cavg10 += s.cavg10;
+    a.tavg4 += s.tavg4;
+    a.uavg4 += s.uavg4;
+    a.frames += (uint16_t) (b[3] | b[4] << 8);
+    a.irq_us += le32(b + 5);
+    a.irq_n += (uint16_t) (b[9] | b[10] << 8);
+    a.mx = max(a.mx, s.mx);
+    a.cmx = max(a.cmx, s.cmx);
+    a.tmx4 = max(a.tmx4, (uint16_t) s.tmx4);
+    a.umx4 = max(a.umx4, (uint16_t) s.umx4);
+    a.heap_u = max(a.heap_u, (uint16_t) (b[11] | b[12] << 8));
+    a.heap_a = max(a.heap_a, (uint16_t) (b[13] | b[14] << 8));
+    a.ns = max(a.ns, ns);
+    uint16_t wt = 0;
+    for (uint8_t k = 0; k < ns; k++) {
+        const uint8_t* p = b + 15 + 4 * k;
+        a.savg[k] += (uint16_t) (p[0] | p[1] << 8);
+        a.smx[k] = max(a.smx[k], p[2]);
+        wt += p[3];
+    }
+    if ((a.n == 1) || (wt > a.wtot)) {
+        a.wtot = wt;
+        for (uint8_t k = 0; k < ns; k++) {
+            a.swf[k] = b[15 + 4 * k + 3];
+        }
+    }
+}
+
+static void pw_merge(void* ap, const void* bp) {
+    PwAgg& a = *(PwAgg*) ap;
+    const PwAgg& b = *(const PwAgg*) bp;
+    if (!b.n) {
+        return;
+    }
+    bool first = !a.n;
+    a.n += b.n;
+    a.missed += b.missed;
+    a.avg10 += b.avg10;
+    a.cavg10 += b.cavg10;
+    a.tavg4 += b.tavg4;
+    a.uavg4 += b.uavg4;
+    a.frames += b.frames;
+    a.irq_us += b.irq_us;
+    a.irq_n += b.irq_n;
+    a.mx = max(a.mx, b.mx);
+    a.cmx = max(a.cmx, b.cmx);
+    a.tmx4 = max(a.tmx4, b.tmx4);
+    a.umx4 = max(a.umx4, b.umx4);
+    a.heap_u = max(a.heap_u, b.heap_u);
+    a.heap_a = max(a.heap_a, b.heap_a);
+    a.ns = max(a.ns, b.ns);
+    for (uint8_t k = 0; k < PW_NS; k++) {
+        a.savg[k] += b.savg[k];
+        a.smx[k] = max(a.smx[k], b.smx[k]);
+    }
+    if (first || (b.wtot > a.wtot)) {
+        a.wtot = b.wtot;
+        memcpy(a.swf, b.swf, sizeof(a.swf));
+    }
+}
+
+// a new Feather second (its profile block b): kept with the status's perf bytes
+static void pw_second(const uint8_t* b) {
+    uint16_t tot = (uint16_t) (st[111] | st[112] << 8);
+    PwSec& s = pw_s[pw_sh];
+    s.avg10 = (uint16_t) (st[84] | st[85] << 8);
+    s.mx = (uint16_t) (st[86] | st[87] << 8);
+    s.cavg10 = st[88];
+    s.cmx = st[89];
+    s.tavg4 = st[113];
+    s.tmx4 = st[114];
+    s.uavg4 = st[115];
+    s.umx4 = st[116];
+    s.missed = !pw_mtot_ok ? 0 : (tot >= pw_mtot) ? (uint16_t) (tot - pw_mtot) : tot;  // smaller: the Feather restarted
+    pw_mtot = tot;
+    pw_mtot_ok = true;
+    memcpy(s.blk, b, sizeof(s.blk));
+    pw_sh = (pw_sh + 1) % 60;
+    if (pw_sn < 60) {
+        pw_sn++;
+    }
+    uint32_t now = millis();
+    if (!pw_cm_at) {
+        pw_cm_at = pw_ch_at = now;
+    }
+    if (now - pw_cm_at >= 60000) {
+        pw_m[pw_mh] = pw_cm;
+        pw_mh = (pw_mh + 1) % 60;
+        if (pw_mn < 60) {
+            pw_mn++;
+        }
+        memset(&pw_cm, 0, sizeof(pw_cm));
+        pw_cm_at = now;
+    }
+    if (now - pw_ch_at >= 3600000UL) {
+        pw_h[pw_hh] = pw_ch;
+        pw_hh = (pw_hh + 1) % 24;
+        if (pw_hn < 24) {
+            pw_hn++;
+        }
+        memset(&pw_ch, 0, sizeof(pw_ch));
+        pw_ch_at = now;
+    }
+    pw_add(&pw_cm, &s);
+    pw_add(&pw_ch, &s);
+}
+
 static void pf_check() {
-    if (fo_busy() || (st[56] < 55) || (pf_at && (millis() - pf_at < 1000))) {  // fw85: layout 3 only (Feather v55)
+    // fw90: twice a second (a new second is told by a changed block), so no second's numbers go unread
+    if (fo_busy() || (st[56] < 55) || (pf_at && (millis() - pf_at < 500))) {  // fw85: layout 3 only (Feather v55)
         return;
     }
     pf_at = millis() | 1;
@@ -2967,6 +3113,9 @@ static void pf_check() {
         pf_fails++;
         pf_have = false;  // fw87: the last good one isn't this second's
         return;
+    }
+    if (!pf_reads || memcmp(pf_blk, b, PF_LEN)) {  // (pf_blk keeps the last good block through a failed read)
+        pw_second(b);  // fw90
     }
     memcpy(pf_blk, b, PF_LEN);
     pf_have = true;
@@ -2998,6 +3147,57 @@ static String pf_json() {
         j += "]";
     }
     return j + "}";
+}
+
+// fw90: GET /api/perfwin?w=m|h|d   frame timing over the last minute, hour or 24 hours, shaped as /api/status's perf and
+// prof (perf.missed = frames skipped in the window; n = seconds it covers, span_s = how far back its oldest goes)
+static void h_perfwin() {
+    String w = server.arg("w");
+    PwAgg a;
+    memset(&a, 0, sizeof(a));
+    uint32_t span = 0, now = millis();
+    if (w == "m") {
+        for (uint8_t k = 0; k < pw_sn; k++) {
+            pw_add(&a, &pw_s[(pw_sh + 60 - 1 - k) % 60]);
+        }
+        span = a.n;
+    } else if ((w == "h") || (w == "d")) {
+        bool h = (w == "h");
+        PwAgg* ring = h ? pw_m : pw_h;
+        uint8_t len = h ? 60 : 24, n = h ? pw_mn : pw_hn, head = h ? pw_mh : pw_hh;
+        pw_merge(&a, h ? &pw_cm : &pw_ch);  // the minute (hour) running now
+        uint8_t take = (n < len - 1) ? n : len - 1;
+        for (uint8_t k = 0; k < take; k++) {
+            pw_merge(&a, &ring[(head + len - 1 - k) % len]);
+        }
+        span = ((now - (h ? pw_cm_at : pw_ch_at)) / 1000) + take * (h ? 60 : 3600);
+    } else {
+        return ok_json(false, "w=m, h or d");
+    }
+    if (!a.n) {
+        server.send(200, "application/json", "{\"n\":0}");
+        return;
+    }
+    static const char* const NAME[] = { "wait from tick", "idle stage + chords", "direction gains", "turn", "speed curve", "turn count",
+                                        "tap/sticky/layers", "registers + gw_tick", "macro queue", "mappings", "macros, accumulate",
+                                        "reports", "out reports", "tick: wake, events, chords, DPI", "tick: mouse settings",
+                                        "tick: idle stage", "tick: link frame + update", "tick: status (every 20 ms)", "tick: status host part + hand-off",
+                                        "tick: live/hist blocks + diag", "loop: USB host task", "loop: report parsing", "loop: G-Wolves hook",
+                                        "loop: wait for the pass before" };
+    float n = a.n;
+    String j;
+    j.reserve(2600);
+    j = "{\"n\":" + String(a.n) + ",\"span_s\":" + String(span) + ",\"perf\":{\"avg_us\":" + String(a.avg10 / n / 10.0f, 1) +
+        ",\"max_us\":" + String(a.mx) + ",\"chords_avg_us\":" + String(a.cavg10 / n / 10.0f, 1) + ",\"chords_max_us\":" + String(a.cmx) +
+        ",\"missed\":" + String(a.missed) + ",\"missed_total\":" + String(u16(111)) + ",\"tick_avg_us\":" + String(a.tavg4 / n * 4.0f, 0) +
+        ",\"tick_max_us\":" + String(a.tmx4 * 4) + ",\"usb_avg_us\":" + String(a.uavg4 / n * 4.0f, 0) + ",\"usb_max_us\":" + String(a.umx4 * 4) + "}";
+    j += ",\"prof\":{\"age_ms\":0,\"frames\":" + String(a.frames / n, 0) + ",\"irq_us\":" + String(a.irq_us / n, 0) + ",\"irq_n\":" + String(a.irq_n / n, 0) +
+         ",\"heap_used\":" + String((uint32_t) a.heap_u * 16) + ",\"heap_arena\":" + String((uint32_t) a.heap_a * 16) + ",\"sec\":[";
+    for (uint8_t k = 0; k < a.ns; k++) {
+        j += String(k ? "," : "") + "[\"" + NAME[k] + "\"," + String(a.savg[k] / n / 10.0f, 1) + "," + String(a.smx[k] * 4) + "," + String(a.swf[k] * 4) + "]";
+    }
+    j += "]}}";
+    server.send(200, "application/json", j);
 }
 
 static String hex32(uint32_t v) {
@@ -5635,6 +5835,7 @@ void setup() {
     Wire1.setTimeOut(50);
     server.on("/", HTTP_GET, h_page);
     server.on("/api/status", HTTP_GET, h_status);
+    server.on("/api/perfwin", HTTP_GET, h_perfwin);  // fw90
     server.on("/api/osd", HTTP_GET, h_osd);
     server.on("/api/hosts", HTTP_GET, h_hosts);
     server.on("/api/hostprof", HTTP_POST, h_hostprof);
