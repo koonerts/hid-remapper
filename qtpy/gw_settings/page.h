@@ -71,6 +71,10 @@ button.chip{border:0;cursor:pointer;color:var(--acc);font-size:12.5px}
 label.cvx{flex:1 1 100%}label.cvx input{width:100%;font-family:ui-monospace,Consolas,monospace;font-size:12px}
 .c3s button.sq{font-size:15px}.c3s button.sq.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
 .chip.ok{color:var(--ok)}.chip.bad{color:var(--bad)}
+.barrow{display:flex;align-items:center;gap:12px}.barrow>.chips{flex:1;min-width:0}
+.batbig{display:inline-flex;align-items:center;gap:7px;flex:none;font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--fg);cursor:default}.batbig svg{display:block;flex:none}
+.batbig .bo{fill:none;stroke:var(--mut);stroke-width:1.6}.batbig .bn{fill:var(--mut)}.batbig .bf{fill:var(--ok)}.batbig.wn .bf{fill:var(--warn)}.batbig.wn{color:var(--warn)}.batbig.bad .bf{fill:var(--bad)}.batbig.bad{color:var(--bad)}
+.batbig .bz{fill:var(--fg);stroke:var(--card);stroke-width:1.2;stroke-linejoin:round}.batbig .age{font-size:11.5px;font-weight:600;color:var(--mut)}.batbig.old{opacity:.6}
 button{font:inherit;padding:7px 12px;border-radius:9px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 button:disabled{opacity:.45;cursor:default}
 button.p{background:var(--acc);border-color:var(--acc);color:var(--on);font-weight:600}
@@ -181,7 +185,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 .toast.bad{background:var(--bad);color:#fff}
 @media (prefers-reduced-motion:reduce){.toast,details>summary::after{transition:none}}
 </style></head><body><div class="top"><div class="row" style="justify-content:space-between"><h1>Warg settings</h1><div class="row"><button onclick="readMouse()">Read from mouse</button><button onclick="post('/api/flash?c=ffffff').then(r=>say(r,'Flash sent'))">Test flash</button></div></div></div>
-<header class="bar"><div class="barin"><div class="chips"><span id="state" class="chips"><span class="chip">Connecting…</span></span><span id="sbar" class="chips"></span></div>
+<header class="bar"><div class="barin"><div class="barrow"><div class="chips"><span id="state" class="chips"><span class="chip">Connecting…</span></span><span id="sbar" class="chips"></span></div><span id="batbig" class="batbig" hidden></span></div>
 <nav class="tabs" role="tablist" aria-label="Sections"><button role="tab" id="tb-mouse" onclick="tabShow('mouse',1)">Mouse</button><button role="tab" id="tb-aim" onclick="tabShow('aim',1)">Aim</button><button role="tab" id="tb-setup" onclick="tabShow('setup',1)">Setup</button><button role="tab" id="tb-diag" onclick="tabShow('diag',1)">Diagnostics</button></nav></div></header>
 <main>
 <section class="tab" id="t-mouse" role="tabpanel"><div class="cols">
@@ -973,11 +977,21 @@ const blindAB=!!(S.cv&&(S.cv.ab||S.cv.temp||S.cv.tcand));if(S.dg&&S.dg.sup)b.pus
 if(!(c.temp||c.tcand||c.ab)&&c.n){const sd=(cls,s,t)=>'<button type="button" class="chip chipb2'+(cls?' '+cls:'')+'" title="'+esc(t+' Click: the Speed curve card.')+'" onclick="sbSlow()">'+esc(s)+'</button>';
 b.push(!c.dc?sd('','Slow-down off','The running curve has no slow-down gain. To try one: Edit the curve and tick Slow-down gain.'):c.dcsup===false?sd('bad','Slow-down: Feather v39','The running curve has a slow-down gain ('+cvDcTxt(c.dc)+'), but the Feather\'s firmware is older than v39.'):c.on&&c.dcon?sd('ok','Slow-down on','While a flick slows down: '+cvDcTxt(c.dc)+', on top of the curve.'):c.on&&!c.dcapplied?sd('','Slow-down: sending','The QT Py is giving the Feather the running curve\'s slow-down gain ('+cvDcTxt(c.dc)+').'):sd('','Slow-down off','The running curve has one ('+cvDcTxt(c.dc)+'), but the curve isn\'t applying on '+(hn||'this host')+'.'))}}}
 {const o=S.opt||{},mc=(k,lab,why)=>o[k]==null?'':'<button type="button" class="chip chipb2'+(o[k]?' ok':'')+'" title="'+esc(why+' Click: turn it '+(o[k]?'off':'on')+' (a mouse setting, every host).')+'" onclick="sbOpt(\''+k+'\')">'+esc(lab+' '+(o[k]?'on':'off'))+'</button>';b.push(mc('snap','Snap','Angle Snap straightens nearly level movement (it hides the tilt Level your swipes measures).'),mc('sync','Motion Sync','Motion Sync lines the sensor up with the polling (adds a little delay).'))}
-const bt=S.battery;if(bt)b.push(ch(bt.pct<=15?'bad':'','Battery '+bt.pct+'%'));
+/* 11-05: the battery has its own badge at the bar's right (drawBat) */
 {const h=b.join(''),sb=$('sbar');if(sb.dataset.h!==h){sb.innerHTML=h;sb.dataset.h=h}}lvAngDraw();cbFollow()}
 // 10-26: Calibration runs follow the running curve and the gains in use (Use on a curve swaps both): re-tick among the new
 // curve's runs and redraw when either changes (nothing redrew it before)
 let cbFollowKey='';function cbFollow(){if(!S||!S.cv||!S.dg)return;const k=(S.cv.id||0)+'|'+S.dg.g.join(',');if(k===cbFollowKey)return;const first=!cbFollowKey,curveNow=cbFollowKey.split('|')[0]!==String(S.cv.id||0);cbFollowKey=k;if(cb||!cbRuns.length)return;if(curveNow&&!first&&cbCurveSel==='run'){cbPoolSel=null;cbLastKind=''}cbDrawRuns()}  // 10-26 audit: also the first time (a draw before the status showed nothing)
+/* 11-05: the battery, easy to glance at: a badge at the sticky bar's right (icon filled to the level, green, amber at 30 % or less, red at 15 %), the level in the tab's title, and the Mouse card's line. QT Py fw88 reads it once a minute while this page is open; chg = the mouse's charging byte */
+function batAge(a){return a<0?'at an unknown time (before the QT Py restarted)':a<60?'just now':a<3600?Math.round(a/60)+' min ago':(a/3600).toFixed(1)+' h ago'}
+function drawBat(){const bt=S&&S.battery,el=$('batbig');
+const tt=(bt?bt.pct+'%'+(bt.chg?' ⚡':'')+' · ':'')+'Warg settings';if(document.title!==tt)document.title=tt;
+$('batt').textContent=bt?bt.pct+'%'+(bt.chg?' · charging':'')+' · '+(bt.mv/1000).toFixed(2)+' V · read '+batAge(bt.age_s):'not read yet: move the mouse, then Read from mouse';
+if(!bt){el.hidden=true;el.dataset.h='';return}
+const p=Math.max(0,Math.min(100,bt.pct)),w=(21*p/100).toFixed(1),old=bt.age_s<0||bt.age_s>=600,cls='batbig'+(p<=15?' bad':p<=30?' wn':'')+(old?' old':'');
+const h='<svg width="32" height="16" viewBox="0 0 32 16" aria-hidden="true"><rect class="bo" x="1" y="1.5" width="26" height="13" rx="3"/><rect class="bn" x="28" y="5" width="2.6" height="6" rx="1"/><rect class="bf" x="3.5" y="4" width="'+w+'" height="8" rx="1.5"/>'+(bt.chg?'<path class="bz" d="M15.5 2.5 L10 9 H13.6 L12.2 13.6 L18 7 H14.4 Z"/>':'')+'</svg><span>'+p+'%</span>'+(bt.age_s<0||bt.age_s>=180?'<span class="age">'+(bt.age_s<0?'age unknown':batAge(bt.age_s))+'</span>':'');
+const t='Battery '+p+'%'+(bt.chg?', charging':'')+' · '+(bt.mv/1000).toFixed(2)+' V · read '+batAge(bt.age_s)+'. The QT Py reads it again once a minute while this page is open'+(bt.chg?'; while charging the level reads high (the cable lifts the voltage)':'')+'.';
+if(el.dataset.h!==h+cls){el.innerHTML=h;el.className=cls;el.dataset.h=h+cls}el.title=t;el.setAttribute('aria-label',t);el.hidden=false}
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
 else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')+(S.cv&&S.cv.try&&!cvTry&&Date.now()-cvTryEndAt>3000?'<span class="chip" title="A curve edit is running live on the mouse (not saved), from another page or one that closed: the QT Py ends it by itself 90 s after that page last checked in. Open Edit on a curve here to take it over.">Curve edit live</span>':'')}  // 11-04: a live curve edit this page isn't running (another page's, or a stale one) shows
@@ -985,7 +999,7 @@ if(pgNew)st.insertAdjacentHTML('beforeend','<button class="chip" onclick="pgGo()
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
 drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawHosts();drawDG();drawLevel();c3Draw();cvDraw();foldsApply();
-const bt=S.battery;$('batt').textContent=bt?bt.pct+'% · '+(bt.mv/1000).toFixed(2)+' V'+(bt.age_s<0?'':' · read '+(bt.age_s<60?'just now':Math.round(bt.age_s/60)+' min ago')):'not read yet: move the mouse, then Read from mouse';
+drawBat();
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw+(S.page&&S.page.fs?' · page uploaded '+whenText(S.page.t*1000):'');drawBar();tabApply()}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
 // address answers and move there, so reloads and button presses don't need another .local name

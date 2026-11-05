@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 87    // this firmware's number, shown in /api/status; fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 88    // this firmware's number, shown in /api/status; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -81,6 +81,18 @@ static uint8_t info_seq_seen = 0;    // the Feather's status-query reply count w
 static uint32_t info_at = 0;         // millis() when a new reply was noticed (0 = none)
 static bool info_first = true;       // the first status after a restart: a reply already there is of unknown age
 static bool info_age_known = false;
+// fw88: the battery, from whichever status query (command 04) answered last: the refresh's (info, st 67-) or the QT Py's
+// own once a minute while something polls (a probe, st 94-). Reply: 08 04 00 00 00 02 | pct | chg | mV (big-endian).
+// chg: 1 while the cable charges it (seen 11-05 at 65-95 %, voltage rising), 0 off the cable (10-09, 100 %); inferred.
+static uint8_t bat_pct = 0xFF, bat_chg = 0;  // 0xFF = not read yet
+static uint16_t bat_mv = 0;
+static uint32_t bat_at = 0;        // millis() when read
+static bool bat_age_known = false;
+static uint8_t bat_probe_seen = 0;  // the probe count when last looked at
+static uint32_t bat_asked_at = 0;
+static uint32_t bat_polled_at = 0;  // the last /api/status (not last_http: status polls don't hold Wi-Fi's auto-off)
+#define BAT_EVERY_MS 60000
+static void bat_note(const uint8_t* b, bool first);
 static uint32_t st_at = 0;       // last good status
 static bool link_up = false;
 static bool toggles_known = false;
@@ -676,6 +688,7 @@ static bool poll_status() {
     d_ok++;
     memcpy(st, b, STATUS_LEN);
     st_ext = (b[64] == 'X') && (crc8(b + 64, 63) == b[127]);
+    bool info_first_now = st_ext && info_first;
     if (st_ext && info_first) {
         info_first = false;
         info_seq_seen = b[65];
@@ -686,6 +699,7 @@ static bool poll_status() {
         info_at = millis() | 1;
         info_age_known = true;
     }
+    bat_note(b, info_first_now);
     st_ok = true;
     st_at = millis();
     return true;
@@ -1215,13 +1229,49 @@ static String hex_bytes(const uint8_t* p, uint8_t n) {
 
 // Battery, from the Warg's reply to the status query (command 04), seen 2026-10-09:
 //   08 04 00 00 00 02 | 64 00 | 10 27 ...  -> 0x64 = 100 %, then 0x1027 = 4135 mV (big-endian)
-// The second byte (00) is not known yet (charging?).
+// fw88: the byte after the % is 1 while the cable charges it (11-05: 1 at 65-95 % with the voltage rising; 0 at 100 % on 10-09)
+static uint8_t bat_info_seen = 0;
+static void bat_set(const uint8_t* q, bool known) {  // q: the reply (report ID first)
+    bat_pct = q[6];
+    bat_chg = q[7];
+    bat_mv = (uint16_t) (q[8] << 8 | q[9]);
+    bat_at = millis();
+    bat_age_known = known;
+}
+static bool bat_reply_ok(const uint8_t* q, uint8_t len) {
+    return (len >= 10) && (q[0] == 8) && (q[1] == 0x04) && (q[6] <= 100);
+}
+// each good status from the Feather: a new reply to the refresh's status query (info) or to a probe (cmd 04), whichever came
+static void bat_note(const uint8_t* b, bool first) {
+    if (!st_ext) {
+        return;
+    }
+    if (first) {  // after a restart: the replies already there; an info reply is used, of unknown age
+        bat_info_seen = b[65];
+        bat_probe_seen = b[91];
+        if ((b[66] > 0) && bat_reply_ok(b + 67, b[66])) {
+            bat_set(b + 67, false);
+        }
+        return;
+    }
+    if (b[65] != bat_info_seen) {
+        bat_info_seen = b[65];
+        if ((b[66] > 0) && bat_reply_ok(b + 67, b[66])) {
+            bat_set(b + 67, true);
+        }
+    }
+    if (b[91] != bat_probe_seen) {
+        bat_probe_seen = b[91];
+        if (((b[92] & 3) == 2) && (b[93] <= 24) && bat_reply_ok(b + 94, b[93])) {
+            bat_set(b + 94, true);
+        }
+    }
+}
 static String battery_json() {
-    if (!st_ok || !st_ext || (st[66] < 10) || (st[67] != 8) || (st[68] != 0x04) || (st[73] > 100) || !info_at) {
+    if (!st_ok || !st_ext || (bat_pct == 0xFF)) {
         return "null";
     }
-    uint16_t mv = (uint16_t) (st[75] << 8 | st[76]);
-    return "{\"pct\":" + String(st[73]) + ",\"mv\":" + String(mv) + ",\"age_s\":" + String(info_age_known ? (long) ((millis() - info_at) / 1000) : -1L) + "}";
+    return "{\"pct\":" + String(bat_pct) + ",\"mv\":" + String(bat_mv) + ",\"chg\":" + String(bat_chg) + ",\"age_s\":" + String(bat_age_known ? (long) ((millis() - bat_at) / 1000) : -1L) + "}";
 }
 
 // the mouse's reply to the status query (each refresh) and to the last probe, as they came (report ID first)
@@ -1534,6 +1584,7 @@ static void h_nvs() {
 }
 
 static void h_status() {
+    bat_polled_at = millis() | 1;  // fw88
     clock_sync();
     String j;
     j.reserve(6144);  // fw33: the body was ~3-3.6 KB (was 2200: dozens of reallocs per poll); fw47: ~5 KB with 24 cm/360 results and a curve
@@ -4111,6 +4162,35 @@ static void tdpi_probe_send() {
     }
 }
 
+// fw88: the battery again once a minute while a page (or BallSheet, or a script) polls: one status query (command 04)
+// through the Feather's probe slot. Not while the slot or the link is wanted by something else (the automatic stage's read,
+// the DPI restore, a queued command, a probe already waiting), the mouse is away or didn't answer the last read (asleep),
+// or a BallSheet test runs (nothing extra on the mouse's link while it measures). Its reply also shows as Diagnostics' probe.
+static void bat_tick() {
+    uint32_t now = millis();
+    if (!link_up || !st_ok || !st_ext || !(st[3] & 1) || (st[2] & 8) || (cq_n > 0) || tdpi_active || ((st[92] & 3) == 1)) {
+        return;
+    }
+    if ((auto_want != 0xFF) && ((auto_state == 0) || (auto_state == 1) || (auto_state == 5) || (auto_state == 8))) {
+        return;
+    }
+    if (dgt_on || cvt_off || cvt_cand || (cvt_keep_at && (now - cvt_keep_at < 12000))) {
+        return;
+    }
+    if (!bat_polled_at || (now - bat_polled_at > 10000) || (now - bat_asked_at < BAT_EVERY_MS) || (bat_age_known && (now - bat_at < BAT_EVERY_MS))) {
+        return;
+    }
+    uint8_t r[16] = { 0x04 };
+    uint8_t sum = 8;
+    for (int i = 0; i < 15; i++) {
+        sum += r[i];
+    }
+    r[15] = 0x55 - sum;
+    if (queue_cmd(C_RAW, r, 16)) {
+        bat_asked_at = now;
+    }
+}
+
 static void tdpi_tick() {
     if (tdpi_active && !tdpi_restore && (millis() - tdpi_keep_at > 12000)) {
         tdpi_restore = true;
@@ -5619,6 +5699,7 @@ void loop() {
     cv_tick();
     live_tick();
     tdpi_tick();
+    bat_tick();  // fw88
     if (ntp_want) {
         ntp_want = false;
         configTime(0, 0, "pool.ntp.org", "time.google.com");  // fw22: UTC; the page shows local time
