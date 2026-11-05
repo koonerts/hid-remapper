@@ -34,7 +34,8 @@ main{max-width:1080px;margin:0 auto;padding:4px 16px 72px}
 @media (max-width:560px){.dcgrid{grid-template-columns:repeat(6,minmax(0,1fr));gap:3px 4px}.dcgrid .mut{grid-column:1/-1;padding:2px 0 0}.dcgrid input{padding:5px 0;font-size:14px}}.cbm .use{color:var(--ok);font-size:12px}
 .cbm tr.ft td{border-bottom:0;padding-top:8px}.cbm tr.ft button{padding:3px 8px;font-size:12.5px}
 .chipb{font-size:12px;padding:2px 10px;border-radius:99px;color:var(--mut)}.chipb.on{background:var(--acc);border-color:var(--acc);color:var(--on)}
-.cols>.wide{grid-column:1/-1}
+.cols>.wide{grid-column:1/-1}.cols>.col{display:flex;flex-direction:column;min-width:0}
+.optp{grid-column:1/-1;display:grid;grid-template-columns:repeat(auto-fill,minmax(225px,1fr));gap:8px 22px}.optp>div{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}.optp>div>span:first-child{font-size:14px}
 .cbm td.rbt{text-align:center;white-space:nowrap}.cbm td.rbt span{display:inline-flex;gap:6px}
 #undobar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:70;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 10px 8px 14px;display:flex;align-items:center;gap:12px;box-shadow:0 6px 24px rgba(0,0,0,.35)}#undobar[hidden]{display:none}
 .jump{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0}.jump button{font-size:12.5px;padding:4px 10px;border-radius:99px}
@@ -188,13 +189,13 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <header class="bar"><div class="barin"><div class="barrow"><div class="chips"><span id="state" class="chips"><span class="chip">Connecting…</span></span><span id="sbar" class="chips"></span></div><span id="batbig" class="batbig" hidden></span></div>
 <nav class="tabs" role="tablist" aria-label="Sections"><button role="tab" id="tb-mouse" onclick="tabShow('mouse',1)">Mouse</button><button role="tab" id="tb-aim" onclick="tabShow('aim',1)">Aim</button><button role="tab" id="tb-setup" onclick="tabShow('setup',1)">Setup</button><button role="tab" id="tb-diag" onclick="tabShow('diag',1)">Diagnostics</button></nav></div></header>
 <main>
-<section class="tab" id="t-mouse" role="tabpanel"><div class="cols">
+<section class="tab" id="t-mouse" role="tabpanel"><div class="cols"><div class="col">
 <div class="card"><div class="hd"><h2>DPI stages</h2><span class="cur" id="cur"></span></div>
 <div id="rows"></div>
 <div class="row" style="margin-top:10px;justify-content:space-between"><div class="row"><button class="p" id="stApply" onclick="applyStages()" disabled>Apply</button><button id="stRevert" onclick="revert()" disabled>Revert</button></div>
 <label class="chk"><input type="checkbox" id="sepy" onchange="sepChange()"> Separate X / Y</label></div>
 <p class="mut" id="stnote">Tap a number to switch stage right away. Colour and DPI edits are sent when you press Apply.</p><p class="mut" id="hstnote" hidden>Under a stage, a lit host switches to it whenever the ATEN connects the mouse to that host: tap a host to move it here, tap it again to stop switching. Names and details are under Hosts.</p></div>
-
+</div><div class="col">
 <div class="card"><div class="hd"><h2>Sensor</h2></div>
 <p class="mut" id="sensok" hidden style="margin:0 0 10px"></p>
 <details id="evbox" hidden><summary id="evlast"></summary><ol id="evlist"></ol></details>
@@ -214,22 +215,24 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <div class="row"><button class="sq" onclick="step('pos',-1)" aria-label="Position down">−</button><input type="range" id="pos" min="-100" max="101" step="1" autocomplete="off" aria-label="Sensor position"><button class="sq" onclick="step('pos',1)" aria-label="Position up">+</button><button class="sq" id="phomeb" onclick="home('pos')" aria-label="Reset">↺</button></div></div></div></div>
 <p class="mut">Drag the sensor to move it, or the arrow's tip to turn it. Dashed: where the reset chords (and ↺) put it. The outline is a generic mouse, and position is in the Warg's own units, not mm.</p></div>
 
-<div class="card"><div class="hd"><h2>More mouse settings</h2></div>
+<div class="card" id="optcard"><div class="hd"><h2>More mouse settings</h2><button type="button" class="hlpb" onclick="hlpTog(this)">How it works</button></div>
 <p class="note" id="optnote" hidden></p>
 <div class="opt" id="pv">
 <span>Polling rate (Hz)</span><div class="seg" data-k="poll"><button data-v="125">125</button><button data-v="250">250</button><button data-v="500">500</button><button data-v="1000">1000</button><button data-v="2000">2000</button><button data-v="4000">4000</button><button data-v="8000">8000</button></div>
-<span>Lift-off distance (mm)</span><div class="seg" data-k="lod"><button data-v="0.7">0.7</button><button data-v="0.9">0.9</button><button data-v="1.2">1.2</button><button data-v="1.4">1.4</button><button data-v="1.6">1.6</button></div>
-<span>Motion Sync</span><div class="seg" data-k="sync"><button data-v="0">Off</button><button data-v="1">On</button></div>
-<span>Angle Snap</span><div class="seg" data-k="snap"><button data-v="0">Off</button><button data-v="1">On</button></div>
-<span>Left button SPDT</span><div class="seg" data-k="spdt_l"><button data-v="0">Off</button><button data-v="1">On</button></div>
-<span>Right button SPDT</span><div class="seg" data-k="spdt_r"><button data-v="0">Off</button><button data-v="1">On</button></div>
-<span title="On: the sensor stays in its corded run mode on wireless too (as when plugged in). G-Wolves 8K mice measured about 0.4-0.5 ms less motion delay wireless with it, for more battery use. Wired it changes nothing.">Competitive mode</span><div class="seg" data-k="comp"><button data-v="0">Off</button><button data-v="1">On</button></div>
-<span title="How long the mouse waits without use before it sleeps (30-600 s, in 10 s steps). The Feather first drops it to its lowest DPI stage after 2 min without use, so at 40,000 DPI sensor noise doesn't keep it awake: it sleeps about this long after that.">Sleep after (s)</span><span class="row" style="gap:6px;flex-wrap:nowrap"><input type="number" id="sleepin" min="30" max="600" step="10" style="width:6em" oninput="sleepDirty=true" onkeydown="if(event.key==='Enter')sleepSend()"><button type="button" id="sleepset" onclick="sleepSend()">Set</button></span>
-<span>Battery</span><span class="mut" id="batt">not read yet</span>
+<span title="Lift-off distance: how high the mouse can be lifted before the sensor stops tracking">Lift-off (mm)</span><div class="seg" data-k="lod"><button data-v="0.7">0.7</button><button data-v="0.9">0.9</button><button data-v="1.2">1.2</button><button data-v="1.4">1.4</button><button data-v="1.6">1.6</button></div>
+<div class="optp">
+<div><span>Motion Sync</span><div class="seg" data-k="sync"><button data-v="0">Off</button><button data-v="1">On</button></div></div>
+<div><span>Angle Snap</span><div class="seg" data-k="snap"><button data-v="0">Off</button><button data-v="1">On</button></div></div>
+<div><span>Left button SPDT</span><div class="seg" data-k="spdt_l"><button data-v="0">Off</button><button data-v="1">On</button></div></div>
+<div><span>Right button SPDT</span><div class="seg" data-k="spdt_r"><button data-v="0">Off</button><button data-v="1">On</button></div></div>
+<div><span title="On: the sensor stays in its corded run mode on wireless too (as when plugged in). G-Wolves 8K mice measured about 0.4-0.5 ms less motion delay wireless with it, for more battery use. Wired it changes nothing.">Competitive mode</span><div class="seg" data-k="comp"><button data-v="0">Off</button><button data-v="1">On</button></div></div>
+<div><span title="How long the mouse waits without use before it sleeps (30-600 s, in 10 s steps). The Feather first drops it to its lowest DPI stage after 2 min without use, so at 40,000 DPI sensor noise doesn't keep it awake: it sleeps about this long after that.">Sleep after (s)</span><span class="row" style="gap:6px;flex-wrap:nowrap"><input type="number" id="sleepin" min="30" max="600" step="10" style="width:4.6em" oninput="sleepDirty=true" onkeydown="if(event.key==='Enter')sleepSend()"><button type="button" id="sleepset" onclick="sleepSend()">Set</button></span></div>
 </div>
-<p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p>
-<p class="mut">Competitive mode keeps the sensor in its corded run mode on wireless: about 0.4-0.5 ms less motion delay in reviews of G-Wolves 8K mice, for more battery use. Through the Feather and the XIM that gain is small next to the 1 ms reports and the console's own polling.</p></div>
-</div></section>
+</div>
+<p class="mut hlp">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p>
+<p class="mut hlp">Competitive mode keeps the sensor in its corded run mode on wireless: about 0.4-0.5 ms less motion delay in reviews of G-Wolves 8K mice, for more battery use. Through the Feather and the XIM that gain is small next to the 1 ms reports and the console's own polling.</p>
+<p class="mut hlp" style="margin-bottom:0">Sleep after: how long the mouse waits without use before it sleeps. After 2 min without use the Feather first drops it to its lowest DPI stage (at 40,000 DPI sensor noise would keep it awake), so it sleeps about 2 min plus this after you stop. The battery is in the bar at the top (hover it for the voltage).</p></div>
+</div></div></section>
 <section class="tab" id="t-aim" role="tabpanel" hidden>
 <nav class="jump" aria-label="Aim sections"><button type="button" onclick="aimJump('dgc')">Direction gains</button><button type="button" onclick="aimJump('lvl')">Level swipes</button><button type="button" onclick="aimJump('cbsaved')">Calibration runs</button><button type="button" onclick="aimJump('c3card')">cm/360</button><button type="button" onclick="aimJump('cvcard')">Speed curve</button></nav>
 <div class="cols">
@@ -292,7 +295,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 </details>
 </div>
 </div></section>
-<section class="tab" id="t-setup" role="tabpanel" hidden><div class="cols">
+<section class="tab" id="t-setup" role="tabpanel" hidden><div class="cols"><div class="col">
 <div class="card" id="fchords"><div class="hd"><div><h2>Chords</h2><div class="mut">Hold one button, press another: what each pair does</div></div></div>
 <div id="ched" hidden>
 <p class="note" id="chnote" hidden></p>
@@ -303,10 +306,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 </div>
 <p class="mut" id="chstate"></p>
 <ul class="ch" id="chords"></ul>
-<h3 class="sub">Tuning</h3>
-<div class="tune" id="tune"></div>
-<div class="row" style="margin-top:12px"><button class="p" onclick="saveTune()">Save tuning</button></div></div>
-
+</div></div><div class="col">
 <div class="card"><div class="hd"><h2>Wi-Fi</h2><button onclick="post('/api/radio_off')">Turn off now</button></div>
 <p class="mut" id="radio" style="margin:0 0 12px"></p>
 <div class="opt"><span>Turns itself off</span><div class="seg" id="keep"><button data-m="0">after 10 min</button><button data-m="1">after 1 hour</button><button data-m="2">never</button></div></div>
@@ -315,6 +315,9 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut" style="margin:0 0 8px">The QT Py joins this network when its Wi-Fi comes on. 2.4 GHz only.</p>
 <input type="text" id="ssid" placeholder="Network name" aria-label="Network name"><div style="height:6px"></div><input type="password" id="pass" placeholder="Password" aria-label="Password">
 <div class="row" style="margin-top:8px"><button class="p" onclick="saveWifi()">Save and join</button></div></details></div>
+<div class="card" id="ftune"><div class="hd"><div><h2>Chord tuning</h2><div class="mut">Steps, reset positions and hold times the chords use</div></div></div>
+<div class="tune" id="tune"></div>
+<div class="row" style="margin-top:12px"><button class="p" onclick="saveTune()">Save tuning</button></div></div>
 <div class="card" id="fwfc"><div class="hd"><div><h2>Feather firmware</h2><div class="mut" id="fwfnow"></div></div></div>
 <p class="mut" id="fwfboot" style="margin:0 0 10px"></p>
 <div class="row"><input type="file" id="fwffile" accept=".uf2" aria-label="The Feather's _ota.uf2"><button onclick="fwfUpload()">Upload</button></div>
@@ -323,7 +326,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <progress id="fwfbar" max="100" value="0" style="width:100%;margin-top:10px" hidden></progress>
 <p class="mut" id="fwfstate" style="min-height:1.4em"></p>
 <p class="mut" style="margin:0">Over Wi-Fi, wherever the Feather is plugged in (Feather v40 and its bootloader). Upload the build's <b>_ota.uf2</b>; the Feather checks the whole copy before its bootloader copies it in, and a power cut midway only means it finishes at the next power-on. The mouse may stutter while it's sent (a minute or two), then the Feather restarts for a few seconds. First time only, over USB on FLOW: flash the <b>_gwboot.uf2</b>, then the <b>_ota.uf2</b>.</p></div>
-</div></section>
+</div></div></section>
 <section class="tab" id="t-diag" role="tabpanel" hidden><div class="cols">
 <div class="card" id="perfc"><div class="hd"><h2>Frame timing</h2><span class="mut">last second</span></div>
 <div id="perf" hidden>
@@ -999,7 +1002,7 @@ let cbFollowKey='';function cbFollow(){if(!S||!S.cv||!S.dg)return;const k=(S.cv.
 function batAge(a){return a<0?'at an unknown time (before the QT Py restarted)':a<60?'just now':a<3600?Math.round(a/60)+' min ago':(a/3600).toFixed(1)+' h ago'}
 function drawBat(){const bt=S&&S.battery,el=$('batbig');
 const tt=(bt?bt.pct+'%'+(bt.chg?' ⚡':'')+' · ':'')+'Warg settings';if(document.title!==tt)document.title=tt;
-$('batt').textContent=bt?bt.pct+'%'+(bt.chg?' · charging':'')+' · '+(bt.mv/1000).toFixed(2)+' V · read '+batAge(bt.age_s):'not read yet: move the mouse, then Read from mouse';
+if($('batt'))$('batt').textContent=bt?bt.pct+'%'+(bt.chg?' · charging':'')+' · '+(bt.mv/1000).toFixed(2)+' V · read '+batAge(bt.age_s):'not read yet: move the mouse, then Read from mouse';
 if(!bt){el.hidden=true;el.dataset.h='';return}
 const p=Math.max(0,Math.min(100,bt.pct)),w=(21*p/100).toFixed(1),old=bt.age_s<0||bt.age_s>=600,cls='batbig'+(p<=15?' bad':p<=30?' wn':'')+(old?' old':'');
 const h='<svg width="32" height="16" viewBox="0 0 32 16" aria-hidden="true"><rect class="bo" x="1" y="1.5" width="26" height="13" rx="3"/><rect class="bn" x="28" y="5" width="2.6" height="6" rx="1"/><rect class="bf" x="3.5" y="4" width="'+w+'" height="8" rx="1.5"/>'+(bt.chg?'<path class="bz" d="M15.5 2.5 L10 9 H13.6 L12.2 13.6 L18 7 H14.4 Z"/>':'')+'</svg><span>'+p+'%</span>'+(bt.age_s<0||bt.age_s>=180?'<span class="age">'+(bt.age_s<0?'age unknown':batAge(bt.age_s))+'</span>':'');
