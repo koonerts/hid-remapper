@@ -329,7 +329,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut" style="margin:0">Over Wi-Fi, wherever the Feather is plugged in (Feather v40 and its bootloader). Upload the build's <b>_ota.uf2</b>; the Feather checks the whole copy before its bootloader copies it in, and a power cut midway only means it finishes at the next power-on. The mouse may stutter while it's sent (a minute or two), then the Feather restarts for a few seconds. First time only, over USB on FLOW: flash the <b>_gwboot.uf2</b>, then the <b>_ota.uf2</b>.</p></div>
 </div></div></section>
 <section class="tab" id="t-diag" role="tabpanel" hidden><div class="cols">
-<div class="card" id="perfc"><div class="hd"><h2>Frame timing</h2><select id="ptwin" onchange="ptWinSet(this.value)" aria-label="Time window" style="width:auto"><option value="s">Last second</option><option value="m">Last minute</option><option value="h">Last hour</option><option value="d">Last 24 hours</option></select></div>
+<div class="card" id="perfc"><div class="hd"><h2>Frame timing</h2><span class="hdr"><span class="seg" id="ptkind" role="group" aria-label="Which frames"><button type="button" data-k="a" onclick="ptKindSet('a')">All</button><button type="button" data-k="i" onclick="ptKindSet('i')" title="Frames with the mouse still">Still</button><button type="button" data-k="m" onclick="ptKindSet('m')" title="Frames with the mouse moving: its smoothed speed at least 0.1 cm/s (the speed curve's still threshold)">Moving</button></span><select id="ptwin" onchange="ptWinSet(this.value)" aria-label="Time window" style="width:auto"><option value="s">Last second</option><option value="m">Last minute</option><option value="h">Last hour</option><option value="d">Last 24 hours</option></select></span></div>
 <div id="perf" hidden>
 <div class="bud tip" role="img" id="bud" onclick="ptHelp({title:PTIP.bar})"><i id="budw"></i><i id="buda"></i></div>
 <p class="mut" id="budt" style="margin:0"></p>
@@ -502,18 +502,24 @@ chord:'The chord-detection part of the remapping. The direction gains run after 
 tick:'From the tick to the moment that frame\'s report is built and queued: the remapping plus the short wait before the loop picks the tick up. The PC or XIM then reads it on its own 1 ms schedule (0 to 1 ms later, not shown). Over 1000 µs the next tick would come first and a frame would be skipped.',
 bar:'The share of each 1 ms frame the Feather is busy: USB interrupt plus frame finished. Dark: average over the chosen time (the last second unless picked otherwise); light: the worst frame in it.'};
 function ptHelp(tr){const p=$('pthelp'),s=tr?tr.title:'';p.hidden=!s||p.textContent===s;p.textContent=s}
-/* 11-05 (QT Py fw90): the card shows the last second (/api/status, every poll) or the last minute, hour or 24 hours
-   (/api/perfwin, kept on the QT Py since it started: fetched every 5 s, 15 s for the longer ones); the choice is kept */
-let ptw='s',ptData=null,ptAt=0,ptBusy=false;try{ptw=localStorage.getItem('ptwin')||'s'}catch(e){}
-const PTW={s:'second',m:'minute',h:'hour',d:'24 hours'};
+/* 11-05 (QT Py fw91, Feather v59): the card shows all frames, still ones or moving ones (moving: the mouse's smoothed speed
+   at the curve's still threshold or over), over the last second, minute, hour or 24 hours. All frames over the last second
+   come with every status poll; the rest from /api/perfwin (every second, 5 s for the minute, 15 s for the longer ones).
+   Both choices are kept per browser */
+let ptw='s',ptk='a',ptData=null,ptAt=0,ptBusy=false,ptSup=true;try{ptw=localStorage.getItem('ptwin')||'s';ptk=localStorage.getItem('ptkind')||'a'}catch(e){}
+const PTW={s:'second',m:'minute',h:'hour',d:'24 hours'},PTK={a:'all frames',i:'still frames',m:'moving frames'};
 function ptWinSet(w){ptw=PTW[w]?w:'s';try{localStorage.setItem('ptwin',ptw)}catch(e){}ptData=null;ptAt=0;if(S)drawPerf(S.perf)}
-function ptTick(){if(ptw==='s'||ptBusy||Date.now()-ptAt<(ptw==='m'?5000:15000))return;ptBusy=true;ptAt=Date.now();const w=ptw;
-fetch('/api/perfwin?w='+w,{cache:'no-store'}).then(r=>r.json()).then(d=>{if(w===ptw){ptData=d;if(S)drawPerf(S.perf)}}).catch(()=>{}).finally(()=>{ptBusy=false})}
+function ptKindSet(k){ptk=PTK[k]?k:'a';try{localStorage.setItem('ptkind',ptk)}catch(e){}ptData=null;ptAt=0;if(S)drawPerf(S.perf)}
+function ptOwn(){return ptSup&&!(ptw==='s'&&ptk==='a')}
+function ptTick(){if(!ptOwn()||ptBusy||Date.now()-ptAt<(ptw==='s'?900:ptw==='m'?5000:15000))return;ptBusy=true;ptAt=Date.now();const w=ptw,k=ptk;
+fetchJ('/api/perfwin?w='+w+'&k='+k,{cache:'no-store'}).then(d=>{if(d&&d.sup===false){ptSup=false;ptData=null}else if(w===ptw&&k===ptk)ptData=d;if(S)drawPerf(S.perf)}).catch(()=>{}).finally(()=>{ptBusy=false})}
 function ptSpan(s){return s<90?Math.round(s)+' s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h'}
-function drawPerf(pf){const sel=$('ptwin');if(sel.value!==ptw)sel.value=ptw;let pr=S&&S.prof,win=null;
-if(ptw!=='s'&&pf){ptTick();if(ptData&&ptData.n&&ptData.perf){win=ptData;pf=ptData.perf;pr=ptData.prof}}
-const el=$('perf');el.hidden=!pf;$('perfnone').hidden=!!pf;if(!pf)return;const v19=pf.missed_1s!==undefined||pf.missed!==undefined,f=x=>us(x)+' µs';
-const wl=win?'the last '+PTW[ptw]:'the last second';
+function drawPerf(pf){const sel=$('ptwin');if(sel.value!==ptw)sel.value=ptw;document.querySelectorAll('#ptkind button').forEach(b=>b.classList.toggle('on',b.dataset.k===ptk));
+let pr=S&&S.prof,win=null,none='';
+if(pf&&ptOwn()){ptTick();if(ptData&&ptData.sup){win=ptData;if(ptData.perf){pf=ptData.perf;pr=ptData.prof}else{none=ptData.n?'No '+PTK[ptk]+' in the last '+PTW[ptw]+'.':'No data for the last '+PTW[ptw]+' yet.';pf=null}}else{none='Loading '+PTK[ptk]+' over the last '+PTW[ptw]+'…';pf=null}}
+const pn=$('perfnone');pn.textContent=none||'Needs Feather firmware v19 or later.';
+const el=$('perf');el.hidden=!pf;pn.hidden=!!pf;if(!pf)return;const v19=pf.missed_1s!==undefined||pf.missed!==undefined,f=x=>us(x)+' µs';
+const wl='the last '+(win?PTW[ptw]:'second');
 const rows=[];if(v19)rows.push(['USB to the mouse','1 ms interrupt',f(pf.usb_avg_us),f(pf.usb_max_us),0,PTIP.usb]);
 rows.push(['Remapping','',pf.avg_us.toFixed(1)+' µs',pf.max_us+' µs',0,PTIP.remap]);rows.push(['chord check','',pf.chords_avg_us.toFixed(1)+' µs',pf.chords_max_us+' µs',1,PTIP.chord]);
 if(v19)rows.push(['Frame finished','after its tick',f(pf.tick_avg_us),f(pf.tick_max_us),0,PTIP.tick]);
@@ -521,8 +527,9 @@ $('ptb').innerHTML=rows.map(r=>'<tr class="tip" title="'+esc(r[5])+'" onclick="p
 const a=v19?pf.usb_avg_us+pf.tick_avg_us:pf.avg_us,w=v19?pf.usb_max_us+pf.tick_max_us:pf.max_us,pa=Math.min(100,a/10),pw=Math.min(100,w/10);
 $('buda').style.width=pa+'%';$('budw').style.width=pw+'%';
 const s='Each 1 ms frame: '+Math.round(pa)+'% used on average, '+Math.round(pw)+'% at worst'+(v19?'':' (remapping only; Feather v19 measures the whole frame)')+'.';$('budt').textContent=s;$('bud').setAttribute('aria-label',s);$('bud').title=PTIP.bar;
-const ps=$('pskip');ps.hidden=!v19;if(v19){const m=win?pf.missed:pf.missed_1s,full=win&&(ptw==='m'?win.span_s>=55:ptw==='h'?win.span_s>=3540:win.span_s>=85800);
-ps.textContent='Frames skipped: '+(!win&&m>=255?'255+':m)+' in '+wl+(win&&!full?' (the QT Py has kept '+ptSpan(win.span_s)+' so far, since it started)':'')+' · '+pf.missed_total+' since the Feather started (plugging in or switching to a device pauses it about half a second).'+(ptw!=='s'&&!win?' Loading the '+PTW[ptw]+'…':'');ps.classList.toggle('bad',m>0)}
+const ps=$('pskip');ps.hidden=!v19;if(v19){const m=win?win.missed:pf.missed_1s,lack=win&&ptw!=='s'&&win.n<win.win_s-5,K=PTK[ptk];
+const share=win&&ptk!=='a'?K[0].toUpperCase()+K.slice(1)+': '+win.frames.toLocaleString()+' of '+win.frames_all.toLocaleString()+' ('+(win.frames_all?(100*win.frames/win.frames_all).toFixed(win.frames*100<win.frames_all?2:1):0)+'%). ':'';
+ps.textContent=share+'Frames skipped'+(win&&ptk!=='a'?' (all frames)':'')+': '+(!win&&m>=255?'255+':m)+' in '+wl+(lack?' (data for '+ptSpan(win.n)+' of it: kept since the QT Py started, and not while the Feather was out of reach)':'')+' · '+pf.missed_total+' since the Feather started (plugging in or switching to a device pauses it about half a second).'+(!ptSup&&(ptw!=='s'||ptk!=='a')?' Longer times and still / moving frames need Feather firmware v59 (QT Py firmware 91).':'');ps.classList.toggle('bad',m>0)}
 drawProf(pr,win?PTW[ptw]:'second')}
 // 11-04 (Feather v51+, QT Py fw83+): each part of the frame, from the Feather's profile block (/api/status prof), in frame
 // order; parts 13-19 are inside the housekeeping row

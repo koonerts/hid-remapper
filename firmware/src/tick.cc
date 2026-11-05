@@ -10,7 +10,7 @@ static volatile bool tick_pending = false;
 static volatile uint32_t tick_set_at = 0;
 static uint32_t tick_taken_at = 0;
 static volatile uint32_t merged = 0;
-static volatile uint32_t sof_sum = 0, sof_n = 0, sof_max = 0;
+static volatile uint32_t sof_sum = 0, sof_n = 0, sof_max = 0, sof_last = 0;
 
 void tick_init() {
     critical_section_init(&crit_sec);
@@ -48,11 +48,16 @@ uint32_t ticks_merged() {
 
 // called from the SOF interrupt only, so nothing else updates these at the same time
 void __no_inline_not_in_flash_func(tick_sof_time)(uint32_t us) {
+    sof_last = us;  // gw v59
     sof_sum += us;
     sof_n++;
     if (us > sof_max) {
         sof_max = us;
     }
+}
+
+uint32_t tick_sof_last(void) {
+    return sof_last;
 }
 
 void tick_sof_take(uint32_t* sum, uint32_t* n, uint32_t* max) {
