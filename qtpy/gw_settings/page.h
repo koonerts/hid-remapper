@@ -223,9 +223,12 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <span>Angle Snap</span><div class="seg" data-k="snap"><button data-v="0">Off</button><button data-v="1">On</button></div>
 <span>Left button SPDT</span><div class="seg" data-k="spdt_l"><button data-v="0">Off</button><button data-v="1">On</button></div>
 <span>Right button SPDT</span><div class="seg" data-k="spdt_r"><button data-v="0">Off</button><button data-v="1">On</button></div>
+<span title="On: the sensor stays in its corded run mode on wireless too (as when plugged in). G-Wolves 8K mice measured about 0.4-0.5 ms less motion delay wireless with it, for more battery use. Wired it changes nothing.">Competitive mode</span><div class="seg" data-k="comp"><button data-v="0">Off</button><button data-v="1">On</button></div>
+<span title="How long the mouse waits without use before it sleeps (30-600 s, in 10 s steps). The Feather first drops it to its lowest DPI stage after 2 min without use, so at 40,000 DPI sensor noise doesn't keep it awake: it sleeps about this long after that.">Sleep after (s)</span><span class="row" style="gap:6px;flex-wrap:nowrap"><input type="number" id="sleepin" min="30" max="600" step="10" style="width:6em" onkeydown="if(event.key==='Enter')sleepSend()"><button type="button" id="sleepset" onclick="sleepSend()">Set</button></span>
 <span>Battery</span><span class="mut" id="batt">not read yet</span>
 </div>
-<p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p></div>
+<p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p>
+<p class="mut">Competitive mode keeps the sensor in its corded run mode on wireless: about 0.4-0.5 ms less motion delay in reviews of G-Wolves 8K mice, for more battery use. Through the Feather and the XIM that gain is small next to the 1 ms reports and the console's own polling.</p></div>
 </div></section>
 <section class="tab" id="t-aim" role="tabpanel" hidden>
 <nav class="jump" aria-label="Aim sections"><button type="button" onclick="aimJump('dgc')">Direction gains</button><button type="button" onclick="aimJump('lvl')">Level swipes</button><button type="button" onclick="aimJump('cbsaved')">Calibration runs</button><button type="button" onclick="aimJump('c3card')">cm/360</button><button type="button" onclick="aimJump('cvcard')">Speed curve</button></nav>
@@ -445,7 +448,15 @@ if(!o){note.hidden=false;note.textContent=S.link?'These need Feather firmware v1
 btns.forEach(b=>b.disabled=false);
 document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>{const k=seg.dataset.k;const v=o[k];
 seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',v!==null&&v!==undefined&&(typeof v==='boolean'?(b.dataset.v==='1')===v:Number(b.dataset.v)===v)))});
-const missing=Object.values(o).some(v=>v===null);note.hidden=!missing;if(missing)note.textContent='Some of these haven\'t been read from the mouse yet: press Read from mouse.'}
+/* 11-05 (Feather v58, QT Py fw89): competitive mode and the sleep time; older Feather firmware: shown, not usable */
+const xs=!!o.xsup,si=$('sleepin'),old=xs?'':'Needs Feather firmware v58';
+document.querySelectorAll('#pv .seg[data-k="comp"] button').forEach(b=>{b.disabled=!xs;b.title=old});si.disabled=!xs;$('sleepset').disabled=!xs;si.title=old;
+if(document.activeElement!==si){si.value=o.sleep==null?'':o.sleep;si.placeholder=xs?'not read':'v58'}
+const missing=Object.entries(o).some(([k,v])=>v===null&&(xs||(k!=='sleep'&&k!=='comp')));note.hidden=!missing;if(missing)note.textContent='Some of these haven\'t been read from the mouse yet: press Read from mouse.'}
+function sleepSend(){if(!S||!S.opt||!S.opt.xsup)return;const si=$('sleepin'),v=Math.round(Number(si.value)/10)*10;
+if(!(v>=30&&v<=600)){toast('Sleep time: 30-600 s, in 10 s steps',1);return}
+const prev=S.opt.sleep;optSet.sleep={v:v,t:Date.now()};S.opt.sleep=v;si.blur();drawOpt();
+post('/api/opt?k=sleep&v='+v).then(r=>{say(r,'Sent to the mouse: sleeps after '+v+' s');if(!r.ok){delete optSet.sleep;if(S.opt)S.opt.sleep=prev;drawOpt()}})}
 // ---- chord editor (Feather v15+): rows of [first button, second button, tap, hold, ms]
 const BTN=['','Left','Right','Middle','Back','Forward','Wheel'];
 const ACT=['Nothing','Next DPI stage','Previous DPI stage','DPI stage 1','DPI stage 2','DPI stage 3','DPI stage 4','DPI stage 5','Angle up','Angle down','Angle reset','Position up (toward the back)','Position down (toward the front)','Position reset','Wi-Fi on/off','Motion Sync on/off','Angle Snap on/off','Lift-off distance: next'];
@@ -1042,7 +1053,7 @@ if(k==='spdt_l'||k==='spdt_r'){if(S.opt.spdt_l===null||S.opt.spdt_r===null){toas
 const l=k==='spdt_l'?val==='1':S.opt.spdt_l,r=k==='spdt_r'?val==='1':S.opt.spdt_r;
 if(!l&&!r){toast('Both SPDT off isn\'t supported yet (not in the captures)',1);return}
 set.spdt_l=l;set.spdt_r=r;key='spdt';val=(l?1:0)|(r?2:0)}
-else set[k]=(k==='snap'||k==='sync')?val==='1':Number(val);
+else set[k]=(k==='snap'||k==='sync'||k==='comp')?val==='1':Number(val);
 const prev={};for(const x in set){prev[x]=S.opt[x];optSet[x]={v:set[x],t:now};S.opt[x]=set[x]}drawOpt();
 post('/api/opt?k='+key+'&v='+val).then(r=>{say(r,'Sent to the mouse');if(!r.ok){for(const x in set){delete optSet[x];if(S.opt)S.opt[x]=prev[x]}drawOpt()}})}}));
 document.querySelectorAll('#keep button').forEach(b=>{b.onclick=()=>post('/api/wifimode?m='+b.dataset.m).then(r=>say(r,'Saved'))});

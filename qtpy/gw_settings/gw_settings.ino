@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 88    // this firmware's number, shown in /api/status; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 89    // this firmware's number, shown in /api/status; fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -1211,6 +1211,11 @@ static String opt_json() {
     o += ",\"sync\":" + String((known & 8) ? (st[60] ? "true" : "false") : "null");
     o += ",\"spdt_l\":" + String((known & 16) ? ((st[61] & 1) ? "true" : "false") : "null");
     o += ",\"spdt_r\":" + String((known & 16) ? ((st[61] & 2) ? "true" : "false") : "null");
+    // fw89 (Feather v58): sleep time (s) and competitive mode, at 236-237 of the recent-actions block (evb 44-45)
+    bool x = (st[56] >= 58);
+    o += ",\"xsup\":" + String(x ? "true" : "false");
+    o += ",\"sleep\":" + ((x && ev_ok && (known & 32) && (evb[44] >= 3) && (evb[44] <= 60)) ? String(evb[44] * 10) : String("null"));
+    o += ",\"comp\":" + String((x && ev_ok && (known & 64) && (evb[45] <= 1)) ? (evb[45] ? "true" : "false") : "null");
     return o + "}";
 }
 
@@ -1361,6 +1366,16 @@ static void h_opt() {
         }
         d[0] = 4;
         d[1] = b;
+    } else if ((k == "sleep") || (k == "comp")) {  // fw89: Feather v58
+        if (st[56] < 58) {
+            return ok_json(false, "needs Feather firmware v58");
+        }
+        long b;
+        if ((k == "sleep") ? (!arg_int("v", 30, 600, &b) || (b % 10)) : !arg_int("v", 0, 1, &b)) {
+            return ok_json(false, (k == "sleep") ? "sleep time: 30-600 s in 10 s steps" : "bad value");
+        }
+        d[0] = (k == "sleep") ? 5 : 6;
+        d[1] = (k == "sleep") ? b / 10 : b;
     } else {
         return ok_json(false, "unknown setting");
     }

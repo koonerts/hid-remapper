@@ -614,6 +614,8 @@ static void dpi_tick(uint32_t now) {
 #define RS_ADDR_LOD 0x000a   // lift-off distance: 1 = 0.7 mm, 2 = 0.9, 3 = 1.2, 4 = 1.4, 5 = 1.6
 #define RS_ADDR_SYNC 0x00ab  // Motion Sync 0/1
 #define RS_ADDR_SNAP 0x00af  // Angle Snap 0/1
+#define RS_ADDR_SLEEP 0x00ad  // v58: sleep time in 10 s steps, 3-60 (30-600 s; warg-dongle-sleep-timer-80-125--30-600-90.txt, 11-05)
+#define RS_ADDR_COMP 0x00e1   // v58: competitive mode 0 off, 1 on (warg-competitive-mode-on-off-on.txt, 11-05)
 #define RS_DPI_STAGES 5  // as configured on the Warg (1600/5000/10000/20000/40000); not read yet
 #define RS_DPI_MIN 50
 #define RS_DPI_MAX 50000
@@ -859,6 +861,7 @@ static RsSetting rs_settings[RS_SETTINGS] = {
 
 // ---- recent actions (v21): what changed what, newest first in the status block's last 64 bytes
 #define GW_EVENTS 8
+#define GW_EVENTS_SENT 7  // v58: the status block has room for the newest 7 (bytes 236-237: options 5-6)
 #define EV_VALUE_UNKNOWN 0x7F
 #define GW_SRC_PAGE 6     // buttons byte = the link command, value = what it set
 #define GW_SRC_ASSUMED 7  // a setting assumed after an unanswered read (buttons byte = 1 angle, 2 position)
@@ -1068,12 +1071,20 @@ enum class RsRead : uint8_t {
 };
 
 // The QT Py page's "refresh": stage, angle, position, the 5 colours, the 5 DPI table entries.
-// Then the five option bytes (rs_opt_addr order), then the status query.
-#define RS_OPTS 5
+// Then the option bytes (rs_opt_addr order: v58 added sleep time and competitive mode), then the status query.
+#define RS_OPTS 7
 #define RS_REFRESH_ITEMS (3 + 2 * RS_DPI_STAGES + RS_OPTS + 1)
-static const uint16_t rs_opt_addr[RS_OPTS] = { RS_ADDR_POLL, RS_ADDR_LOD, RS_ADDR_SNAP, RS_ADDR_SYNC, RS_ADDR_SPDT };
+static const uint16_t rs_opt_addr[RS_OPTS] = { RS_ADDR_POLL, RS_ADDR_LOD, RS_ADDR_SNAP, RS_ADDR_SYNC, RS_ADDR_SPDT, RS_ADDR_SLEEP, RS_ADDR_COMP };
 static uint8_t rs_opt_val[RS_OPTS];
 static uint8_t rs_opt_known = 0;  // bit n = rs_opt_val[n] read from or written to the mouse
+static uint8_t rs_opt_xseq = 0;   // v58: changes to options 5-6 (their bytes are in the 192-255 block: byte 117's counter)
+static void rs_opt_set(uint8_t k, uint8_t v) {
+    if ((k >= 5) && (!(rs_opt_known & (1 << k)) || (rs_opt_val[k] != v))) {
+        rs_opt_xseq++;
+    }
+    rs_opt_val[k] = v;
+    rs_opt_known |= 1 << k;
+}
 
 
 // only the values the web driver itself writes; reading, SPDT 0 (both off) is accepted too, since the
@@ -1085,6 +1096,8 @@ static bool rs_opt_ok(uint8_t k, uint8_t v, bool write = true) {
         case 2:
         case 3: return v <= 1;
         case 4: return write ? ((v >= 1) && (v <= 3)) : (v <= 3);
+        case 5: return (v >= 3) && (v <= 60);  // v58: sleep time, 10 s steps
+        case 6: return v <= 1;                 // v58: competitive mode
         default: return false;
     }
 }
@@ -1511,8 +1524,7 @@ static void rs_refresh_done(bool ok, const uint8_t* d) {
     } else {
         int k = item - 3 - 2 * RS_DPI_STAGES;
         if (rs_opt_ok(k, d[0], false)) {  // anything else stays unknown
-            rs_opt_val[k] = d[0];
-            rs_opt_known |= 1 << k;
+            rs_opt_set(k, d[0]);
         }
     }
     if (current) {
@@ -1756,7 +1768,7 @@ static void rs_tick(uint32_t now) {
 //   angle step, position step, angle home, position home, flash ms, position-reset hold ms, wheel
 //   hold ms, radio hold ms)   55 last command seq applied   56 firmware version
 //   57-61 option bytes as the mouse stores them (rs_opt_addr order: polling, lift-off, Angle Snap,
-//   Motion Sync, SPDT)   62 bit n = option n known   63 crc8 of 0-62
+//   Motion Sync, SPDT)   62 bit n = option n known (v58: bits 5-6 = sleep time, competitive mode at 236-237)   63 crc8 of 0-62
 // Bytes 64-127 (v14+; a QT Py reading only 64 bytes sees the block above unchanged):
 //   64 'X'   65 status query reply count   66 its length (0 = none)   67-83 the reply (report ID first,
 //   17 bytes at most)   84-85 average processing time per frame over the last second (0.1 us)
@@ -1774,14 +1786,15 @@ static void rs_tick(uint32_t now) {
 // Bytes 128-191 (v15+; read only when byte 124 changes): 128 'C'   129 chord table number   130 count
 //   131-190 the rules, 5 bytes each (gw_rule_t), unused ones 0   191 crc8 of 128-190
 // Bytes 192-255 (v21+; read when byte 117's high nibble, a counter of changes, moves): 192 'E'   193 count (at most 8)
-//   194-241 the recent actions, newest first, 6 bytes each: age in s (uint16, at most 65535), source (GW_SRC_*: 1 chord tap,
+//   194-241 the recent actions, newest first, 6 bytes each (v58: at most 7, 194-235; 236 sleep time in 10 s steps, 237
+//   competitive mode, both as the mouse stores them and valid with byte 62 bits 5-6; 238-241 0): age in s (uint16, at most 65535), source (GW_SRC_*: 1 chord tap,
 //   2 hold, 3 double tap, 4 wheel up, 5 wheel down, 6 page, 7 assumed after an unanswered read, 8 the mouse's value taken
 //   after writes didn't take, 9 written again once the mouse woke), buttons (chord: modifier << 4 | trigger; page: the
 //   command; 7-9: 1 angle, 2 position), action (GA_*), value after it (int8: angle/position, the stage for a page stage;
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 57  // v57: the speed curve's carried fraction in Q32, exact (v54-v56's Q16 rounded ties up: +3 counts per million frames toward +x/+y at 50 counts a frame; gwtest curve_bias); a changed curve or slow-down table keeps the speed, the carry and the stroke (only a new tau or turning on/off starts over); v56: the mouse's reports parse faster (get_bits whole bytes at once, do_handle_received_report from RAM; the same values); v55: the profile also times the main loop pass that takes the frame's tick (USB host task, report parsing, the G-Wolves hook, the wait before it); v54: the speed curve with fewer soft-float calls: cached 1000/dt and 2.54/dpi, the segments' slopes, slow-down thresholds per stroke, the carried fraction in Q16 (output within 1 count of v53 a frame: gwtest curve_round; its rounded-up ties drift, fixed in v57); v53: the mappings loop walks a flat list of the plain mappings' inputs; the speed curve runs from RAM and caches its expf, motion length and table steps (output bit for bit the same: gwtest maptest53, curve_diff, curve_probe); v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
+#define GW_FW_VERSION 58  // v58: the mouse's sleep time (0x00ad, 10 s steps) and competitive mode (0x00e1) as options 5-6: refresh reads them, LINK_SET_OPTION writes them, status 236-237 (recent actions sent: 7, not 8); v57: the speed curve's carried fraction in Q32, exact (v54-v56's Q16 rounded ties up: +3 counts per million frames toward +x/+y at 50 counts a frame; gwtest curve_bias); a changed curve or slow-down table keeps the speed, the carry and the stroke (only a new tau or turning on/off starts over); v56: the mouse's reports parse faster (get_bits whole bytes at once, do_handle_received_report from RAM; the same values); v55: the profile also times the main loop pass that takes the frame's tick (USB host task, report parsing, the G-Wolves hook, the wait before it); v54: the speed curve with fewer soft-float calls: cached 1000/dt and 2.54/dpi, the segments' slopes, slow-down thresholds per stroke, the carried fraction in Q16 (output within 1 count of v53 a frame: gwtest curve_round; its rounded-up ties drift, fixed in v57); v53: the mappings loop walks a flat list of the plain mappings' inputs; the speed curve runs from RAM and caches its expf, motion length and table steps (output bit for bit the same: gwtest maptest53, curve_diff, curve_probe); v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps
@@ -1797,7 +1810,7 @@ extern const char gw_fw_tag[] = "GWFW:v" GW_STR(GW_FW_VERSION) ";";
 #define LINK_REFRESH 0x08          // [] read stage, angle, position, colours, DPI table from the mouse
 #define LINK_FLASH 0x09            // [R,G,B] test flash
 #define LINK_PALETTE_DEFAULT 0x0A  // [R,G,B x5] built-in palette only (QT Py restoring it after a reboot)
-#define LINK_SET_OPTION 0x0B       // [option 0-4 (rs_opt_addr order), value as the mouse stores it]
+#define LINK_SET_OPTION 0x0B       // [option 0-6 (rs_opt_addr order; v58: 5 sleep time 3-60, 6 competitive 0/1), value as the mouse stores it]
 #define LINK_RAW 0x0C              // [16 bytes of report 8: a read (08) or the status query (04) only]
 #define LINK_SET_CHORDS 0x0D       // [part, total, rules] (gw_chords_link): the chord table, kept in flash
 #define LINK_SET_DIRGAIN 0x0E      // v24: [on, 8 gains uint16 per mille] sensitivity per direction (gw_dirgain.cc), RAM only
@@ -2013,10 +2026,10 @@ void gw_link_status(uint8_t* s) {
     put16(s + 53, tune.radio_hold_ms);
     s[55] = link_seq;
     s[56] = GW_FW_VERSION;
-    for (int k = 0; k < RS_OPTS; k++) {
+    for (int k = 0; k < 5; k++) {  // v58: options 5-6 are at 236-237
         s[57 + k] = rs_opt_val[k];
     }
-    s[62] = rs_opt_known;
+    s[62] = rs_opt_known;  // v58: bits 5-6 too
     s[63] = gw_crc8(s, 63);
     s[64] = 'X';
     s[65] = rs_info_seq;
@@ -2034,7 +2047,7 @@ void gw_link_status(uint8_t* s) {
     s[116] = sof_peak4;
     s[117] = (rs_settings[RS_ANGLE].confirmed ? 1 : 0) | (rs_settings[RS_POS].confirmed ? 2 : 0) |
              (rs_settings[RS_ANGLE].rewrite_on_wake ? 4 : 0) | (rs_settings[RS_POS].rewrite_on_wake ? 8 : 0) |
-             (uint8_t) (((ev_seq + gw_hostcap_seq() + gw_turn_seq()) & 0x0F) << 4);  // v21: changes to the recent actions (192-255), v23 also to the host capture (256-511); before the crc at 127
+             (uint8_t) (((ev_seq + gw_hostcap_seq() + gw_turn_seq() + rs_opt_xseq) & 0x0F) << 4);  // v58: + options 5-6  // v21: changes to the recent actions (192-255), v23 also to the host capture (256-511); before the crc at 127
     s[91] = rs_raw_seq;
     s[92] = rs_raw_state;
     s[93] = (rs_raw_len > 17) ? 17 : rs_raw_len;
@@ -2056,8 +2069,8 @@ void gw_link_status(uint8_t* s) {
     s[191] = gw_crc8(s + 128, 63);
     // v21: the recent actions, newest first; the QT Py reads this part when byte 117's high nibble changes
     s[192] = 'E';
-    s[193] = ev_n;
-    for (uint8_t k = 0; k < ev_n; k++) {
+    s[193] = (ev_n > GW_EVENTS_SENT) ? GW_EVENTS_SENT : ev_n;  // v58: the newest 7 (236-241 hold options 5-6)
+    for (uint8_t k = 0; k < s[193]; k++) {
         const GwEvent& e = ev[(ev_head + GW_EVENTS - 1 - k) % GW_EVENTS];
         uint8_t* q = s + 194 + 6 * k;
         uint32_t age = ev_secs - e.sec;
@@ -2067,6 +2080,9 @@ void gw_link_status(uint8_t* s) {
         q[4] = e.action;
         q[5] = (uint8_t) e.value;
     }
+    s[236] = rs_opt_val[5];  // v58: sleep time (10 s steps), valid with byte 62 bit 5
+    s[237] = rs_opt_val[6];  // v58: competitive mode, valid with byte 62 bit 6
+    memset(s + 238, 0, 4);
     gw_dirgain_status(s + 242);  // v24: 242 bit 0 applying, bit 1 got a table; 243 crc8 of the gains as received
     s[244] = gw_hostcap_upd();  // v26: the capture block's change counter and capture number (= its bytes 258 and 257)
     s[245] = gw_hostcap_id();
@@ -2263,8 +2279,7 @@ bool gw_link_apply(const uint8_t* f, uint8_t n, uint32_t now) {
         case LINK_SET_OPTION:
             if ((len == 2) && rs && (d[0] < RS_OPTS) && rs_opt_ok(d[0], d[1])) {
                 rs_write_value(rs_opt_addr[d[0]], d[1]);
-                rs_opt_val[d[0]] = d[1];
-                rs_opt_known |= 1 << d[0];
+                rs_opt_set(d[0], d[1]);
 
             }
             break;
