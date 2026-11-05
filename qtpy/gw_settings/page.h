@@ -171,6 +171,7 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 #pskip.bad{color:var(--bad)}.tip{cursor:help}.pt tr.tip td:first-child{text-decoration:underline dotted var(--mut);text-underline-offset:3px}
 #lvc{display:block;width:100%;height:220px;background:#000;border:1px solid var(--line);border-radius:10px;cursor:crosshair;touch-action:none}
 #lvwrap{position:relative}#lvhint{display:none;position:absolute;top:14px;left:0;right:0;text-align:center;color:#bbb;font-size:14px;pointer-events:none}
+@media (min-width:900px){.cols.aimtop{grid-template-columns:minmax(0,3fr) minmax(0,2fr);align-items:stretch}.cols.aimtop>#lvl{display:flex;flex-direction:column}.cols.aimtop #lvwrap:not(.full){flex:1;min-height:220px}.cols.aimtop #lvwrap:not(.full) #lvc{position:absolute;inset:0;height:100%}}
 #lvwrap.full{position:fixed;inset:0;z-index:1000;background:#000}#lvwrap.full #lvc{height:100vh;border:0;border-radius:0;cursor:none}#lvwrap.full #lvhint{display:block}
 #lvr b{color:var(--fg)}#evbox summary{cursor:pointer;color:var(--mut)}#evlist{margin:6px 0 0;padding-left:18px;color:var(--mut)}#evlist li{margin:2px 0}
 .edday{font-size:12px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.04em;margin:12px 0 2px}.edday:first-child{margin-top:6px}
@@ -235,7 +236,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 </div></div></section>
 <section class="tab" id="t-aim" role="tabpanel" hidden>
 <nav class="jump" aria-label="Aim sections"><button type="button" onclick="aimJump('dgc')">Direction gains</button><button type="button" onclick="aimJump('lvl')">Level swipes</button><button type="button" onclick="aimJump('cbsaved')">Calibration runs</button><button type="button" onclick="aimJump('c3card')">cm/360</button><button type="button" onclick="aimJump('cvcard')">Speed curve</button></nav>
-<div class="cols">
+<div class="cols aimtop">
 <div class="card" id="dgc" hidden><div class="hd"><h2>Direction sensitivity</h2><span class="hdr"><span class="cur" id="dgst"></span><button type="button" class="hlpb" onclick="hlpTog(this)">How it works</button></span></div>
 <p class="mut" style="margin:0 0 8px">A sensitivity per direction, like PureVector: more where you fall short, less where you overshoot.<span class="hlp"> Calibrate with flicks (here or in BallSheet), or drag the points. 1.00 everywhere changes nothing.</span></p>
 <div class="dgrow"><svg id="dgsvg" viewBox="-180 -180 360 360" aria-label="Sensitivity per direction: drag a point outwards for more"></svg><div class="dgvals" id="dgvals"></div></div>
@@ -1084,7 +1085,7 @@ document.addEventListener('pointerlockchange',()=>{if(lvOn&&document.pointerLock
 document.addEventListener('keydown',e=>{if(lvOn&&e.key==='Escape')lvStop()});
 // screen angle of the swipes (y down, so negative = rising to the right)
 function lvTheta(m){return .5*Math.atan2(2*m.sxy,m.sxx-m.syy)}
-function lvDraw(){const W=LV.clientWidth,H=LV.clientHeight,d=devicePixelRatio||1;if(LV.width!==Math.round(W*d)){LV.width=Math.round(W*d);LV.height=Math.round(H*d)}
+function lvDraw(){const W=LV.clientWidth,H=LV.clientHeight,d=devicePixelRatio||1;if(LV.width!==Math.round(W*d)||LV.height!==Math.round(H*d)){LV.width=Math.round(W*d);LV.height=Math.round(H*d)}
 const c=LV.getContext('2d');c.setTransform(d,0,0,d,0,0);c.clearRect(0,0,W,H);if(!lv||lv.pts.length<2)return;
 let x0=1/0,x1=-1/0,y0=1/0,y1=-1/0,cx=0,cy=0;for(const[x,y]of lv.pts){x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);cx+=x;cy+=y}cx/=lv.pts.length;cy/=lv.pts.length;
 // the same scale on both axes, so a tilt looks as big as it is
