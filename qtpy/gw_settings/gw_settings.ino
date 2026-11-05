@@ -83,7 +83,7 @@ static bool info_first = true;       // the first status after a restart: a repl
 static bool info_age_known = false;
 // fw88: the battery, from whichever status query (command 04) answered last: the refresh's (info, st 67-) or the QT Py's
 // own once a minute while something polls (a probe, st 94-). Reply: 08 04 00 00 00 02 | pct | chg | mV (big-endian).
-// chg: 1 while the cable charges it (seen 11-05 at 65-95 %, voltage rising), 0 off the cable (10-09, 100 %); inferred.
+// chg: 1 while the cable charges it, 0 off the cable or full (11-05: 1 at 65-95 % on the cable, 0 from 100 %; the user confirmed it was plugged in, then unplugged).
 static uint8_t bat_pct = 0xFF, bat_chg = 0;  // 0xFF = not read yet
 static uint16_t bat_mv = 0;
 static uint32_t bat_at = 0;        // millis() when read
