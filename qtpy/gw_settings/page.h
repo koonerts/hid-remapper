@@ -224,7 +224,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <span>Left button SPDT</span><div class="seg" data-k="spdt_l"><button data-v="0">Off</button><button data-v="1">On</button></div>
 <span>Right button SPDT</span><div class="seg" data-k="spdt_r"><button data-v="0">Off</button><button data-v="1">On</button></div>
 <span title="On: the sensor stays in its corded run mode on wireless too (as when plugged in). G-Wolves 8K mice measured about 0.4-0.5 ms less motion delay wireless with it, for more battery use. Wired it changes nothing.">Competitive mode</span><div class="seg" data-k="comp"><button data-v="0">Off</button><button data-v="1">On</button></div>
-<span title="How long the mouse waits without use before it sleeps (30-600 s, in 10 s steps). The Feather first drops it to its lowest DPI stage after 2 min without use, so at 40,000 DPI sensor noise doesn't keep it awake: it sleeps about this long after that.">Sleep after (s)</span><span class="row" style="gap:6px;flex-wrap:nowrap"><input type="number" id="sleepin" min="30" max="600" step="10" style="width:6em" onkeydown="if(event.key==='Enter')sleepSend()"><button type="button" id="sleepset" onclick="sleepSend()">Set</button></span>
+<span title="How long the mouse waits without use before it sleeps (30-600 s, in 10 s steps). The Feather first drops it to its lowest DPI stage after 2 min without use, so at 40,000 DPI sensor noise doesn't keep it awake: it sleeps about this long after that.">Sleep after (s)</span><span class="row" style="gap:6px;flex-wrap:nowrap"><input type="number" id="sleepin" min="30" max="600" step="10" style="width:6em" oninput="sleepDirty=true" onkeydown="if(event.key==='Enter')sleepSend()"><button type="button" id="sleepset" onclick="sleepSend()">Set</button></span>
 <span>Battery</span><span class="mut" id="batt">not read yet</span>
 </div>
 <p class="mut">Through the Feather the mouse reports at up to 1000 Hz whatever is set here; higher rates apply when it is plugged straight into a PC.</p>
@@ -444,18 +444,20 @@ function optOverlay(){if(!S||!S.opt)return;for(const k in optSet){if(Date.now()-
 // the mouse's other settings; S.opt null = no status from the Feather yet, or its firmware is too old;
 // a null value = not read yet
 function drawOpt(){const o=S.opt,note=$('optnote'),btns=document.querySelectorAll('#pv .seg[data-k] button');
-if(!o){note.hidden=false;note.textContent=S.link?'These need Feather firmware v14 or later.':'No answer from the Feather.';btns.forEach(b=>b.disabled=true);return}
+if(!o){note.hidden=false;note.textContent=S.link?'These need Feather firmware v14 or later.':'No answer from the Feather.';btns.forEach(b=>b.disabled=true);$('sleepin').disabled=true;$('sleepset').disabled=true;return}
 btns.forEach(b=>b.disabled=false);
 document.querySelectorAll('#pv .seg[data-k]').forEach(seg=>{const k=seg.dataset.k;const v=o[k];
 seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',v!==null&&v!==undefined&&(typeof v==='boolean'?(b.dataset.v==='1')===v:Number(b.dataset.v)===v)))});
 /* 11-05 (Feather v58, QT Py fw89): competitive mode and the sleep time; older Feather firmware: shown, not usable */
 const xs=!!o.xsup,si=$('sleepin'),old=xs?'':'Needs Feather firmware v58';
 document.querySelectorAll('#pv .seg[data-k="comp"] button').forEach(b=>{b.disabled=!xs;b.title=old});si.disabled=!xs;$('sleepset').disabled=!xs;si.title=old;
-if(document.activeElement!==si){si.value=o.sleep==null?'':o.sleep;si.placeholder=xs?'not read':'v58'}
+if(document.activeElement!==si&&!sleepDirty){si.value=o.sleep==null?'':o.sleep;si.placeholder=xs?'not read':'v58'}
 const missing=Object.entries(o).some(([k,v])=>v===null&&(xs||(k!=='sleep'&&k!=='comp')));note.hidden=!missing;if(missing)note.textContent='Some of these haven\'t been read from the mouse yet: press Read from mouse.'}
-function sleepSend(){if(!S||!S.opt||!S.opt.xsup)return;const si=$('sleepin'),v=Math.round(Number(si.value)/10)*10;
+/* 11-05 review: a typed value stays (sleepDirty) until Set sends it, so a poll after the box loses focus (Tab to Set, a click elsewhere) can't put the old one back */
+let sleepDirty=false;
+function sleepSend(){if(!S||!S.opt||!S.opt.xsup){toast(S&&S.opt?'Needs Feather firmware v58':'No answer from the Feather',1);return}const si=$('sleepin'),v=Math.round(Number(si.value)/10)*10;
 if(!(v>=30&&v<=600)){toast('Sleep time: 30-600 s, in 10 s steps',1);return}
-const prev=S.opt.sleep;optSet.sleep={v:v,t:Date.now()};S.opt.sleep=v;si.blur();drawOpt();
+const prev=S.opt.sleep;optSet.sleep={v:v,t:Date.now()};S.opt.sleep=v;sleepDirty=false;si.blur();drawOpt();
 post('/api/opt?k=sleep&v='+v).then(r=>{say(r,'Sent to the mouse: sleeps after '+v+' s');if(!r.ok){delete optSet.sleep;if(S.opt)S.opt.sleep=prev;drawOpt()}})}
 // ---- chord editor (Feather v15+): rows of [first button, second button, tap, hold, ms]
 const BTN=['','Left','Right','Middle','Back','Forward','Wheel'];
