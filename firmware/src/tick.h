@@ -20,8 +20,10 @@ uint32_t ticks_merged();
 void tick_sof_time(uint32_t us);
 // that time summed, counted and maxed since the last call, then reset
 void tick_sof_take(uint32_t* sum, uint32_t* n, uint32_t* max);
-// gw v59: the last SOF interrupt's time (us): the frame being processed now
-uint32_t tick_sof_last(void);
+// gw v59: the SOF interrupts kept apart by the kind of frame that ended before them (0 still, 1 moving; the next frame
+// is taken to be the same kind); tick_sof_take_class takes one kind's sum, count and longest, and starts it over
+void tick_sof_class(uint8_t c);
+void tick_sof_take_class(uint8_t c, uint32_t* sum, uint32_t* n, uint32_t* max);
 
 #ifdef __cplusplus
 }

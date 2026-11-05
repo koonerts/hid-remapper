@@ -56,5 +56,7 @@ void gw_curve_hist_reset();
 uint8_t gw_curve_bin(float v);
 // v37: real movement now (in the last 50 ms, at GW_CURVE_STILL or faster): the idle stage's "in use" (gw_mouse.cc)
 bool gw_curve_moving(void);
+// gw v59: the speed is known (a DPI from the stage or the curve's fallback): gw_curve_moving means something
+bool gw_curve_speed_known(void);
 
 #endif

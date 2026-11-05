@@ -1794,7 +1794,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 59  // v59: where each frame's time goes, kept apart for still and moving frames (link blocks 6 and 7, layout 4: also the remapping, chord check, frame finished and SOF interrupt per kind); block 5 is the two together; v58: the mouse's sleep time (0x00ad, 10 s steps) and competitive mode (0x00e1) as options 5-6: refresh reads them, LINK_SET_OPTION writes them, status 236-237 (recent actions sent: 7, not 8); v57: the speed curve's carried fraction in Q32, exact (v54-v56's Q16 rounded ties up: +3 counts per million frames toward +x/+y at 50 counts a frame; gwtest curve_bias); a changed curve or slow-down table keeps the speed, the carry and the stroke (only a new tau or turning on/off starts over); v56: the mouse's reports parse faster (get_bits whole bytes at once, do_handle_received_report from RAM; the same values); v55: the profile also times the main loop pass that takes the frame's tick (USB host task, report parsing, the G-Wolves hook, the wait before it); v54: the speed curve with fewer soft-float calls: cached 1000/dt and 2.54/dpi, the segments' slopes, slow-down thresholds per stroke, the carried fraction in Q16 (output within 1 count of v53 a frame: gwtest curve_round; its rounded-up ties drift, fixed in v57); v53: the mappings loop walks a flat list of the plain mappings' inputs; the speed curve runs from RAM and caches its expf, motion length and table steps (output bit for bit the same: gwtest maptest53, curve_diff, curve_probe); v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
+#define GW_FW_VERSION 60  // v60: review fixes for v59: the still / moving SOF numbers count every interrupt (tick.cc, by the kind of the frame before it), and with no DPI known (no speed) frames are told apart by raw motion, counted in blocks 6-7 bytes 122-123; v59: where each frame's time goes, kept apart for still and moving frames (link blocks 6 and 7, layout 4: also the remapping, chord check, frame finished and SOF interrupt per kind); block 5 is the two together; v58: the mouse's sleep time (0x00ad, 10 s steps) and competitive mode (0x00e1) as options 5-6: refresh reads them, LINK_SET_OPTION writes them, status 236-237 (recent actions sent: 7, not 8); v57: the speed curve's carried fraction in Q32, exact (v54-v56's Q16 rounded ties up: +3 counts per million frames toward +x/+y at 50 counts a frame; gwtest curve_bias); a changed curve or slow-down table keeps the speed, the carry and the stroke (only a new tau or turning on/off starts over); v56: the mouse's reports parse faster (get_bits whole bytes at once, do_handle_received_report from RAM; the same values); v55: the profile also times the main loop pass that takes the frame's tick (USB host task, report parsing, the G-Wolves hook, the wait before it); v54: the speed curve with fewer soft-float calls: cached 1000/dt and 2.54/dpi, the segments' slopes, slow-down thresholds per stroke, the carried fraction in Q16 (output within 1 count of v53 a frame: gwtest curve_round; its rounded-up ties drift, fixed in v57); v53: the mappings loop walks a flat list of the plain mappings' inputs; the speed curve runs from RAM and caches its expf, motion length and table steps (output bit for bit the same: gwtest maptest53, curve_diff, curve_probe); v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps
@@ -1836,7 +1836,9 @@ static uint8_t in_4us(uint32_t us) {
 // blocks 6 and 7 (layout 4, prof_publish); block 5 (all frames, layout 3) is the two together
 static uint32_t pf_last = 0, pf_sub_last = 0, pf_cur[GW_PROF_N];
 static uint32_t pf_n[2], pf_sum[2][GW_PROF_N], pf_max[2][GW_PROF_N], pf_worst[2][GW_PROF_N], pf_worst_t[2];
-static uint32_t pc_ft_sum[2], pc_ft_max[2], pc_fc_sum[2], pc_fc_max[2], pc_td_sum[2], pc_td_max[2], pc_sof_sum[2], pc_sof_max[2];
+static uint32_t pc_ft_sum[2], pc_ft_max[2], pc_fc_sum[2], pc_fc_max[2], pc_td_sum[2], pc_td_max[2];
+static uint32_t pc_nodpi[2];         // frames told apart by raw motion (no DPI known: no speed)
+static uint64_t raw_move_us = 0;     // the last frame with raw motion (gw_idle_frame)
 static uint8_t pf_blk[GW_LINK_PROF_LEN];
 static uint8_t pc_blk[2][GW_LINK_PROFC_LEN];
 static bool pf_dirty = false, pc_dirty[2] = { false, false };
@@ -1955,7 +1957,9 @@ static void prof_publish(void) {  // once a second: the block, then the sums sta
     // 1 moving, remapping average (0.1 us, uint16) and worst (us, uint16), the chord check's average (0.1 us) and worst (us),
     // frame finished after its tick average and worst (4 us), the 1 ms SOF interrupt average and worst (4 us), then the
     // sections as layout 3 (18-113), 114-117 frames skipped since the Feather started (uint32, not capped: the status's
-    // 111-112 stop at 65535), 118-121 seconds since it started (uint32: smaller than before = it restarted), 122-126 0, crc8 last
+    // 111-112 stop at 65535), 118-121 seconds since it started (uint32: smaller than before = it restarted), 122-123 of the
+    // frames, those told apart by raw motion (no DPI known, so no speed), 124-126 0, crc8 last; the SOF numbers count every
+    // interrupt, by the kind of the frame that ended before it
     pf_seq++;
     for (uint8_t c = 0; c < 2; c++) {
         uint8_t* q = pc_blk[c];
@@ -1974,11 +1978,14 @@ static void prof_publish(void) {  // once a second: the block, then the sums sta
         q[13] = (pc_fc_max[c] > 255) ? 255 : pc_fc_max[c];
         q[14] = fn ? in_4us(pc_td_sum[c] / fn) : 0;
         q[15] = in_4us(pc_td_max[c]);
-        q[16] = fn ? in_4us(pc_sof_sum[c] / fn) : 0;
-        q[17] = in_4us(pc_sof_max[c]);
+        uint32_t ss, sn, sm;
+        tick_sof_take_class(c, &ss, &sn, &sm);  // every SOF interrupt, by the kind of the frame before it
+        q[16] = sn ? in_4us(ss / sn) : 0;
+        q[17] = in_4us(sm);
         put_sections(q + 18, pf_sum[c], fn, pf_max[c], pf_worst[c]);
         put32(q + 114, ticks_merged());
         put32(q + 118, ev_secs);
+        put16(q + 122, (pc_nodpi[c] > 65535) ? 65535 : pc_nodpi[c]);
         q[GW_LINK_PROFC_LEN - 1] = gw_crc8(q, GW_LINK_PROFC_LEN - 1);
         pc_dirty[c] = true;
     }
@@ -1993,13 +2000,18 @@ static void prof_publish(void) {  // once a second: the block, then the sums sta
     memset(pc_fc_max, 0, sizeof(pc_fc_max));
     memset(pc_td_sum, 0, sizeof(pc_td_sum));
     memset(pc_td_max, 0, sizeof(pc_td_max));
-    memset(pc_sof_sum, 0, sizeof(pc_sof_sum));
-    memset(pc_sof_max, 0, sizeof(pc_sof_max));
+    memset(pc_nodpi, 0, sizeof(pc_nodpi));
 }
 
 void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
     static bool started = false;
-    uint8_t c = gw_curve_moving() ? 1 : 0;  // v59
+    // v59: moving by the curve's speed; with no DPI known (no speed) by raw motion in the last 50 ms instead, counted
+    bool sk = gw_curve_speed_known();
+    uint8_t c = sk ? (gw_curve_moving() ? 1 : 0) : ((time_us_64() - raw_move_us < 50000) ? 1 : 0);
+    if (!sk) {
+        pc_nodpi[c]++;
+    }
+    tick_sof_class(c);
     prof_frame(c);  // v50
     if (pf_dirty) {
         pf_dirty = !gw_link_set_block(5, pf_blk);  // refused while that buffer was being read: again next frame
@@ -2029,16 +2041,13 @@ void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
     if (td > td_max) {
         td_max = td;
     }
-    {  // v59: the same per still / moving frame
-        uint32_t sof = tick_sof_last();
+    {  // v59: the same per still / moving frame (the SOF interrupts: tick.cc)
         pc_ft_sum[c] += total_us;
         pc_fc_sum[c] += chords_us;
         pc_td_sum[c] += td;
-        pc_sof_sum[c] += sof;
         pc_ft_max[c] = (total_us > pc_ft_max[c]) ? total_us : pc_ft_max[c];
         pc_fc_max[c] = (chords_us > pc_fc_max[c]) ? chords_us : pc_fc_max[c];
         pc_td_max[c] = (td > pc_td_max[c]) ? td : pc_td_max[c];
-        pc_sof_max[c] = (sof > pc_sof_max[c]) ? sof : pc_sof_max[c];
     }
     if ((now - ft_at) >= 1000000) {
         uint32_t a = ft_sum * 10 / ft_n, c = fc_sum * 10 / ft_n;
@@ -2588,6 +2597,9 @@ static void idle_restore() {
 }
 
 void gw_idle_frame(int32_t* const* ch, const int32_t* x, const int32_t* y) {
+    if (((x != NULL) && (*x != 0)) || ((y != NULL) && (*y != 0))) {
+        raw_move_us = time_us_64();  // v59: the still / moving split's fallback with no DPI known
+    }
     bool used = false;
     for (int i = 0; (i < GW_CH_IN) && !used; i++) {
         used = (ch[i] != NULL) && (*ch[i] != 0);

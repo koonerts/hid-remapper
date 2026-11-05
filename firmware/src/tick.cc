@@ -10,7 +10,10 @@ static volatile bool tick_pending = false;
 static volatile uint32_t tick_set_at = 0;
 static uint32_t tick_taken_at = 0;
 static volatile uint32_t merged = 0;
-static volatile uint32_t sof_sum = 0, sof_n = 0, sof_max = 0, sof_last = 0;
+static volatile uint32_t sof_sum = 0, sof_n = 0, sof_max = 0;
+// gw v59: the same kept apart by the kind of frame that ended last (tick_sof_class: 0 still, 1 moving)
+static volatile uint8_t sof_cls = 0;
+static volatile uint32_t sofc_sum[2] = { 0, 0 }, sofc_n[2] = { 0, 0 }, sofc_max[2] = { 0, 0 };
 
 void tick_init() {
     critical_section_init(&crit_sec);
@@ -48,16 +51,31 @@ uint32_t ticks_merged() {
 
 // called from the SOF interrupt only, so nothing else updates these at the same time
 void __no_inline_not_in_flash_func(tick_sof_time)(uint32_t us) {
-    sof_last = us;  // gw v59
     sof_sum += us;
     sof_n++;
     if (us > sof_max) {
         sof_max = us;
     }
+    uint8_t c = sof_cls;  // gw v59
+    sofc_sum[c] += us;
+    sofc_n[c]++;
+    if (us > sofc_max[c]) {
+        sofc_max[c] = us;
+    }
 }
 
-uint32_t tick_sof_last(void) {
-    return sof_last;
+void tick_sof_class(uint8_t c) {
+    sof_cls = c ? 1 : 0;
+}
+
+void tick_sof_take_class(uint8_t c, uint32_t* sum, uint32_t* n, uint32_t* max) {
+    c = c ? 1 : 0;
+    critical_section_enter_blocking(&crit_sec);
+    *sum = sofc_sum[c];
+    *n = sofc_n[c];
+    *max = sofc_max[c];
+    sofc_sum[c] = sofc_n[c] = sofc_max[c] = 0;
+    critical_section_exit(&crit_sec);
 }
 
 void tick_sof_take(uint32_t* sum, uint32_t* n, uint32_t* max) {

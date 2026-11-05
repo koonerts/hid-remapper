@@ -458,6 +458,10 @@ bool gw_curve_moving(void) {
     return moving;
 }
 
+bool gw_curve_speed_known(void) {
+    return dpi_now != 0;
+}
+
 void gw_curve_status(uint8_t* s) {
     s[0] = (on ? 1 : 0) | (got ? 2 : 0) | (dc_on ? 4 : 0) | (dc_got ? 8 : 0);
     s[1] = table_crc;

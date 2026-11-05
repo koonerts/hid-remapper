@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 91    // this firmware's number, shown in /api/status; fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 92    // this firmware's number, shown in /api/status; fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -2973,6 +2973,7 @@ static void pf_stale() {  // fw87: no current profile (a failed read, an older F
 struct PwCls {  // one kind of frame over one Feather second, as its block holds it
     uint16_t frames, ft10, ftmx;  // remapping average (0.1 us), worst (us)
     uint8_t fc10, fcmx, td4, tdmx4, sof4, sofmx4;  // chord check (0.1 us, us); frame finished, SOF interrupt (4 us)
+    uint16_t nodpi;  // fw92 (Feather v60): of the frames, those told apart by raw motion (no DPI known)
     uint8_t s[PW_NS][4];  // per part: average (0.1 us, LE), worst (4 us), in the slowest frame (4 us)
 };
 struct PwSec {
@@ -2980,10 +2981,12 @@ struct PwSec {
     uint32_t missed;  // frames skipped since the second before it was read
     uint32_t irq_us;
     uint16_t irq_n;
+    uint16_t gap;     // fw92: Feather seconds since the second read before it (1 = none missed; its missed covers them all)
+    bool has5;        // fw92: block 5 read with it (irq_*)
     PwCls c[2];  // still, moving
 };
 struct PwAggC {
-    uint32_t frames;
+    uint32_t frames, nodpi;
     float ft, fc, td, sof;  // sums of average x frames (us)
     uint16_t ftmx, tdmx, sofmx;  // us
     uint8_t fcmx;
@@ -2992,14 +2995,14 @@ struct PwAggC {
     uint16_t wtot;  // the slowest frame's parts 0-12 summed (4 us)
 };
 struct PwAgg {
-    uint32_t bin, n, missed;  // bin: the slot's number + 1 (millis / slot length; 0 = empty); n: seconds in it
+    uint32_t bin, n, missed, irq_s;  // bin: the slot's number + 1 (millis / slot length; 0 = empty); n: seconds in it; irq_s: of them with block 5
     float irq_us, irq_n;
     PwAggC c[2];
 };
 static PwSec pw_s[60];
 static uint8_t pw_sh = 0, pw_sn = 0;
 static PwAgg pw_f[12], pw_h[24];  // 5-minute and 1-hour slots
-static uint32_t pw_mtot = 0, pw_up = 0;
+static uint32_t pw_mtot = 0, pw_up = 0, pw_last_t = 0;
 static bool pw_mtot_ok = false;
 static uint16_t pc_seq = 0;
 static bool pc_seq_ok = false;
@@ -3018,6 +3021,7 @@ static void pwc_add_sec(void* ap, const void* cp) {  // one kind's second into a
     float f = c.frames;
     bool first = !a.frames;
     a.frames += c.frames;
+    a.nodpi += c.nodpi;
     a.ft += c.ft10 / 10.0f * f;
     a.fc += c.fc10 / 10.0f * f;
     a.td += c.td4 * 4.0f * f;
@@ -3050,6 +3054,7 @@ static void pwc_merge(void* ap, const void* bp) {
     }
     bool first = !a.frames;
     a.frames += b.frames;
+    a.nodpi += b.nodpi;
     a.ft += b.ft;
     a.fc += b.fc;
     a.td += b.td;
@@ -3073,8 +3078,11 @@ static void pw_add_sec(void* ap, const void* sp) {
     const PwSec& s = *(const PwSec*) sp;
     a.n++;
     a.missed += s.missed;
-    a.irq_us += s.irq_us;
-    a.irq_n += s.irq_n;
+    if (s.has5) {
+        a.irq_s++;
+        a.irq_us += s.irq_us;
+        a.irq_n += s.irq_n;
+    }
     pwc_add_sec(&a.c[0], &s.c[0]);
     pwc_add_sec(&a.c[1], &s.c[1]);
 }
@@ -3084,6 +3092,7 @@ static void pw_merge(void* ap, const void* bp) {
     const PwAgg& b = *(const PwAgg*) bp;
     a.n += b.n;
     a.missed += b.missed;
+    a.irq_s += b.irq_s;
     a.irq_us += b.irq_us;
     a.irq_n += b.irq_n;
     pwc_merge(&a.c[0], &b.c[0]);
@@ -3113,6 +3122,7 @@ static bool pc_parse(const uint8_t* q, uint8_t kind, void* cp) {
     c.tdmx4 = q[15];
     c.sof4 = q[16];
     c.sofmx4 = q[17];
+    c.nodpi = q[122] | q[123] << 8;
     memcpy(c.s, q + 18, sizeof(c.s));
     return true;
 }
@@ -3123,15 +3133,21 @@ static bool pw_record(const uint8_t* b6, const uint8_t* b7, const uint8_t* b5) {
     if (!pc_parse(b6, 0, &s.c[0]) || !pc_parse(b7, 1, &s.c[1])) {
         return false;
     }
-    uint32_t mt = le32(b6 + 114), up = le32(b6 + 118);
-    bool restarted = pw_mtot_ok && (up < pw_up);
+    uint32_t mt = le32(b6 + 114), up = le32(b6 + 118), now = millis();
+    // fw92: a restart is an uptime that went back, or one that moved on less than the QT Py's clock did (a restart in a
+    // long gap, its uptime already past the old one)
+    uint32_t wall = pw_mtot_ok ? (now - pw_last_t) / 1000 : 0;
+    bool restarted = pw_mtot_ok && ((up < pw_up) || (up - pw_up + 5 < wall));
     s.missed = !pw_mtot_ok ? 0 : restarted ? mt : (mt >= pw_mtot) ? mt - pw_mtot : mt;
+    uint32_t gap = !pw_mtot_ok ? 1 : restarted ? (up ? up : 1) : (up - pw_up);
+    s.gap = (gap > 65535) ? 65535 : (gap ? gap : 1);
     pw_mtot = mt;
     pw_up = up;
+    pw_last_t = now;
     pw_mtot_ok = true;
+    s.has5 = (b5 != nullptr);
     s.irq_us = b5 ? le32(b5 + 5) : 0;
     s.irq_n = b5 ? (uint16_t) (b5[9] | b5[10] << 8) : 0;
-    uint32_t now = millis();
     s.t = now;
     pw_sh = (pw_sh + 1) % 60;
     if (pw_sn < 60) {
@@ -3229,9 +3245,12 @@ static String pf_json() {
 // (k=a), still ones (i) or moving ones (m), shaped as /api/status's perf and prof. n = seconds with data, win_s = the seconds
 // the window's slots reach back (h: the 5-minute slot running now and 11 before it, d: the hour and 23 before), frames =
 // that kind's frames, frames_all = all of them; perf.missed = frames skipped in the window (all frames: a skipped frame
-// has no kind). {"sup":false} = the Feather is older than v59.
+// has no kind). {"sup":false} = the Feather answers and is older than v59; fw92: down = no answer from it now (what was
+// kept is still served); nodpi = of that kind's frames, those told apart by raw motion (no DPI known); a second read
+// after a gap longer than the second (minute) window doesn't bring its skipped frames into it
 static void h_perfwin() {
-    if (!link_up || (st[56] < 59)) {
+    bool down = !link_up || !st_ok;
+    if (!down && (st[56] < 59)) {
         server.send(200, "application/json", "{\"sup\":false}");
         return;
     }
@@ -3246,6 +3265,9 @@ static void h_perfwin() {
             const PwSec& x = pw_s[(pw_sh + 59 - i) % 60];
             if (now - x.t < (sec ? 3000UL : 60000UL)) {
                 pw_add_sec(&a, &x);
+                if (x.gap > win) {
+                    a.missed -= x.missed;  // fw92: those happened over the gap, before this window
+                }
             }
         }
     } else if ((w == "h") || (w == "d")) {
@@ -3274,7 +3296,7 @@ static void h_perfwin() {
     }
     String j;
     j.reserve(2800);
-    j = "{\"sup\":true,\"n\":" + String(a.n) + ",\"win_s\":" + String(win) + ",\"frames\":" + String(c.frames) +
+    j = "{\"sup\":true,\"down\":" + String(down ? "true" : "false") + ",\"nodpi\":" + String(c.nodpi) + ",\"n\":" + String(a.n) + ",\"win_s\":" + String(win) + ",\"frames\":" + String(c.frames) +
         ",\"frames_all\":" + String(a.c[0].frames + a.c[1].frames) + ",\"missed\":" + String(a.missed);
     if (!c.frames) {
         server.send(200, "application/json", j + ",\"perf\":null,\"prof\":null}");
@@ -3286,7 +3308,7 @@ static void h_perfwin() {
                                         "tick: idle stage", "tick: link frame + update", "tick: status (every 20 ms)", "tick: status host part + hand-off",
                                         "tick: live/hist blocks + diag", "loop: USB host task", "loop: report parsing", "loop: G-Wolves hook",
                                         "loop: wait for the pass before" };
-    float f = c.frames, n = a.n ? a.n : 1;
+    float f = c.frames, n = a.irq_s ? a.irq_s : 1;  // fw92: the link interrupt over the seconds that have it
     j += ",\"perf\":{\"avg_us\":" + String(c.ft / f, 1) + ",\"max_us\":" + String(c.ftmx) + ",\"chords_avg_us\":" + String(c.fc / f, 1) +
          ",\"chords_max_us\":" + String(c.fcmx) + ",\"missed\":" + String(a.missed) + ",\"missed_total\":" + String(pw_mtot) +
          ",\"tick_avg_us\":" + String(c.td / f, 0) + ",\"tick_max_us\":" + String(c.tdmx) + ",\"usb_avg_us\":" + String(c.sof / f, 0) +
