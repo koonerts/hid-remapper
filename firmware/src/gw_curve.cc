@@ -285,14 +285,13 @@ static float __not_in_flash_func(gain_at)(float v) {
 }
 
 uint8_t __not_in_flash_func(gw_curve_bin)(float v) {
-    static float edge[GW_CURVE_BINS - 1];  // edge[k] = where bin k + 1 starts
-    static bool edged = false;             // gw v53: a flag, not a float compare per call (the same edges either way)
-    if (!edged) {
-        for (uint8_t k = 0; k < GW_CURVE_BINS - 1; k++) {
-            edge[k] = 5.0f * powf(32.0f, k / 24.0f);
-        }
-        edged = true;
-    }
+    // edge[k] = where bin k + 1 starts: 5 * 32^(k/24) cm/s. gw v61: written out (double-precision values rounded to float);
+    // computed on the first call they were 25 soft-float powf calls, about 490 us in the first moving frame after each start.
+    // Not const: .data (RAM), as the rest of the per-frame path (a const table would be read from flash)
+    static float edge[GW_CURVE_BINS - 1] = { 5.0f, 5.7767634f, 6.674199f, 7.7110543f, 8.908987f, 10.293022f, 11.892071f, 13.739536f,
+                                                   15.87401f, 18.34008f, 21.189262f, 24.481071f, 28.284271f, 32.67831f, 37.754974f, 43.620308f,
+                                                   50.396843f, 58.226128f, 67.27171f, 77.72256f, 89.79697f, 103.74716f, 119.86456f, 138.48586f, 160.0f };
+    static_assert(sizeof(edge) / sizeof(edge[0]) == 25, "GW_CURVE_BINS - 1 edges");
     uint8_t b = 0;
     int32_t vb = fbits(v);
     if (f_nan(vb)) {
