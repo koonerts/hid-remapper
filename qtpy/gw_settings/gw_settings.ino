@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 92    // this firmware's number, shown in /api/status; fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 93    // this firmware's number, shown in /api/status; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -2978,7 +2978,8 @@ struct PwCls {  // one kind of frame over one Feather second, as its block holds
 };
 struct PwSec {
     uint32_t t;       // millis() when read
-    uint32_t missed;  // frames skipped since the second before it was read
+    uint32_t missed;  // frames skipped since the second before it was read (fw93, Feather v62+: outside settling)
+    uint32_t smissed; // fw93: of them, while the Feather settled (its start, a USB change): no fault, shown apart
     uint32_t irq_us;
     uint16_t irq_n;
     uint16_t gap;     // fw92: Feather seconds since the second read before it (1 = none missed; its missed covers them all)
@@ -2995,14 +2996,14 @@ struct PwAggC {
     uint16_t wtot;  // the slowest frame's parts 0-12 summed (4 us)
 };
 struct PwAgg {
-    uint32_t bin, n, missed, irq_s;  // bin: the slot's number + 1 (millis / slot length; 0 = empty); n: seconds in it; irq_s: of them with block 5
+    uint32_t bin, n, missed, smissed, irq_s;  // bin: the slot's number + 1 (millis / slot length; 0 = empty); n: seconds in it; irq_s: of them with block 5
     float irq_us, irq_n;
     PwAggC c[2];
 };
 static PwSec pw_s[60];
 static uint8_t pw_sh = 0, pw_sn = 0;
 static PwAgg pw_f[12], pw_h[24];  // 5-minute and 1-hour slots
-static uint32_t pw_mtot = 0, pw_up = 0, pw_last_t = 0;
+static uint32_t pw_mtot = 0, pw_up = 0, pw_last_t = 0, pw_stot = 0;
 static bool pw_mtot_ok = false;
 static uint16_t pc_seq = 0;
 static bool pc_seq_ok = false;
@@ -3078,6 +3079,7 @@ static void pw_add_sec(void* ap, const void* sp) {
     const PwSec& s = *(const PwSec*) sp;
     a.n++;
     a.missed += s.missed;
+    a.smissed += s.smissed;
     if (s.has5) {
         a.irq_s++;
         a.irq_us += s.irq_us;
@@ -3092,6 +3094,7 @@ static void pw_merge(void* ap, const void* bp) {
     const PwAgg& b = *(const PwAgg*) bp;
     a.n += b.n;
     a.missed += b.missed;
+    a.smissed += b.smissed;
     a.irq_s += b.irq_s;
     a.irq_us += b.irq_us;
     a.irq_n += b.irq_n;
@@ -3139,6 +3142,9 @@ static bool pw_record(const uint8_t* b6, const uint8_t* b7, const uint8_t* b5) {
     uint32_t wall = pw_mtot_ok ? (now - pw_last_t) / 1000 : 0;
     bool restarted = pw_mtot_ok && ((up < pw_up) || (up - pw_up + 5 < wall));
     s.missed = !pw_mtot_ok ? 0 : restarted ? mt : (mt >= pw_mtot) ? mt - pw_mtot : mt;
+    uint32_t stot = b6[124] | b6[125] << 8 | (uint32_t) b6[126] << 16;  // fw93 (Feather v62): skipped while settling, uint24
+    s.smissed = !pw_mtot_ok ? 0 : restarted ? stot : (stot >= pw_stot) ? stot - pw_stot : stot;
+    pw_stot = stot;
     uint32_t gap = !pw_mtot_ok ? 1 : restarted ? (up ? up : 1) : (up - pw_up);
     s.gap = (gap > 65535) ? 65535 : (gap ? gap : 1);
     pw_mtot = mt;
@@ -3267,6 +3273,7 @@ static void h_perfwin() {
                 pw_add_sec(&a, &x);
                 if (x.gap > win) {
                     a.missed -= x.missed;  // fw92: those happened over the gap, before this window
+                    a.smissed -= x.smissed;
                 }
             }
         }
@@ -3297,7 +3304,7 @@ static void h_perfwin() {
     String j;
     j.reserve(2800);
     j = "{\"sup\":true,\"down\":" + String(down ? "true" : "false") + ",\"nodpi\":" + String(c.nodpi) + ",\"n\":" + String(a.n) + ",\"win_s\":" + String(win) + ",\"frames\":" + String(c.frames) +
-        ",\"frames_all\":" + String(a.c[0].frames + a.c[1].frames) + ",\"missed\":" + String(a.missed);
+        ",\"frames_all\":" + String(a.c[0].frames + a.c[1].frames) + ",\"missed\":" + String(a.missed) + ",\"settle_missed\":" + String(a.smissed) + ",\"settle_total\":" + String(pw_stot);
     if (!c.frames) {
         server.send(200, "application/json", j + ",\"perf\":null,\"prof\":null}");
         return;

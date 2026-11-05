@@ -57,15 +57,17 @@ void __no_inline_not_in_flash_func(tick_sof_time)(uint32_t us) {
         sof_max = us;
     }
     uint8_t c = sof_cls;  // gw v59
-    sofc_sum[c] += us;
-    sofc_n[c]++;
-    if (us > sofc_max[c]) {
-        sofc_max[c] = us;
+    if (c < 2) {
+        sofc_sum[c] += us;
+        sofc_n[c]++;
+        if (us > sofc_max[c]) {
+            sofc_max[c] = us;
+        }
     }
 }
 
 void tick_sof_class(uint8_t c) {
-    sof_cls = c ? 1 : 0;
+    sof_cls = (c > 1) ? 2 : c;  // gw v62: 2 = settling (a start or a USB change): not kept
 }
 
 void tick_sof_take_class(uint8_t c, uint32_t* sum, uint32_t* n, uint32_t* max) {
