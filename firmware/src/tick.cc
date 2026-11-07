@@ -66,6 +66,26 @@ void __no_inline_not_in_flash_func(tick_sof_time)(uint32_t us) {
     }
 }
 
+// gw v67: the SOF interrupt's interval jitter (tick.h)
+static volatile uint32_t jit_max = 0, jit_n50 = 0;
+void __no_inline_not_in_flash_func(tick_sof_interval)(uint32_t us) {
+    uint32_t dev = (us > 1000) ? us - 1000 : 1000 - us;
+    if (dev > jit_max) {
+        jit_max = dev;
+    }
+    if (dev >= 50) {
+        jit_n50++;
+    }
+}
+
+void tick_sof_jit_take(uint32_t* max, uint32_t* n50) {
+    critical_section_enter_blocking(&crit_sec);
+    *max = jit_max;
+    *n50 = jit_n50;
+    jit_max = jit_n50 = 0;
+    critical_section_exit(&crit_sec);
+}
+
 void tick_sof_class(uint8_t c) {
     sof_cls = (c > 1) ? 2 : c;  // gw v62: 2 = settling (a start or a USB change): not kept
 }

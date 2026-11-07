@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 96    // this firmware's number, shown in /api/status; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 97    // this firmware's number, shown in /api/status; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -2989,6 +2989,7 @@ struct PwSec {
     bool hasg;        // fw95: block 8 read with it (Feather v63: the mouse's report pauses)
     uint16_t gp[GP_B];  // fw95: report pauses since the second before it, by length (GP_B buckets)
     uint16_t gms, glong, gfr;  // fw95: paused ms (3-49 ms ones), the longest 3-49 ms one, frames the check covered
+    uint16_t jmax, jn;  // fw97 (Feather v67): the 1 ms USB frame interrupt's worst jitter this second (us), how many 50 us or more
     PwCls c[2];  // still, moving
 };
 struct PwAggC {
@@ -3005,6 +3006,8 @@ struct PwAgg {
     float irq_us, irq_n;
     uint32_t gs, gp[GP_B], gms, gfr;  // fw95: seconds with block 8, report pauses by length, paused ms, frames checked
     uint16_t glong;
+    uint16_t jmax;  // fw97: the USB frame interrupt's worst jitter (us)
+    uint32_t jn;    // fw97: its intervals 50 us or more off
     PwAggC c[2];
 };
 static PwSec pw_s[60];
@@ -3103,6 +3106,8 @@ static void pw_add_sec(void* ap, const void* sp) {
         a.gms += s.gms;
         a.gfr += s.gfr;
         a.glong = mx16(a.glong, s.glong);
+        a.jmax = mx16(a.jmax, s.jmax);  // fw97
+        a.jn += s.jn;
     }
     pwc_add_sec(&a.c[0], &s.c[0]);
     pwc_add_sec(&a.c[1], &s.c[1]);
@@ -3124,6 +3129,8 @@ static void pw_merge(void* ap, const void* bp) {
     a.gms += b.gms;
     a.gfr += b.gfr;
     a.glong = mx16(a.glong, b.glong);
+    a.jmax = mx16(a.jmax, b.jmax);  // fw97
+    a.jn += b.jn;
     pwc_merge(&a.c[0], &b.c[0]);
     pwc_merge(&a.c[1], &b.c[1]);
 }
@@ -3184,6 +3191,7 @@ static bool pw_record(const uint8_t* b6, const uint8_t* b7, const uint8_t* b5, c
     s.hasg = (b8 != nullptr);
     memset(s.gp, 0, sizeof(s.gp));
     s.gms = s.glong = s.gfr = 0;
+    s.jmax = s.jn = 0;
     if (b8) {
         // fw96 (review 11-06): a restart by block 8's own uptime (as blocks 6-7: smaller, or moved on less than the clock),
         // so a restart seen on a second without block 8 doesn't leave the old totals as the base
@@ -3198,6 +3206,10 @@ static bool pw_record(const uint8_t* b6, const uint8_t* b7, const uint8_t* b5, c
         s.gms = (dm > 65535) ? 65535 : dm;
         pw_gmtot = m;
         s.glong = b8[28] | b8[29] << 8;
+        if (st[56] >= 67) {  // fw97: the USB frame interrupt's jitter this second
+            s.jmax = b8[30] | b8[31] << 8;
+            s.jn = b8[40] | b8[41] << 8;
+        }
         uint32_t fr = le32(b8 + 36), dfr = !pw_g_ok ? 0 : (!base || (fr < pw_gftot)) ? fr : fr - pw_gftot;  // fw96: since the start, as the counts
         s.gfr = (dfr > 65535) ? 65535 : dfr;
         pw_gftot = fr;
@@ -3374,7 +3386,7 @@ static void h_perfwin() {
     for (uint8_t k = 0; k < GP_B; k++) {
         j += String(k ? "," : "") + String(a.gp[k]);
     }
-    j += "],\"ms\":" + String(a.gms) + ",\"long\":" + String(a.glong) + ",\"frames\":" + String(a.gfr) + ",\"tot\":[";
+    j += "],\"ms\":" + String(a.gms) + ",\"long\":" + String(a.glong) + ",\"frames\":" + String(a.gfr) + ",\"jit_max\":" + String(a.jmax) + ",\"jit_n50\":" + String(a.jn) + ",\"tot\":[";
     for (uint8_t k = 0; k < GP_B; k++) {
         j += String(k ? "," : "") + String(pw_gtot[k]);
     }

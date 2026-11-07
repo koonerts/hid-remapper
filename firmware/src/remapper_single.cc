@@ -12,8 +12,14 @@
 #include "tick.h"
 #include "gw_mouse.h"
 
+static uint32_t sof_prev_at = 0;  // gw v67
+
 static bool __no_inline_not_in_flash_func(manual_sof)(repeating_timer_t* rt) {
     uint32_t t0 = time_us_32();
+    if (sof_prev_at != 0) {
+        tick_sof_interval(t0 - sof_prev_at);  // gw v67: a late timer interrupt shows as a long interval (then a short one)
+    }
+    sof_prev_at = t0;
     pio_usb_host_frame();
     tick_sof_time(time_us_32() - t0);
     set_tick_pending();

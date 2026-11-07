@@ -24,6 +24,11 @@ void tick_sof_take(uint32_t* sum, uint32_t* n, uint32_t* max);
 // is taken to be the same kind); tick_sof_take_class takes one kind's sum, count and longest, and starts it over
 void tick_sof_class(uint8_t c);  // gw v62: 2 = settling, not kept
 void tick_sof_take_class(uint8_t c, uint32_t* sum, uint32_t* n, uint32_t* max);
+// gw v67: how far each 1 ms SOF interrupt came from 1000 us after the one before (a late timer interrupt: jitter on the
+// mouse's USB frames); called from it with that interval. tick_sof_jit_take: the largest and the count of 50 us or more
+// since the last call, then reset
+void tick_sof_interval(uint32_t us);
+void tick_sof_jit_take(uint32_t* max, uint32_t* n50);
 
 #ifdef __cplusplus
 }
