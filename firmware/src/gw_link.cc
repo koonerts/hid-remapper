@@ -69,6 +69,8 @@ static uint8_t diag_buf[2][GW_LINK_DIAG_LEN];  // v48
 static uint8_t prof_buf[2][GW_LINK_PROF_LEN];  // v50
 static uint8_t profc_buf[2][2][GW_LINK_PROFC_LEN];  // v59: [still, moving][double buffer]
 static volatile uint8_t profc_cur[2] = { 0, 0 };
+static uint8_t gap_buf[2][GW_LINK_GAP_LEN];  // v63
+static volatile uint8_t gap_cur = 0;
 static volatile uint8_t live_cur = 0, hist_cur = 0, ota_cur = 0, diag_cur = 0, prof_cur = 0;
 static volatile uint32_t irq_us = 0, irq_n = 0;  // v50: the interrupt's own time (gw_link_irq_take)
 static volatile uint8_t sel = 0;
@@ -159,6 +161,9 @@ static void __not_in_flash_func(link_irq)(i2c_inst_t* i2c, i2c_slave_event_t eve
                 } else if ((sel == 6) || (sel == 7)) {  // v59
                     tx_buf = profc_buf[sel - 6][profc_cur[sel - 6]];
                     tx_len = GW_LINK_PROFC_LEN;
+                } else if (sel == 8) {  // v63
+                    tx_buf = gap_buf[gap_cur];
+                    tx_len = GW_LINK_GAP_LEN;
                 } else {
                     status_reading = status_cur;
                     tx_buf = status_buf[status_reading];
@@ -239,6 +244,9 @@ bool gw_link_set_block(uint8_t which, const uint8_t* data) {
         case 6:  // v59
         case 7:
             b0 = profc_buf[which - 6][0], b1 = profc_buf[which - 6][1], cur = &profc_cur[which - 6], len = GW_LINK_PROFC_LEN;
+            break;
+        case 8:  // v63
+            b0 = gap_buf[0], b1 = gap_buf[1], cur = &gap_cur, len = GW_LINK_GAP_LEN;
             break;
         default:
             b0 = ota_buf[0], b1 = ota_buf[1], cur = &ota_cur, len = GW_LINK_OTA_LEN;

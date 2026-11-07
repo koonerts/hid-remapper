@@ -1806,7 +1806,7 @@ static void rs_tick(uint32_t now) {
 //   0x7F none)   242 (v24) direction gains: bit 0 applying, bit 1 got a table   243 crc8 of the gains as received   244-254 0
 //   255 crc8 of 192-254
 // Commands (cmd, seq, len, payload, crc8):
-#define GW_FW_VERSION 62  // v62: the still / moving frame timing leaves out settling (the first 3 s, 2 s after a USB device change or a host reset), its skipped frames counted apart (blocks 6-7 124-126); v61: the speed histogram's bin edges written out (computed on the first moving frame after each start: 25 powf calls, ~490 us in one frame); v60: review fixes for v59: the still / moving SOF numbers count every interrupt (tick.cc, by the kind of the frame before it), and with no DPI known (no speed) frames are told apart by raw motion, counted in blocks 6-7 bytes 122-123; v59: where each frame's time goes, kept apart for still and moving frames (link blocks 6 and 7, layout 4: also the remapping, chord check, frame finished and SOF interrupt per kind); block 5 is the two together; v58: the mouse's sleep time (0x00ad, 10 s steps) and competitive mode (0x00e1) as options 5-6: refresh reads them, LINK_SET_OPTION writes them, status 236-237 (recent actions sent: 7, not 8); v57: the speed curve's carried fraction in Q32, exact (v54-v56's Q16 rounded ties up: +3 counts per million frames toward +x/+y at 50 counts a frame; gwtest curve_bias); a changed curve or slow-down table keeps the speed, the carry and the stroke (only a new tau or turning on/off starts over); v56: the mouse's reports parse faster (get_bits whole bytes at once, do_handle_received_report from RAM; the same values); v55: the profile also times the main loop pass that takes the frame's tick (USB host task, report parsing, the G-Wolves hook, the wait before it); v54: the speed curve with fewer soft-float calls: cached 1000/dt and 2.54/dpi, the segments' slopes, slow-down thresholds per stroke, the carried fraction in Q16 (output within 1 count of v53 a frame: gwtest curve_round; its rounded-up ties drift, fixed in v57); v53: the mappings loop walks a flat list of the plain mappings' inputs; the speed curve runs from RAM and caches its expf, motion length and table steps (output bit for bit the same: gwtest maptest53, curve_diff, curve_probe); v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
+#define GW_FW_VERSION 63  // v63: pauses in the mouse's reports mid-movement (3+ frames with no report between two at 15 cm/s or faster: the mouse or its receiver held them back) counted by length, link block 8; v62: the still / moving frame timing leaves out settling (the first 3 s, 2 s after a USB device change or a host reset), its skipped frames counted apart (blocks 6-7 124-126); v61: the speed histogram's bin edges written out (computed on the first moving frame after each start: 25 powf calls, ~490 us in one frame); v60: review fixes for v59: the still / moving SOF numbers count every interrupt (tick.cc, by the kind of the frame before it), and with no DPI known (no speed) frames are told apart by raw motion, counted in blocks 6-7 bytes 122-123; v59: where each frame's time goes, kept apart for still and moving frames (link blocks 6 and 7, layout 4: also the remapping, chord check, frame finished and SOF interrupt per kind); block 5 is the two together; v58: the mouse's sleep time (0x00ad, 10 s steps) and competitive mode (0x00e1) as options 5-6: refresh reads them, LINK_SET_OPTION writes them, status 236-237 (recent actions sent: 7, not 8); v57: the speed curve's carried fraction in Q32, exact (v54-v56's Q16 rounded ties up: +3 counts per million frames toward +x/+y at 50 counts a frame; gwtest curve_bias); a changed curve or slow-down table keeps the speed, the carry and the stroke (only a new tau or turning on/off starts over); v56: the mouse's reports parse faster (get_bits whole bytes at once, do_handle_received_report from RAM; the same values); v55: the profile also times the main loop pass that takes the frame's tick (USB host task, report parsing, the G-Wolves hook, the wait before it); v54: the speed curve with fewer soft-float calls: cached 1000/dt and 2.54/dpi, the segments' slopes, slow-down thresholds per stroke, the carried fraction in Q16 (output within 1 count of v53 a frame: gwtest curve_round; its rounded-up ties drift, fixed in v57); v53: the mappings loop walks a flat list of the plain mappings' inputs; the speed curve runs from RAM and caches its expf, motion length and table steps (output bit for bit the same: gwtest maptest53, curve_diff, curve_probe); v52: process_mapping skips plain mappings whose inputs are all 0 (with unmapped passthrough, every key of our descriptor: ~160 us a frame); the HID interface list is kept, not built on each call (~37 us a frame); v51: process_mapping runs from RAM (it ran from flash, as all the fork's own code does); the profile block also times gw_tick's parts and shows the heap; v50: where each frame's time goes (link block 5: process_mapping's sections, the link interrupt's time); v49: flash writes run boot2 with interrupts off (an interrupt mid-command left XIP broken: the update freezes); v48: what a freeze left (where the main loop was, the PC a top-priority timer or the hard-fault handler caught) kept through the watchdog's restart, for the QT Py (block 4); v47: slow-down gain shares in 0.1 % steps (LINK_SET_DECEL byte 0 bit 1 = 4-byte points; the 3-byte whole-% points still taken), a 4 s watchdog (main.cc); v46: the idle stage kept through the Feather's own restart (an update on the idle stage left the mouse on 800 DPI); v45: audit 11-01 fixes (link writes cut by a late IRQ, idle-stage flash slot, reads-paused hold past 35.8 min, no flash erase after APPLY); v44: no change from v43 but the number (the first update with 240-byte frames); v43: faster updates (240-byte frames, the staging slot erased ahead in 64 KB blocks)
 #define GW_STR2(x) #x
 #define GW_STR(x) GW_STR2(x)
 // v40: the version as text in the image: the QT Py reads it from an uploaded update (gw_ota.cc reports it, which keeps
@@ -1855,6 +1855,12 @@ static uint64_t raw_move_us = 0;     // the last frame with raw motion (gw_idle_
 static uint8_t pf_blk[GW_LINK_PROF_LEN];
 static uint8_t pc_blk[2][GW_LINK_PROFC_LEN];
 static bool pf_dirty = false, pc_dirty[2] = { false, false };
+// v63: the report pauses (gap_frame): counts by length since the Feather started, paused ms (3-49 ms ones) since then,
+// the longest 3-49 ms one and the frames the check covered this second; published as block 8
+#define GW_GAP_BUCKETS 5  // 3-4, 5-9, 10-19, 20-49, 50 ms and longer (that long may be a lift-off)
+static uint32_t gp_cnt[GW_GAP_BUCKETS], gp_ms = 0, gp_long = 0, gp_frames = 0;
+static uint8_t gp_blk[GW_LINK_GAP_LEN];
+static bool gp_dirty = false;
 static void put16(uint8_t* p, uint16_t v);
 static void put32(uint8_t* p, uint32_t v) {
     for (uint8_t i = 0; i < 4; i++) {
@@ -2006,6 +2012,28 @@ static void prof_publish(void) {  // once a second: the block, then the sums sta
         q[GW_LINK_PROFC_LEN - 1] = gw_crc8(q, GW_LINK_PROFC_LEN - 1);
         pc_dirty[c] = true;
     }
+    // v63: block 8, layout 1: 'R', 1, the second's number (uint16, as blocks 6-7), 4-23 report pauses since the Feather
+    // started by length (uint32 x GW_GAP_BUCKETS: 3-4, 5-9, 10-19, 20-49, 50+ ms), 24-27 paused ms of the 3-49 ms ones since
+    // then (uint32), 28-29 the longest 3-49 ms one this second (ms), 30-31 frames the check covered this second (moving,
+    // DPI known, not settling), 32-35 seconds since the Feather started (as blocks 6-7), crc8 last
+    {
+        uint8_t* g = gp_blk;
+        memset(g, 0, GW_LINK_GAP_LEN);
+        g[0] = 'R';  // not 'G', 1: that is the status block's start (the QT Py's read_sel takes it as one)
+        g[1] = 1;
+        put16(g + 2, pf_seq);
+        for (uint8_t k = 0; k < GW_GAP_BUCKETS; k++) {
+            put32(g + 4 + 4 * k, gp_cnt[k]);
+        }
+        put32(g + 24, gp_ms);
+        put16(g + 28, (gp_long > 65535) ? 65535 : gp_long);
+        put16(g + 30, (gp_frames > 65535) ? 65535 : gp_frames);
+        put32(g + 32, ev_secs);
+        g[GW_LINK_GAP_LEN - 1] = gw_crc8(g, GW_LINK_GAP_LEN - 1);
+        gp_long = 0;
+        gp_frames = 0;
+        gp_dirty = true;
+    }
     memset(pf_n, 0, sizeof(pf_n));
     memset(pf_worst_t, 0, sizeof(pf_worst_t));
     memset(pf_sum, 0, sizeof(pf_sum));
@@ -2062,6 +2090,9 @@ void gw_frame_time(uint32_t total_us, uint32_t chords_us) {
         if (pc_dirty[k]) {
             pc_dirty[k] = !gw_link_set_block(6 + k, pc_blk[k]);
         }
+    }
+    if (gp_dirty) {  // v63
+        gp_dirty = !gw_link_set_block(8, gp_blk);
     }
     if (!started) {  // v25: the first window starts here, not at boot (it counted the ~0.5 s USB enumeration as one second: 255 skipped)
         started = true;
@@ -2638,10 +2669,58 @@ static void idle_restore() {
     idle_check_at = time_us_32() + 300000;
 }
 
+// v63: pauses in the mouse's reports mid-movement. Two frames with motion at GW_GAP_CMS or faster (the counts of that
+// one frame: at 1000 Hz a report a millisecond, so at any DPI over 800 a frame of a hand at that speed never holds 0)
+// with 3 or more frames between them that held none: no hand stops dead from that speed and starts again at it, so the
+// mouse or its receiver held its reports back (the 11-06 recording: ~10 ms with nothing, then the motion in a burst).
+// Counted by the empty frames, cumulative since the Feather started (outside settling, DPI known, not on the idle
+// stage), and published once a second as link block 8 (prof_publish)
+#define GW_GAP_CMS 15
+static uint64_t gp_last_us = 0;
+static bool gp_last_fast = false;
+static uint16_t gp_dpi = 0;
+static int64_t gp_thr2 = 0;  // (GW_GAP_CMS cm/s in counts a millisecond)^2 at gp_dpi
+
+static void gap_frame(const int32_t* x, const int32_t* y, bool moved) {
+    uint16_t dpi = gw_mouse_dpi();
+    uint64_t now = time_us_64();
+    bool ok = dpi && !idle_low && !idle_checking && (now >= settle_until_us);
+    if (ok && gw_curve_moving()) {
+        gp_frames++;  // the frames the check covered: moving, DPI known, not settling
+    }
+    if (!moved) {
+        return;
+    }
+    if (dpi != gp_dpi) {
+        gp_dpi = dpi;
+        gp_thr2 = (int64_t) GW_GAP_CMS * GW_GAP_CMS * dpi * dpi / (2540LL * 2540LL);
+    }
+    int64_t dx = (x != NULL) ? *x : 0, dy = (y != NULL) ? *y : 0;
+    bool fast = ok && (dx * dx + dy * dy >= gp_thr2) && (gp_thr2 > 0);
+    if (fast && gp_last_fast) {
+        uint32_t frames = (uint32_t) ((now - gp_last_us + 500) / 1000);  // this frame and the empty ones before it
+        if (frames >= 4) {
+            uint32_t empty = frames - 1;
+            uint8_t k = (empty < 5) ? 0 : (empty < 10) ? 1 : (empty < 20) ? 2 : (empty < 50) ? 3 : 4;
+            gp_cnt[k]++;
+            if (k < 4) {
+                gp_ms += empty;
+                if (empty > gp_long) {
+                    gp_long = empty;
+                }
+            }
+        }
+    }
+    gp_last_us = now;
+    gp_last_fast = fast;
+}
+
 void gw_idle_frame(int32_t* const* ch, const int32_t* x, const int32_t* y) {
-    if (((x != NULL) && (*x != 0)) || ((y != NULL) && (*y != 0))) {
+    bool moved = ((x != NULL) && (*x != 0)) || ((y != NULL) && (*y != 0));
+    if (moved) {
         raw_move_us = time_us_64();  // v59: the still / moving split's fallback with no DPI known
     }
+    gap_frame(x, y, moved);  // v63
     bool used = false;
     for (int i = 0; (i < GW_CH_IN) && !used; i++) {
         used = (ch[i] != NULL) && (*ch[i] != 0);

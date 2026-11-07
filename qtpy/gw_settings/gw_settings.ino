@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 94    // this firmware's number, shown in /api/status; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 95    // this firmware's number, shown in /api/status; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -2880,7 +2880,7 @@ static uint8_t read_sel_once(uint8_t which, uint8_t* b, uint8_t len) {  // 0 ok,
         lvf_bad_len = len;
         return 1;
     }
-    if ((b[0] != 'L') && (b[0] != 'H') && (b[0] != 'F') && (b[0] != 'P')) {  // fw77: + 'F', block 4; fw82: + 'P', block 5
+    if ((b[0] != 'L') && (b[0] != 'H') && (b[0] != 'F') && (b[0] != 'P') && (b[0] != 'R')) {  // fw77: + 'F', block 4; fw82: + 'P', block 5; fw95: + 'R', block 8
         lvf_mark++;
         return 1;
     }
@@ -2968,6 +2968,8 @@ static void pf_stale() {  // fw87: no current profile (a failed read, an older F
 #define PW_NS 24
 #define PW_MAIN 13  // the Feather's GW_PROF_MAIN: a frame is sections 0-12 (13-19 are inside 7, 20-23 inside 0)
 #define PC_LEN 128
+#define GP_LEN 40  // fw95: block 8 (Feather v63), the mouse's report pauses
+#define GP_B 5     // 3-4, 5-9, 10-19, 20-49, 50+ ms
 #define PW_FIVE 300000UL
 #define PW_HOUR 3600000UL
 struct PwCls {  // one kind of frame over one Feather second, as its block holds it
@@ -2984,6 +2986,9 @@ struct PwSec {
     uint16_t irq_n;
     uint16_t gap;     // fw92: Feather seconds since the second read before it (1 = none missed; its missed covers them all)
     bool has5;        // fw92: block 5 read with it (irq_*)
+    bool hasg;        // fw95: block 8 read with it (Feather v63: the mouse's report pauses)
+    uint16_t gp[GP_B];  // fw95: report pauses since the second before it, by length (GP_B buckets)
+    uint16_t gms, glong, gfr;  // fw95: paused ms (3-49 ms ones), the longest 3-49 ms one, frames the check covered
     PwCls c[2];  // still, moving
 };
 struct PwAggC {
@@ -2998,12 +3003,16 @@ struct PwAggC {
 struct PwAgg {
     uint32_t bin, n, missed, smissed, irq_s;  // bin: the slot's number + 1 (millis / slot length; 0 = empty); n: seconds in it; irq_s: of them with block 5
     float irq_us, irq_n;
+    uint32_t gs, gp[GP_B], gms, gfr;  // fw95: seconds with block 8, report pauses by length, paused ms, frames checked
+    uint16_t glong;
     PwAggC c[2];
 };
 static PwSec pw_s[60];
 static uint8_t pw_sh = 0, pw_sn = 0;
 static PwAgg pw_f[12], pw_h[24];  // 5-minute and 1-hour slots
 static uint32_t pw_mtot = 0, pw_up = 0, pw_last_t = 0, pw_stot = 0;
+static uint32_t pw_gtot[GP_B], pw_gmtot = 0;  // fw95: block 8's since-start counts as last read
+static bool pw_g_ok = false;
 static bool pw_mtot_ok = false;
 static uint16_t pc_seq = 0;
 static bool pc_seq_ok = false;
@@ -3085,6 +3094,15 @@ static void pw_add_sec(void* ap, const void* sp) {
         a.irq_us += s.irq_us;
         a.irq_n += s.irq_n;
     }
+    if (s.hasg) {  // fw95
+        a.gs++;
+        for (uint8_t k = 0; k < GP_B; k++) {
+            a.gp[k] += s.gp[k];
+        }
+        a.gms += s.gms;
+        a.gfr += s.gfr;
+        a.glong = mx16(a.glong, s.glong);
+    }
     pwc_add_sec(&a.c[0], &s.c[0]);
     pwc_add_sec(&a.c[1], &s.c[1]);
 }
@@ -3098,6 +3116,13 @@ static void pw_merge(void* ap, const void* bp) {
     a.irq_s += b.irq_s;
     a.irq_us += b.irq_us;
     a.irq_n += b.irq_n;
+    a.gs += b.gs;  // fw95
+    for (uint8_t k = 0; k < GP_B; k++) {
+        a.gp[k] += b.gp[k];
+    }
+    a.gms += b.gms;
+    a.gfr += b.gfr;
+    a.glong = mx16(a.glong, b.glong);
     pwc_merge(&a.c[0], &b.c[0]);
     pwc_merge(&a.c[1], &b.c[1]);
 }
@@ -3130,8 +3155,8 @@ static bool pc_parse(const uint8_t* q, uint8_t kind, void* cp) {
     return true;
 }
 
-// a new Feather second: blocks 6 and 7 (b5, block 5 of the same moment, or nullptr)
-static bool pw_record(const uint8_t* b6, const uint8_t* b7, const uint8_t* b5) {
+// a new Feather second: blocks 6 and 7 (b5, block 5 of the same moment, or nullptr; fw95: b8, block 8 of that second, or nullptr)
+static bool pw_record(const uint8_t* b6, const uint8_t* b7, const uint8_t* b5, const uint8_t* b8) {
     PwSec& s = pw_s[pw_sh];
     if (!pc_parse(b6, 0, &s.c[0]) || !pc_parse(b7, 1, &s.c[1])) {
         return false;
@@ -3154,6 +3179,24 @@ static bool pw_record(const uint8_t* b6, const uint8_t* b7, const uint8_t* b5) {
     s.has5 = (b5 != nullptr);
     s.irq_us = b5 ? le32(b5 + 5) : 0;
     s.irq_n = b5 ? (uint16_t) (b5[9] | b5[10] << 8) : 0;
+    // fw95: the report pauses from block 8's since-start counts (a restart: all of them count, as missed)
+    s.hasg = (b8 != nullptr);
+    memset(s.gp, 0, sizeof(s.gp));
+    s.gms = s.glong = s.gfr = 0;
+    if (b8) {
+        bool base = pw_g_ok && !restarted;
+        for (uint8_t k = 0; k < GP_B; k++) {
+            uint32_t c = le32(b8 + 4 + 4 * k), d = !pw_g_ok ? 0 : (!base || (c < pw_gtot[k])) ? c : c - pw_gtot[k];
+            s.gp[k] = (d > 65535) ? 65535 : d;
+            pw_gtot[k] = c;
+        }
+        uint32_t m = le32(b8 + 24), dm = !pw_g_ok ? 0 : (!base || (m < pw_gmtot)) ? m : m - pw_gmtot;
+        s.gms = (dm > 65535) ? 65535 : dm;
+        pw_gmtot = m;
+        s.glong = b8[28] | b8[29] << 8;
+        s.gfr = b8[30] | b8[31] << 8;
+        pw_g_ok = true;
+    }
     s.t = now;
     pw_sh = (pw_sh + 1) % 60;
     if (pw_sn < 60) {
@@ -3198,7 +3241,11 @@ static void pf_check() {
             return;
         }
         bool have5 = read_sel(5, b, PF_LEN) && (b[0] == 'P') && (b[1] == 3) && (b[2] <= 24);
-        if (pw_record(b6, b7, have5 ? b : nullptr)) {
+        // fw95 (Feather v63): block 8, the mouse's report pauses, of the same second (else that second has none: its counts
+        // land in the next one read, they're since the Feather started)
+        static uint8_t b8[GP_LEN];
+        bool have8 = (st[56] >= 63) && read_sel(8, b8, GP_LEN) && (b8[0] == 'R') && (b8[1] == 1) && ((b8[2] | b8[3] << 8) == (b6[5] | b6[6] << 8));
+        if (pw_record(b6, b7, have5 ? b : nullptr, have8 ? b8 : nullptr)) {
             pc_seq = b6[5] | b6[6] << 8;
             pc_seq_ok = true;
             pc_reads++;
@@ -3274,6 +3321,12 @@ static void h_perfwin() {
                 if (x.gap > win) {
                     a.missed -= x.missed;  // fw92: those happened over the gap, before this window
                     a.smissed -= x.smissed;
+                    if (x.hasg) {  // fw95: the same for the report pauses
+                        for (uint8_t k = 0; k < GP_B; k++) {
+                            a.gp[k] -= x.gp[k];
+                        }
+                        a.gms -= x.gms;
+                    }
                 }
             }
         }
@@ -3305,6 +3358,18 @@ static void h_perfwin() {
     j.reserve(2800);
     j = "{\"sup\":true,\"down\":" + String(down ? "true" : "false") + ",\"nodpi\":" + String(c.nodpi) + ",\"n\":" + String(a.n) + ",\"win_s\":" + String(win) + ",\"frames\":" + String(c.frames) +
         ",\"frames_all\":" + String(a.c[0].frames + a.c[1].frames) + ",\"missed\":" + String(a.missed) + ",\"settle_missed\":" + String(a.smissed) + ",\"settle_total\":" + String(pw_stot);
+    // fw95 (Feather v63): the mouse's report pauses in the window, whatever k (they happen mid-movement): s = seconds with
+    // block 8, n = by length (3-4, 5-9, 10-19, 20-49, 50+ ms), ms = paused ms of the 3-49 ms ones, long = the longest of
+    // those, frames = the frames the check covered (moving, DPI known, not settling), tot = all since the Feather started
+    j += ",\"gaps\":{\"sup\":" + String((st_ok && (st[56] >= 63)) ? "true" : "false") + ",\"s\":" + String(a.gs) + ",\"n\":[";
+    for (uint8_t k = 0; k < GP_B; k++) {
+        j += String(k ? "," : "") + String(a.gp[k]);
+    }
+    j += "],\"ms\":" + String(a.gms) + ",\"long\":" + String(a.glong) + ",\"frames\":" + String(a.gfr) + ",\"tot\":[";
+    for (uint8_t k = 0; k < GP_B; k++) {
+        j += String(k ? "," : "") + String(pw_gtot[k]);
+    }
+    j += "]}";
     if (!c.frames) {
         server.send(200, "application/json", j + ",\"perf\":null,\"prof\":null}");
         return;
