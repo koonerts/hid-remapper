@@ -45,5 +45,6 @@ uint16_t gw_mouse_dpi(void);
 // frame's motion. A button, the wheel or real movement is use: two idle minutes put the mouse on its lowest-DPI stage
 // so it can sleep, and use puts the stage back.
 void gw_idle_frame(int32_t* const* ch, const int32_t* x, const int32_t* y);
+void gw_gap_totals(uint32_t* cnt, uint32_t* ms, uint32_t* frames);  // v66: the report pauses since the start (cnt: 5 lengths), for tests
 
 #endif

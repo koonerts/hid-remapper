@@ -497,7 +497,7 @@ post('/api/chords?defaults=1').then(x=>{say(x,'Back to the built-in chords');if(
 function us(v){return v>=1020?'1020+':String(v)}
 // frame timing (Feather v15+; the whole frame from v19): a bar of each 1 ms frame's use, then the parts
 // QT Py fw41: what each frame-timing row measures (hover on a computer, tap on a phone)
-const PTIP={gap:'The mouse sends a report every 1 ms while it moves. A pause is 3 or more frames with no report between two that carry a hand moving 15 cm/s or faster: no hand stops dead and starts again like that, so the mouse or its receiver held the reports back (the motion then comes in a burst, which feels like a stutter or a low DPI). Frames skipped are the Feather being late; these are the mouse being late, so the Feather has nothing to pass on. Red: one of 10 ms or longer. Longer than 50 ms is counted apart: a lift-off mid-swipe looks the same. Click: show this.',usb:'Every 1 ms a timer interrupt talks to the mouse over USB (start of frame, then its latest report). This is the time spent in that interrupt; the frame\'s tick is marked when it ends.',
+const PTIP={gap:'The mouse sends a report every 1 ms while it moves. A pause is 3 or more frames with no report between two that carry a hand moving 15 cm/s or faster: no hand stops dead and starts again like that, so the mouse or its receiver held the reports back (the motion then comes in a burst, which feels like a stutter or a low DPI). Frames skipped are the Feather being late; these are the mouse being late, so the Feather has nothing to pass on. Counted only with the mouse\'s DPI read and at 1000 Hz polling or faster, and never over frames the Feather itself lost. Red: one of 10 ms or longer. Longer than 50 ms is counted apart: a lift-off mid-swipe looks the same. Click: show this.',usb:'Every 1 ms a timer interrupt talks to the mouse over USB (start of frame, then its latest report). This is the time spent in that interrupt; the frame\'s tick is marked when it ends.',
 remap:'After the tick, the main loop turns the mouse\'s latest input into the report for the PC or XIM: chords, direction gains (about 11 µs a frame at rest, 40 µs while moving), the cm/360 card\'s measured turn, the speed curve (Feather v30+: a square root and an exponential a frame), DPI and sensor logic, and every 20 ms the status for the QT Py.',
 chord:'The chord-detection part of the remapping. The direction gains run after it and are not in this row.',
 tick:'From the tick to the moment that frame\'s report is built and queued: the remapping plus the short wait before the loop picks the tick up. The PC or XIM then reads it on its own 1 ms schedule (0 to 1 ms later, not shown). Over 1000 µs the next tick would come first and a frame would be skipped.',
@@ -518,14 +518,14 @@ function ptSpan(s){return s<90?Math.round(s)+' s':s<5400?Math.round(s/60)+' min'
 /* 11-06 (Feather v63, QT Py fw95): pauses in the mouse's own reports mid-swipe. The last second of All frames shows the
    status, so its pauses come from their own /api/perfwin read */
 let gpS=null,gpAt=0,gpBusy=false;
-function gpTick(){if(ptOwn()||!S||S.fw<63||gpBusy||Date.now()-gpAt<900)return;gpBusy=true;gpAt=Date.now();fetchJ('/api/perfwin?w=s&k=a',{cache:'no-store'}).then(d=>{gpBusy=false;gpS=d&&d.sup?d:null;if(S)drawPerf(S.perf)}).catch(()=>{gpBusy=false})}
-function drawGap(win){const el=$('pgap');if(!el)return;if(!S||S.fw<63){el.hidden=true;return}if(!ptOwn())gpTick();const d=ptOwn()?win:gpS,g=d&&d.gaps;
-if(!g||!g.sup){el.hidden=true;return}el.hidden=false;const n=g.n||[0,0,0,0,0],t=n[0]+n[1]+n[2]+n[3],mv=g.frames/60000,wl='the last '+PTW[ptw];
+function gpTick(){if(ptOwn()||!S||S.fw<66||gpBusy||Date.now()-gpAt<900)return;gpBusy=true;gpAt=Date.now();fetchJ('/api/perfwin?w=s&k=a',{cache:'no-store'}).then(d=>{gpBusy=false;gpS=d&&d.sup?d:null;if(S)drawPerf(S.perf)}).catch(()=>{gpBusy=false})}
+function drawGap(win){const el=$('pgap');if(!el)return;if(!S||S.fw<66){el.hidden=true;return}if(!ptOwn())gpTick();const d=ptOwn()?win:gpS,g=d&&d.gaps;
+if(!g||!g.sup){el.hidden=true;return}el.hidden=false;if(!g.s){el.classList.remove('bad');el.textContent='Pauses in the mouse\'s reports mid-swipe: no data for '+(ptw==='s'?'the last second':'the last '+PTW[ptw])+' yet.';el.title=PTIP.gap;return}const n=g.n||[0,0,0,0,0],t=n[0]+n[1]+n[2]+n[3],mv=g.frames/60000,wl='the last '+PTW[ptw];
 const parts=[['3-4 ms',n[0]],['5-9',n[1]],['10-19',n[2]],['20-49',n[3]]].filter(x=>x[1]).map(x=>x[0]+': '+x[1].toLocaleString());
 let s='Pauses in the mouse\'s reports mid-swipe: '+t.toLocaleString()+' in '+wl+(mv>=0.05&&ptw!=='s'?' ('+(t/mv).toFixed(1)+' a minute of movement, over '+ptSpan(g.frames/1000)+' moving)':'');
 if(t)s+=' · longest '+g.long+' ms · '+parts.join(', ')+' · '+g.ms.toLocaleString()+' ms paused in all';
 if(n[4])s+=' · 50 ms or longer: '+n[4].toLocaleString()+' (a lift-off looks the same)';
-if(d.n&&g.s<d.n*0.97)s+=' (counted for '+ptSpan(g.s)+' of it: Feather v63 and later)';
+if(d.n&&g.s<d.n*0.97)s+=' (counted for '+ptSpan(g.s)+' of it)';
 el.textContent=s+'.';el.title=PTIP.gap;el.classList.toggle('bad',n[2]+n[3]>0)}
 function drawPerf(pf){if(!ptSup&&S&&S.fw>=59)ptSup=true;/* 11-05 review: an older-Feather answer clears once the Feather reports v59 */const sel=$('ptwin');if(sel.value!==ptw)sel.value=ptw;document.querySelectorAll('#ptkind button').forEach(b=>b.classList.toggle('on',b.dataset.k===ptk));
 let pr=S&&S.prof,win=null,none='';
