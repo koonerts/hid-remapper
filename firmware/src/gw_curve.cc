@@ -457,6 +457,10 @@ bool gw_curve_moving(void) {
     return moving;
 }
 
+uint16_t gw_curve_dpi(void) {  // v65: the DPI the last frame's speed used (the mouse's, else the curve's saved one)
+    return dpi_now;
+}
+
 bool gw_curve_speed_known(void) {
     return dpi_now != 0;
 }
