@@ -280,7 +280,13 @@ int main() {
         gw_prof_set(21, 0);  // gw v55: this pass's report parsing and hook (remapper_single.cc), kept if it takes the tick
         gw_prof_set(22, 0);
         uint32_t gw_pass_at = time_us_32();
+        uint32_t gw_merged_at = ticks_merged();  // gw v64
         read_report(&new_report, &tick);
+        if (time_us_32() - gw_pass_at >= 20000) {
+            // gw v64: the USB host task blocked (a device plugged in: TinyUSB waits 50 + 450 ms before it tells anyone, then
+            // more resets; its normal worst is ~130 us). The frames it held up are settling, not a fault
+            gw_usb_stall(ticks_merged() - gw_merged_at);
+        }
         if (tick) {
             gw_prof_set(20, time_us_32() - gw_pass_at);  // the USB host task (it runs after the tick is taken)
             int32_t gw_late = (int32_t) (gw_pass_at - tick_taken_time());  // from the tick to this pass's start (v56: 0 when the tick came after it started)

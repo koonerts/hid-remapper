@@ -14,6 +14,7 @@ void gw_tick(const int32_t* registers);
 void gw_macro_tap(uint32_t usage, uint8_t frames);  // v35 (remapper.cc): press this usage for about frames ms, then let go
 // remapper.cc, once per frame: how long the frame's processing took, and the chord filter's share (us)
 void gw_frame_time(uint32_t total_us, uint32_t chords_us);
+void gw_usb_stall(uint32_t merged);  // v64: main.cc, frames a blocked USB host task held up (settling)
 // v50: where each frame's time goes, for the QT Py (link block 5, built each second in gw_frame_time). remapper.cc calls
 // gw_prof_start() as process_mapping starts (section 0 = from the frame's tick to there) and gw_prof_mark(k) as each of
 // its sections 1..GW_PROF_MAIN-1 ends. v51: sections GW_PROF_MAIN.. are parts of gw_tick (inside section 7, so not in a
