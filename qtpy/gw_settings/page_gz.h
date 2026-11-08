@@ -6,14 +6,10 @@
 #define PAGE_SRC_FNV 0x384ff2cau  // FNV-1a of the page (259547 bytes)
 #define PAGE_GZ_LEN 90600
 
-constexpr uint32_t page_src_fnv(const char* s, size_t n) {
-    uint32_t h = 2166136261u;
-    for (size_t i = 0; i < n; i++) {
-        h = (h ^ (uint8_t) s[i]) * 16777619u;
-    }
-    return h;
-}
-static_assert(page_src_fnv(PAGE_HTML, sizeof(PAGE_HTML) - 1) == PAGE_SRC_FNV, "page_gz.h is older than page.h: run qtpy/gw_settings/page_gz.ps1");
+#define PAGE_SRC_LEN 259547
+// 11-07: a length check, not the FNV over the whole page at compile time (a constexpr loop: ~1.5 s a build, and GCC stops
+// at 262144 steps, which the page was 2.6 KB short of). qtpy-build.ps1 runs page_gz.ps1 before every build anyway
+static_assert(sizeof(PAGE_HTML) - 1 == PAGE_SRC_LEN, "page_gz.h is older than page.h: run qtpy/gw_settings/page_gz.ps1");
 
 static const uint8_t PAGE_GZ[PAGE_GZ_LEN] PROGMEM = {
     0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x0a, 0xcc, 0xbd, 0x5b, 0x77, 0x1b, 0x47, 0x96, 0x26, 0xfa, 0xae, 0x5f, 0x91, 0xa2, 0xbb,

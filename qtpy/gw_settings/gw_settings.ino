@@ -26,7 +26,13 @@
 #include <nvs.h>  // fw62: nvs_get_stats (diag)
 #include <FFat.h>
 
-#include "page_gz.h"  // fw35: the page gzipped (page_gz.ps1 makes it from page.h; the build checks it is current)
+// fw35: the page gzipped (page_gz.ps1 makes it from page.h); 11-07: its bytes live in page_data.cpp, compiled on their own
+extern const uint8_t* const gw_page_gz;
+extern const size_t gw_page_gz_len;
+extern const uint32_t gw_page_src_fnv;
+#define PAGE_GZ gw_page_gz
+#define PAGE_GZ_LEN gw_page_gz_len
+#define PAGE_SRC_FNV gw_page_src_fnv
 
 #define LINK_ADDR 0x42
 #define LINK_SDA 41  // STEMMA QT (Wire1)
