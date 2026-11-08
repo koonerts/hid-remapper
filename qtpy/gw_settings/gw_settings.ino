@@ -36,7 +36,7 @@
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 97    // this firmware's number, shown in /api/status; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 99    // this firmware's number, shown in /api/status; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -401,14 +401,20 @@ static bool cvdg_save() {
 // its curve-vs-curve A/B keep them apart. NVS "cvd<id>".
 // fw76: shares in 0.1 % (10-990, so 2.5 %); fw67-75 kept whole % (uint8, DC_V1_SIZE bytes a curve: LIB_VER 1's file and
 // NVS "cvd<id>"), converted at boot by cvdc_from_v1 (share x 10)
-#define DC_N 6
+// fw98: 10 points (Feather v68); fw67-97 had 6 (DC_OLD_N): LIB_VER 1-2 files, NVS "cvd<id>" and /cvhist.bin records of
+// that size are converted when read (cvdc_from_v1 / cvdc_from_old)
+#define DC_N 10
+#define DC_OLD_N 6
+#define DC_FEATHER_N(v) (((v) >= 68) ? DC_N : DC_OLD_N)  // points the Feather (status byte 56) takes
 struct __attribute__((packed)) CurveDecel {
     uint8_t n;  // 0 = none
     uint16_t p10[DC_N];  // fw76: share of the peak speed, 0.1 %
     uint16_t g[DC_N];
 };
-static_assert(sizeof(CurveDecel) == 1 + 4 * DC_N, "LIB_VER 2's layout");
-#define DC_V1_SIZE (1 + 3 * DC_N)  // fw76: fw67-75's CurveDecel { uint8 n; uint8 pct[6]; uint16 g[6] }, 19 bytes
+static_assert(sizeof(CurveDecel) == 1 + 4 * DC_N, "LIB_VER 3's layout");
+#define DC_V1_SIZE (1 + 3 * DC_OLD_N)  // fw76: fw67-75's CurveDecel { uint8 n; uint8 pct[6]; uint16 g[6] }, 19 bytes
+#define DC_V2_SIZE (1 + 4 * DC_OLD_N)  // fw98: fw76-97's { uint8 n; uint16 p10[6]; uint16 g[6] }, 25 bytes
+static_assert(DC_V1_SIZE == 19 && DC_V2_SIZE == 25, "the old layouts");
 static CurveDecel cvdc[CVLIB_N];
 static CurveDecel cvdc_nv[CVLIB_N];
 static bool cvdc_blob = false;  // never an old blob (slots_save asks)
@@ -439,10 +445,20 @@ static bool cvdc_save() {
 static void cvdc_from_v1(int k, const uint8_t* o) {
     CurveDecel& d = cvdc[k];
     memset(&d, 0, sizeof(d));
-    d.n = o[0];
-    for (int i = 0; i < DC_N; i++) {
+    d.n = (o[0] > DC_OLD_N) ? DC_OLD_N : o[0];
+    for (int i = 0; i < DC_OLD_N; i++) {  // fw98: the old point count (the offsets are by it)
         d.p10[i] = (uint16_t) o[1 + i] * 10;
-        d.g[i] = (uint16_t) (o[1 + DC_N + 2 * i] | (o[2 + DC_N + 2 * i] << 8));
+        d.g[i] = (uint16_t) (o[1 + DC_OLD_N + 2 * i] | (o[2 + DC_OLD_N + 2 * i] << 8));
+    }
+}
+// fw98: slot k's slow-down gain from fw76-97's DC_V2_SIZE bytes (6 points: n, p10[6], g[6]); the 4 new points stay empty
+static void cvdc_from_old(void* dp, const uint8_t* o) {
+    CurveDecel& d = *(CurveDecel*) dp;
+    memset(&d, 0, sizeof(d));
+    d.n = (o[0] > DC_OLD_N) ? DC_OLD_N : o[0];
+    for (int i = 0; i < DC_OLD_N; i++) {
+        d.p10[i] = (uint16_t) (o[1 + 2 * i] | (o[2 + 2 * i] << 8));
+        d.g[i] = (uint16_t) (o[1 + 2 * DC_OLD_N + 2 * i] | (o[2 + 2 * DC_OLD_N + 2 * i] << 8));
     }
 }
 static bool cvt_cand = false;           // BallSheet's A/B block runs the candidate
@@ -1694,7 +1710,7 @@ static void h_status() {
              ",\"name\":\"" + String(cv_id ? cvlib[cv_id - 1].name : "") + "\",\"cand_name\":\"" + String(cv_cand ? cvlib[cv_cand - 1].name : "") + "\"" + (lib_off ? ",\"liboff\":true" : "");  // audit 11-01: liboff = the library didn't load; fw48: temp = a BallSheet curve-off run; fw49: ids, names, tcand = its candidate block
         String dc = dc_json(cv_id);  // fw67: the running curve's slow-down gain, and the Feather's copy (dcsup = Feather v39+)
         bool dsup = dc_supported() && ev_ok;
-        j += ",\"dc\":" + (dc.length() ? dc : String("null")) + ",\"dcsup\":" + String(dc_supported() ? "true" : "false") + ",\"dcon\":" + String(dsup && (evb[60] & 4) ? "true" : "false") +
+        j += ",\"dc\":" + (dc.length() ? dc : String("null")) + ",\"dcsup\":" + String(dc_supported() ? "true" : "false") + ",\"dcmax\":" + String(st_ok ? DC_FEATHER_N(st[56]) : DC_N) + ",\"dcon\":" + String(dsup && (evb[60] & 4) ? "true" : "false") +
              ",\"dcapplied\":" + String(dsup && dc_applied() ? "true" : "false") + ",\"dcsends\":" + String(dc_sends) + "}";
     }
     j += String(",\"tdpi\":{\"on\":") + (tdpi_active ? "true" : "false") + ",\"dpi\":" + String(tdpi_val) + ",\"restoring\":" + (tdpi_restore ? "true" : "false") + ",\"bad\":" + String(tdpi_bad) + "}";  // fw28: the calibration's temporary DPI
@@ -2725,6 +2741,10 @@ static uint8_t dc_payload(uint8_t* d) {
         return 1;
     }
     const CurveDecel& c = *cp;
+    if (st_ok && (c.n > DC_FEATHER_N(st[56]))) {
+        d[0] = 0;  // fw98 (review): more points than this Feather takes (v68 for 7-10): sent as none, so it isn't refused and resent forever (status cv.dcmax: the page says why)
+        return 1;
+    }
     uint8_t n = (c.n > DC_N) ? DC_N : c.n;  // fw76: never past the caller's buffer
     d[0] = cv_wanted() ? 1 : 0;
     if (st[56] >= 47) {
@@ -3826,7 +3846,10 @@ struct __attribute__((packed)) CvHist {
     uint16_t sp0[CV_N], g0[CV_N], sp1[CV_N], g1[CV_N];
     CurveDecel d0, d1;
 };
-static_assert(sizeof(CvHist) == 144, "/cvhist.bin's layout");
+static_assert(sizeof(CvHist) == 176, "/cvhist.bin's layout");  // fw98: 10-point slow-down gains (fw86-97: 144, read by cvhist_read)
+#define CVH_OLD_SIZE 144
+#define CVH_HEAD (sizeof(CvHist) - 2 * sizeof(CurveDecel))  // the part before d0, the same in both layouts
+static_assert(CVH_HEAD + 2 * DC_V2_SIZE == CVH_OLD_SIZE, "fw86-97's record: the head, then two 6-point slow-down gains");
 static CvHist cvhist[EDIT_LOG];
 static uint8_t cvhist_n = 0;
 
@@ -3839,7 +3862,22 @@ static bool cvhist_read(const char* path) {  // fw87: true if the file holds a w
         return false;
     }
     uint8_t n = 0;
-    bool ok = (f.read(&n, 1) == 1) && (n <= EDIT_LOG) && (f.read((uint8_t*) cvhist, sizeof(CvHist) * n) == sizeof(CvHist) * n);
+    bool ok = (f.read(&n, 1) == 1) && (n <= EDIT_LOG);
+    size_t rest = ok ? f.size() - 1 : 0;
+    if (ok && n && (rest == (size_t) CVH_OLD_SIZE * n) && (rest != sizeof(CvHist) * n)) {
+        // fw98: fw86-97's records (6-point slow-down gains): each read and widened, the 4 new points empty
+        static uint8_t o[CVH_OLD_SIZE];
+        for (uint8_t k = 0; ok && (k < n); k++) {
+            ok = f.read(o, CVH_OLD_SIZE) == CVH_OLD_SIZE;
+            if (ok) {
+                memcpy(&cvhist[k], o, CVH_HEAD);
+                cvdc_from_old(&cvhist[k].d0, o + CVH_HEAD);
+                cvdc_from_old(&cvhist[k].d1, o + CVH_HEAD + DC_V2_SIZE);
+            }
+        }
+    } else {
+        ok = ok && (f.read((uint8_t*) cvhist, sizeof(CvHist) * n) == sizeof(CvHist) * n);
+    }
     f.close();
     if (ok) {
         cvhist_n = n;
@@ -3964,8 +4002,8 @@ static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_
         String one = (comma < 0) ? ds.substring(at) : ds.substring(at, comma);
         int colon = one.indexOf(':');
         long p = (colon > 0) ? dc_p10_arg(one.substring(0, colon)) : -1, gv = (colon > 0) ? one.substring(colon + 1).toInt() : 0;  // fw76: p in 0.1 %
-        if ((*dn >= DC_N) || (p < 10) || (p > 990) || (*dn && (p <= dp[*dn - 1])) || (gv < 250) || (gv > 4000)) {
-            return "slow-down gain: 1-6 points share:gain, shares 1-99 % in 0.1 % steps and rising, gains 250-4000 per mille";
+        if ((*dn >= (st_ok ? DC_FEATHER_N(st[56]) : DC_OLD_N)) || (p < 10) || (p > 990) || (*dn && (p <= dp[*dn - 1])) || (gv < 250) || (gv > 4000)) {
+            return ((*dn >= DC_OLD_N) && (*dn < DC_N) && (!st_ok || (st[56] < 68))) ? (st_ok ? "slow-down gain: more than 6 points needs Feather firmware v68" : "slow-down gain: more than 6 points needs the Feather answering (firmware v68): try again in a moment") : "slow-down gain: 1-10 points share:gain, shares 1-99 % in 0.1 % steps and rising, gains 250-4000 per mille";
         }
         dp[*dn] = (uint16_t) p;
         dgv[(*dn)++] = (uint16_t) gv;
@@ -4961,14 +4999,16 @@ static void h_update_done() {
 #define LIB_MAGIC 0x56435747u  // "GWCV"
 // fw76: LIB_VER 2: cvdc's shares in 0.1 % (uint16). A v1 file (fw71-75: whole %, DC_V1_SIZE bytes a curve) still reads,
 // its shares x 10; boot then writes the library back as v2 (lib_write: the v1 file stays /curves.bak until the next write)
-#define LIB_VER 2
+// fw98: LIB_VER 3: cvdc with 10 points (DC_N). v2 files (fw76-97: 6 points, DC_V2_SIZE bytes a curve) read too, converted
+#define LIB_VER 3
 #define LIB_V1_BODY (sizeof(cvlib) + sizeof(cvdg) + sizeof(cvmeta) + CVLIB_N * DC_V1_SIZE)
+#define LIB_V2_BODY (sizeof(cvlib) + sizeof(cvdg) + sizeof(cvmeta) + CVLIB_N * DC_V2_SIZE)
 struct __attribute__((packed)) LibHead {
     uint32_t magic;
     uint16_t ver, n;
     uint32_t crc;  // CRC-32 of the four tables after it, in this order: cvlib, cvdg, cvmeta, cvdc (as the file holds them)
 };
-static bool lib_v1 = false;  // fw76: the library loaded at boot came from a v1 file (converted; boot writes it back as v2)
+static bool lib_v1 = false;  // fw76: the library loaded at boot came from an older file (fw98: v1 or v2; converted, boot writes it back as LIB_VER)
 
 static uint32_t lib_crc() {
     uint32_t c = fo_crc32((const uint8_t*) cvlib, sizeof(cvlib), 0);
@@ -4980,14 +5020,14 @@ static uint32_t lib_crc() {
 // a library file's tables, checked; into: false = only check it
 static bool lib_read(const char* path, bool into) {
     static uint8_t body[sizeof(cvlib) + sizeof(cvdg) + sizeof(cvmeta) + sizeof(cvdc)];
-    static_assert(LIB_V1_BODY < sizeof(body), "a v1 body fits the buffer");
+    static_assert((LIB_V1_BODY < sizeof(body)) && (LIB_V2_BODY < sizeof(body)), "v1 and v2 bodies fit the buffer");
     File f = FFat.open(path, "r");
     if (!f) {
         return false;
     }
     LibHead h = {};
-    bool head = (f.read((uint8_t*) &h, sizeof(h)) == sizeof(h)) && (h.magic == LIB_MAGIC) && ((h.ver == LIB_VER) || (h.ver == 1)) && (h.n == CVLIB_N);
-    size_t len = (h.ver == 1) ? LIB_V1_BODY : sizeof(body);  // fw76: a v1 file's body is shorter (its cvdc)
+    bool head = (f.read((uint8_t*) &h, sizeof(h)) == sizeof(h)) && (h.magic == LIB_MAGIC) && ((h.ver == LIB_VER) || (h.ver == 1) || (h.ver == 2)) && (h.n == CVLIB_N);
+    size_t len = (h.ver == 1) ? LIB_V1_BODY : (h.ver == 2) ? LIB_V2_BODY : sizeof(body);  // fw76/fw98: older files' cvdc is shorter
     bool ok = head && (f.read(body, len) == len) && (fo_crc32(body, len, 0) == h.crc);
     f.close();
     if (!ok || !into) {
@@ -5000,10 +5040,14 @@ static bool lib_read(const char* path, bool into) {
     p += sizeof(cvdg);
     memcpy(cvmeta, p, sizeof(cvmeta));
     p += sizeof(cvmeta);
-    lib_v1 = (h.ver == 1);
-    if (lib_v1) {
+    lib_v1 = (h.ver != LIB_VER);
+    if (h.ver == 1) {
         for (int k = 0; k < CVLIB_N; k++) {
             cvdc_from_v1(k, p + DC_V1_SIZE * k);  // fw76: whole % -> 0.1 %
+        }
+    } else if (h.ver == 2) {
+        for (int k = 0; k < CVLIB_N; k++) {
+            cvdc_from_old(&cvdc[k], p + DC_V2_SIZE * k);  // fw98: 6 points -> 10
         }
     } else {
         memcpy(cvdc, p, sizeof(cvdc));
@@ -5934,6 +5978,12 @@ void setup() {
         bool got = false;
         if (len == sizeof(CurveDecel)) {
             got = prefs.getBytes(key, &cvdc[k], sizeof(CurveDecel)) == sizeof(CurveDecel);
+        } else if (len == DC_V2_SIZE) {  // fw98: fw76-97's 6 points
+            uint8_t o[DC_V2_SIZE];
+            got = prefs.getBytes(key, o, sizeof(o)) == sizeof(o);
+            if (got) {
+                cvdc_from_old(&cvdc[k], o);
+            }
         } else if (len == DC_V1_SIZE) {
             uint8_t o[DC_V1_SIZE];
             got = prefs.getBytes(key, o, sizeof(o)) == sizeof(o);

@@ -226,7 +226,7 @@ void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
 // the first slow-down frame after the peak changed; a segment's slope per cm/s (rise / (width * peak)) on the first
 // frame in it. dc_tpk (above dc_stroke) = the peak they are for (-1 = none)
 static float dc_tk[GW_DECEL_N + 1], dc_ts[GW_DECEL_N + 1];
-static uint8_t dc_tok = 0;
+static uint16_t dc_tok = 0;  // v68: a bit per segment, up to GW_DECEL_N + 1 = 11 (uint8_t held 8)
 static float __not_in_flash_func(decel_spd)(float v) {  // v = the speed, below the stroke's peak (both 0.1 cm/s or more)
     if (fbits(dc_tpk) != fbits(dc_pk)) {
         for (uint8_t k = 0; k < dc_n; k++) {
@@ -243,7 +243,7 @@ static float __not_in_flash_func(decel_spd)(float v) {  // v = the speed, below 
         if (lt_pn(v, dc_tk[k])) {
             if (!(dc_tok & (1u << k))) {
                 dc_ts[k] = dc_dg[k] / (dc_dx[k] * dc_pk);
-                dc_tok |= (uint8_t) (1u << k);
+                dc_tok |= (uint16_t) (1u << k);
             }
             return dc_g[k - 1] + dc_ts[k] * (v - dc_tk[k - 1]);
         }

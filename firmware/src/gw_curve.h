@@ -23,7 +23,7 @@ void gw_curve_link(const uint8_t* d, uint8_t len);
 // by the speed as a share of that peak; speeding up is left alone. n points (1-GW_DECEL_N) of share in 0.1 % (v47;
 // 10-990 = 1.0-99.0 %, rising; whole % before) and gain per mille (clamped to GMIN..GMAX), straight lines between them,
 // the first held below it, and 100% = 1.0 implied (so it starts with no step). n = 0 or anything malformed = off.
-#define GW_DECEL_N 6
+#define GW_DECEL_N 10  // v68 (6 before): 1 + 4 x 10 = 41 bytes, inside the QT Py's 48-byte command frame
 void gw_curve_decel_set(bool on, uint8_t n, const uint16_t* p10, const uint16_t* g);
 // the payload as LINK_SET_DECEL carries it: [flags, n x point]. flags bit 0 = on; v47: bit 1 = 4-byte points (share
 // uint16 in 0.1 %, gain uint16), len 1 + 4n; without it 3-byte points (share whole % uint8, gain uint16), len 1 + 3n
