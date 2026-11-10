@@ -181,7 +181,7 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .edn{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:0 6px;margin-left:6px;color:var(--mut);white-space:nowrap}.edr .edd{margin:2px 0 0}
 .edr>div{min-width:0}.edc{border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin:5px 0 3px}.edc th,.edc td{padding:1px 0 1px 12px;text-align:right;white-space:nowrap;font-weight:400;border:0}
 .edc th:first-child,.edc tbody th{padding-left:0;text-align:left;min-width:6.5em;color:var(--mut)}.edc thead th{font-size:11.5px;color:var(--mut)}.edc .ed0,.edc .eda,.edc .edz{color:var(--mut)}.edc .eda,.edc .ed1{padding-left:7px}.edc .ed1{font-weight:600}
-.edc .edu{color:var(--acc)}.edc .edw{color:var(--warn)}.edc tfoot td{text-align:left;padding:3px 0 0;color:var(--mut);font-size:12px}@media (max-width:480px){.edr{grid-template-columns:1fr}}
+.edrs{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin:4px 0 1px}.edrs button{min-width:12em}.edrs .mut{font-size:12px}.edc .edu{color:var(--acc)}.edc .edw{color:var(--warn)}.edc tfoot td{text-align:left;padding:3px 0 0;color:var(--mut);font-size:12px}@media (max-width:480px){.edr{grid-template-columns:1fr}}
 @media (max-width:540px){.cdo{grid-template-columns:1fr}}
 .cerr{color:var(--bad);font-size:12.5px;margin:6px 0 0}
 .cerr:empty{display:none}
@@ -926,7 +926,7 @@ function liHtml(a){const e=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 // 11-04 (QT Py fw86): curve entries (kind 15). Text: R<id>:<what> a Replace (c points, d slow-down, t smoothing, l linear
 // cm/360), U<id> <name> Use, L<id> <S> linear cm/360 set, "N hosts"/"off" the running curve's hosts; before fw86 "replace "/"use "/
 // "linear " and a name cut to 15 characters. Replace's before and after come from /api/curvehist (cvHist), matched by time and id
-let cvHist=null,cvHistKey='';
+let cvHist=null,cvHistKey='',edHtml='';
 // 11-04: library ids are reused after a delete, so a library curve names an entry only if it was added at or before the
 // entry's time t (Unix s; 0 = unknown, no check). U entries keep their logged name unless the library name starts with it
 function cvAddedBy(c,t){return !t||!c.added||c.added<=t+120}/* 2 min for page clocks that differ (now_unix follows the sender's clock) */
@@ -952,7 +952,18 @@ xs.forEach(x=>{const p=ax.get(x),q=bx.get(x);if(p===q){same++;return}r+=cvTr(fx(
 return cvTbl(!a.length?h+' turned on':!b.length?h+' turned off':h,r,same?same+(same===1?' other point':' other points')+' unchanged':'')}
 function cvHistHtml(h){let o='';if(h.what&2)o+=cvPtsTbl('Slow-down',h.d0,h.d1,p=>cvDcPct(p/10)+'%');if(h.what&1)o+=cvPtsTbl('Curve',h.c0,h.c1,s=>s/10+' cm/s');
 let r='';if(h.what&4)r+=cvTr('Smoothing',h.tau[0]+' ms',h.tau[1]+' ms',cvSgn(h.tau[1]-h.tau[0],0)+' ms',h.tau[1]-h.tau[0]);if(h.what&8)r+=cvTr('cm/360',h.s10[0]/10,h.s10[1]/10,cvSgn((h.s10[1]-h.s10[0])/10,1),h.s10[1]-h.s10[0]);return o+cvTbl('Setting',r,'')}
-function edDetail(x){if(x[2]!==15||!cvHist||!/^R\d+:/.test(x[5]))return '';const id=Number(x[5].slice(1,x[5].indexOf(':'))),h=cvHist.find(c=>c.id===id&&Math.abs(c.t-x[0])<=1);return h?cvHistHtml(h):''}
+function edHist(x){if(x[2]!==15||!cvHist||!/^R\d+:/.test(x[5]))return null;const id=Number(x[5].slice(1,x[5].indexOf(':')));return cvHist.find(c=>c.id===id&&Math.abs(c.t-x[0])<=1)||null}
+// 11-09: a saved curve can go back to either side of a logged change, through the same Replace the editor uses. Two clicks, as Replace
+// original; the restore is logged like any save, so it can be restored in turn. A side equal to the curve as it is now says so
+let cvRsArm=null;
+function cvSide(h,s){return {T:s?h.c1:h.c0,D:s?h.d1:h.d0,tau:h.tau[s],s10:h.s10[s]}}
+function cvIsNow(c,v){const dc=c.dc||[];return c.n===v.T.length&&c.tau===v.tau&&(!v.s10||c.s10===v.s10)&&v.T.every((q,i)=>c.sp[i]===q[0]&&c.g[i]===q[1])&&dc.length===v.D.length&&v.D.every((q,i)=>Math.abs(dc[i][0]-q[0]/10)<.01&&dc[i][1]===q[1])}
+function cvRsHtml(h){const c=h&&cvLib&&cvLib.curves?cvLib.curves.find(x=>x.id===h.id):null;if(!c||!cvAddedBy(c,h.t)||!(h.what&15))return '';
+const one=(s,nm)=>{if(cvIsNow(c,cvSide(h,s)))return '<span class="mut">'+nm+' is the current version</span>';const k=h.t+':'+h.id+':'+s,on=cvRsArm&&cvRsArm.k===k;return '<button type="button" class="sm" title="Put the curve back to the '+nm+' column" onclick="cvRestore('+h.t+','+h.id+','+s+')">'+(on?'Click again to restore':'Restore '+nm)+'</button>'};
+return '<div class="edrs">'+one(0,'Before')+one(1,'After')+'</div>'}
+function cvRestore(t,id,s){const h=cvHist&&cvHist.find(c=>c.t===t&&c.id===id);if(!h)return;if(cvEd){say({ok:false,err:'close the curve editor first'});return}const k=t+':'+id+':'+s;
+if(!cvRsArm||cvRsArm.k!==k){cvRsArm={k};drawEvents();const a=cvRsArm;setTimeout(()=>{if(cvRsArm===a){cvRsArm=null;drawEvents()}},4000);return}
+cvRsArm=null;const v=cvSide(h,s);post('/api/curves?id='+id+'&replace=1&sp='+v.T.map(q=>q[0]).join(',')+'&g='+v.T.map(q=>q[1]).join(',')+'&tau='+v.tau+(v.D.length?'&dc='+v.D.map(q=>cvDcPct(q[0]/10)+':'+q[1]).join(','):'')+'&s10='+v.s10).then(r=>{say(r,'Restored the '+(s?'After':'Before')+' version');if(r&&r.ok)cvLibLoad();drawEvents()})}
 function cvHistLoad(ed){const k=(ed||[]).filter(x=>x[2]===15).map(x=>x[0]).join(',');if(k===cvHistKey||!k)return;cvHistKey=k;fetchJ('/api/curvehist').then(j=>{if(Array.isArray(j)){cvHist=j;drawEvents()}}).catch(()=>{cvHistKey=''})}
 // Sensor list: the Feather's events since it powered on (chords, wakes) plus the saved page edits of stage, angle and
 // position. With saved edits the Feather's own "Page" events are left out: the saved ones are the same edits, with the sender.
@@ -961,7 +972,7 @@ function drawEvents(){const ed=S.edits,items=[];
 (ed||[]).forEach(x=>{if((x[2]>=1&&x[2]<=3)||x[2]===10)items.push({at:edAt(x),s:edText(x)})});
 items.sort((p,q)=>q.at-p.at);const sh=items.slice(0,8),box=$('evbox');box.hidden=!sh.length;
 if(sh.length){$('evlast').textContent='Last change: '+whenText(sh[0].at)+'  '+sh[0].s;$('evlist').innerHTML=liHtml(sh)}
-const fe=$('fedits');fe.hidden=!ed||!ed.length;cvHistLoad(ed);if(ed&&ed.length){{const p=edSplit(ed[0]),at=edAt(ed[0]);$('edlast').textContent='Last: '+(at?edDay(at)+' '+edClock(at):'time unknown')+' \u00b7 '+p.what+(p.who?' ('+p.who+')':'')}$('edlist').innerHTML=edListHtml(ed)}}
+const fe=$('fedits');fe.hidden=!ed||!ed.length;cvHistLoad(ed);if(ed&&ed.length){{const p=edSplit(ed[0]),at=edAt(ed[0]);$('edlast').textContent='Last: '+(at?edDay(at)+' '+edClock(at):'time unknown')+' \u00b7 '+p.what+(p.who?' ('+p.who+')':'')}const eh=edListHtml(ed);if(eh!==edHtml){edHtml=eh;$('edlist').innerHTML=eh}}}
 // 11-04: the edit log by day: time, what, who (muted, the full address on hover); a curve Replace's changes under it.
 // Runs of the same entry without details (curve saves before fw86) fold into one row with a count and their time span
 function edSplit(x){const f=edText(x),m=/^(Page \(([^ )]*) ?([^)]*)\)|QT Py|Auto \(([^)]*)\)): ([\s\S]*)$/.exec(f);if(!m)return {what:f,who:'',ip:''};
@@ -970,13 +981,13 @@ function edDay(at){if(!at)return 'Time unknown';const d=new Date(at),t=new Date(
 return d.toDateString()===t.toDateString()?'Today':d.toDateString()===y.toDateString()?'Yesterday':d.toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'})}
 function edClock(at){return at?new Date(at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):'\u2014'}
 function edListHtml(ed){const e=t=>String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'),rows=[];
-ed.forEach(x=>{const at=edAt(x),p=edSplit(x),d=edDetail(x),last=rows[rows.length-1],day=(!at&&last)?last.day:edDay(at);  // a time unknown stays in the day it sits in
+ed.forEach(x=>{const at=edAt(x),p=edSplit(x),hi=edHist(x),d=hi?cvHistHtml(hi):'',last=rows[rows.length-1],day=(!at&&last)?last.day:edDay(at);  // a time unknown stays in the day it sits in
 if(last&&!d&&!last.d&&last.day===day&&last.what===p.what&&last.who===p.who){last.n++;last.first=at;return}
-rows.push({at,first:at,n:1,day,d,...p})});let h='',day=null;
+rows.push({at,first:at,n:1,day,d,hi,rel:!x[0],...p})});let h='',day=null;
 rows.forEach(r=>{if(r.day!==day){day=r.day;h+='<div class="edday">'+e(day)+'</div>'}
-const a=edClock(r.first),b=edClock(r.at),sa=a.replace(/^[\d:]+\s*/,''),t=r.n<2?e(b):sa&&sa===b.replace(/^[\d:]+\s*/,'')?e(a.slice(0,a.length-sa.length).trim()+'\u2013'+b):e(a)+'\u2013<br>'+e(b),full=r.at?new Date(r.at).toLocaleString():'time unknown';
+const a=edClock(r.first),b=edClock(r.at),sa=a.replace(/^[\d:]+\s*/,''),t=r.n<2?e(b):sa&&sa===b.replace(/^[\d:]+\s*/,'')?e(a.slice(0,a.length-sa.length).trim()+'\u2013'+b):e(a)+'\u2013<br>'+e(b),full=r.at?new Date(r.rel?Math.round(r.at/6e4)*6e4:r.at).toLocaleString():'time unknown';
 h+='<div class="edr" title="'+e(full+(r.ip?' \u00b7 '+r.ip:''))+'"><span class="edt">'+t+'</span><div><span>'+e(r.what)+'</span>'+(r.n>1?'<span class="edn">\u00d7'+r.n+'</span>':'')+
-(r.who?' <span class="edby">'+e(r.who)+'</span>':'')+(r.d||'')+'</div></div>'});return h}
+(r.who?' <span class="edby">'+e(r.who)+'</span>':'')+(r.d||'')+cvRsHtml(r.hi)+'</div></div>'});return h}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
 drawPerf(pf);
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
@@ -1013,8 +1024,10 @@ fetchJ(tq('/api/feather'),{method:'POST',body:fd},120000).catch(()=>({ok:false,e
 function fwfStart(){post('/api/feathergo?start=1').then(r=>{say(r,'Sending it to the Feather');fwfPoll()})}
 function fwfAbort(){post('/api/feathergo?abort=1').then(r=>{toast(r.ok?'Stopped':r.err||'error',!r.ok);fwfPoll()})}  // audit 11-01: QT Py fw75 says why when it did nothing
 // QT Py fw37: the tabs; the open one is kept on the QT Py like the fold-outs (a #hash in the address wins)
-const TABS=['mouse','aim','setup','diag'];let tabSet=false;
-function tabShow(n,save){if(!TABS.includes(n))n='mouse';TABS.forEach(t=>{$('t-'+t).hidden=t!==n;const b=$('tb-'+t);b.classList.toggle('on',t===n);b.setAttribute('aria-selected',t===n?'true':'false')});
+/* 11-09: each tab keeps its own scroll position (also through a reload), so flipping between two lands where each was left */
+const TABS=['mouse','aim','setup','diag'];let tabSet=false,tabCur=null,tabY={};try{tabY=JSON.parse(sessionStorage.getItem('gwTabY')||'{}')||{}}catch(e){}
+function tabShow(n,save){if(!TABS.includes(n))n='mouse';const was=tabCur,moved=was&&was!==n;if(moved)tabY[was]=scrollY;tabCur=n;TABS.forEach(t=>{$('t-'+t).hidden=t!==n;const b=$('tb-'+t);b.classList.toggle('on',t===n);b.setAttribute('aria-selected',t===n?'true':'false')});
+if(moved){scrollTo(0,tabY[n]||0);try{sessionStorage.setItem('gwTabY',JSON.stringify(tabY))}catch(e){}}
 if(save){tabSet=true;try{history.replaceState(null,'','#'+n)}catch(e){}post('/api/ui?tab='+TABS.indexOf(n))}}
 function tabApply(){if(tabSet||!S)return;tabSet=true;if(TABS.includes(location.hash.slice(1)))return;if(S.ui_tab>=0&&S.ui_tab<TABS.length)tabShow(TABS[S.ui_tab])}
 tabShow(location.hash.slice(1));
