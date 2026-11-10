@@ -42,7 +42,7 @@ extern const uint32_t gw_page_src_fnv;
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 101    // this firmware's number, shown in /api/status; fw101: the Downhill slow-down preset (Ramp mirrored left to right); fw100: the Boost ramp slow-down preset (Ramp's opposite), the page's bytes in page_data.cpp; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 102    // this firmware's number, shown in /api/status; fw102: automatic DPI stage changes hold at most 4 places in the 20-entry edit log; fw101: the Downhill slow-down preset (Ramp mirrored left to right); fw100: the Boost ramp slow-down preset (Ramp's opposite), the page's bytes in page_data.cpp; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -1856,8 +1856,32 @@ static uint8_t ua_device() {
     return (ua.indexOf("Linux") >= 0) ? 5 : 0;
 }
 
+// fw102: automatic stage changes (an ATEN switch) hold at most EDIT_AUTO_KEEP places, so they can't push the page's edits out.
+// Drops all but the newest keep of them; everything else keeps its order and moves up
+#define EDIT_AUTO_KEEP 4
+static void edit_cap_auto(uint8_t keep) {
+    uint8_t seen = 0, w = 0;
+    for (uint8_t r = 0; r < edit_n; r++) {
+        if ((edit_log[r].kind == EK_AUTO_STAGE) && (edit_log[r].dev == 7) && (seen++ >= keep)) {
+            continue;
+        }
+        if (w != r) {
+            edit_log[w] = edit_log[r];
+            edit_seq[w] = edit_seq[r];
+        }
+        w++;
+    }
+    for (uint8_t k = w; k < edit_n; k++) {
+        memset(&edit_log[k], 0, sizeof(edit_log[k]));
+        edit_seq[k] = 0;
+    }
+    edit_n = w;
+}
 // fw22: record an edit the Feather accepted into its queue, newest first, and save the log
 static void log_edit_as(uint8_t kind, const String& text, uint8_t dev, uint32_t ip) {
+    if ((kind == EK_AUTO_STAGE) && (dev == 7)) {
+        edit_cap_auto(EDIT_AUTO_KEEP - 1);
+    }
     memmove(edit_log + 1, edit_log, sizeof(EditLog) * (EDIT_LOG - 1));
     memmove(edit_seq + 1, edit_seq, sizeof(edit_seq[0]) * (EDIT_LOG - 1));
     edit_seq[0] = (dev == 7) ? 0 : q_fresh;
@@ -5884,6 +5908,7 @@ void setup() {
     b_boots = prefs.getULong("boots", 0) + 1;
     prefs.putULong("boots", b_boots);
     edit_n = prefs.getBytes("edits", edit_log, sizeof(edit_log)) / sizeof(EditLog);  // fw22: the page edits so far
+    edit_cap_auto(EDIT_AUTO_KEEP);  // fw102: a log from before the cap
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     fz_have = prefs.getBytes("fz", &fz, sizeof(fz)) == sizeof(fz);                  // fw77: the last Feather freeze
     if (!fz_have) {

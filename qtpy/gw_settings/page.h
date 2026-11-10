@@ -347,7 +347,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut" id="perfnone">Needs Feather firmware v19 or later.</p></div>
 
 <details class="card" id="fedits" hidden><summary><div><h2>Recent page edits</h2><div class="mut" id="edlast"></div></div></summary>
-<div id="edlist"></div><p class="mut" style="margin-top:10px">The last 20 edits made through this page, from any device. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
+<div id="edlist"></div><p class="mut" style="margin-top:10px">The last 20 edits made through this page, from any device. Automatic DPI stage changes keep only their latest 4, so they can't crowd out your edits. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
 </div>
 <details class="card" id="fhosts" hidden><summary><div><h2>Hosts</h2><div class="mut" id="hauto"></div></div></summary>
 <p class="mut">What the ATEN can connect the mouse to. The Feather recognises each kind of host by how it asks for its USB details, so both XIMs look the same and share one entry. Rename a host here; choose its stage under DPI stages.</p>
