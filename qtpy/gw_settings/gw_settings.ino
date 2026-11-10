@@ -42,7 +42,7 @@ extern const uint32_t gw_page_src_fnv;
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 103    // this firmware's number, shown in /api/status; fw103: the edit log and curve history keep 80 more of each in flash (the page's Show older); fw102: automatic DPI stage changes hold at most 4 places in the 20-entry edit log; fw101: the Downhill slow-down preset (Ramp mirrored left to right); fw100: the Boost ramp slow-down preset (Ramp's opposite), the page's bytes in page_data.cpp; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 104    // this firmware's number, shown in /api/status; fw104: a star and a note on a curve save (/api/cvnote, /api/cvnotes); fw103: the edit log and curve history keep 80 more of each in flash (the page's Show older); fw102: automatic DPI stage changes hold at most 4 places in the 20-entry edit log; fw101: the Downhill slow-down preset (Ramp mirrored left to right); fw100: the Boost ramp slow-down preset (Ramp's opposite), the page's bytes in page_data.cpp; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -4107,6 +4107,99 @@ static void h_editsold() {  // fw103: as the status's "edits", from the file
     server.send(200, "application/json", j + "]");
 }
 
+// fw104: a star and a short note on a saved curve version: the save's time and curve id are the key (an entry of the curve
+// history, its After column). A file of at most CVN_MAX, as many as the history holds; both empty removes the entry
+#define CVN_MAX 100
+#define CVN_BIN "/cvnotes.bin"
+struct __attribute__((packed)) CvNote {
+    uint32_t t;
+    uint8_t id, star;
+    char note[42];
+};
+static_assert(sizeof(CvNote) == 48, "/cvnotes.bin's layout");
+
+static void h_cvnotes() {
+    String j = "[";
+    File f = (fs_ok && FFat.exists(CVN_BIN)) ? FFat.open(CVN_BIN, "r") : File();
+    if (f) {
+        CvNote c;
+        bool first = true;
+        while (f.read((uint8_t*) &c, sizeof(c)) == sizeof(c)) {
+            c.note[sizeof(c.note) - 1] = 0;
+            j += String(first ? "[" : ",[") + String(c.t) + "," + String(c.id) + "," + String(c.star) + ",\"" + String(c.note) + "\"]";
+            first = false;
+        }
+        f.close();
+    }
+    server.send(200, "application/json", j + "]");
+}
+
+// POST ?at=<the save's time>&id=&star=0|1&note= ("t" is the page's clock, as on every POST)
+static void h_cvnote() {
+    touch();
+    if (!from_current_page()) {
+        return;
+    }
+    uint32_t at = strtoul(server.arg("at").c_str(), nullptr, 10);
+    long id = server.arg("id").toInt();
+    if (!fs_ok || !at || (id < 1) || (id > CVLIB_N)) {
+        return ok_json(false, "no such curve save");
+    }
+    uint8_t star = server.arg("star").toInt() ? 1 : 0;
+    String note = cvlib_clean(server.arg("note")).substring(0, sizeof(CvNote::note) - 1);
+    CvNote* a = (CvNote*) malloc(sizeof(CvNote) * CVN_MAX);
+    if (!a) {
+        return ok_json(false, "out of memory");
+    }
+    size_t n = 0;
+    File f = FFat.exists(CVN_BIN) ? FFat.open(CVN_BIN, "r") : File();
+    if (f) {
+        n = f.read((uint8_t*) a, sizeof(CvNote) * CVN_MAX) / sizeof(CvNote);
+        f.close();
+    }
+    size_t k = 0;
+    while ((k < n) && !((a[k].t == at) && (a[k].id == id))) {
+        k++;
+    }
+    if (!star && !note.length()) {
+        if (k < n) {
+            memmove(a + k, a + k + 1, sizeof(CvNote) * (n - k - 1));
+            n--;
+        }
+    } else {
+        if (k == n) {
+            if (n == CVN_MAX) {  // full: the oldest save's goes
+                k = 0;
+                for (size_t i = 1; i < n; i++) {
+                    if (a[i].t < a[k].t) {
+                        k = i;
+                    }
+                }
+            } else {
+                n++;
+            }
+        }
+        memset(&a[k], 0, sizeof(CvNote));
+        a[k].t = at;
+        a[k].id = (uint8_t) id;
+        a[k].star = star;
+        strncpy(a[k].note, note.c_str(), sizeof(a[k].note) - 1);
+    }
+    File w = FFat.open(CVN_BIN ".tmp", "w");
+    bool ok = w && (w.write((const uint8_t*) a, sizeof(CvNote) * n) == sizeof(CvNote) * n);
+    if (w) {
+        w.close();
+    }
+    free(a);
+    if (!ok) {
+        FFat.remove(CVN_BIN ".tmp");
+        return ok_json(false, "couldn't save the note");
+    }
+    FFat.remove(CVN_BIN);
+    FFat.rename(CVN_BIN ".tmp", CVN_BIN);
+    ok_json(true);
+}
+
 // fw67: a curve's table from a request (sp, g, tau, s10, dc), as add=1 and replace=1 take it; nullptr = fine, else why not
 static const char* cv_req_table(uint8_t* n, uint16_t* s16, uint16_t* g16, uint8_t* tau, uint16_t* s10, uint8_t* dn, uint16_t* dp, uint16_t* dgv) {
     long sp[CV_N], g[CV_N];
@@ -6064,6 +6157,9 @@ void setup() {
     if (fs_ok) {  // fw103
         edit_old_n = old_count(EDIT_OLD_BIN, sizeof(EditLog));
         cvh_old_n = old_count(CVH_OLD_BIN, sizeof(CvHist));
+        if (!FFat.exists(CVN_BIN) && FFat.exists(CVN_BIN ".tmp")) {  // fw104: a save cut off between its remove and rename
+            FFat.rename(CVN_BIN ".tmp", CVN_BIN);
+        }
     }
     if (lib_fs && lib_v1) {  // fw76: converted from a v1 file (whole-% slow-down shares): written back as v2 now; a failure
         lib_write();         // leaves the v1 files as they were (read and converted again at the next boot) and lib_fs on
@@ -6258,6 +6354,8 @@ void setup() {
     server.on("/api/cvtry", HTTP_POST, h_cvtry);  // fw81
     server.on("/api/curvehist", HTTP_GET, h_curvehist);  // fw86
     server.on("/api/editsold", HTTP_GET, h_editsold);    // fw103
+    server.on("/api/cvnotes", HTTP_GET, h_cvnotes);      // fw104
+    server.on("/api/cvnote", HTTP_POST, h_cvnote);
   server.on("/api/live", HTTP_GET, h_live);  // fw50
   server.on("/api/live", HTTP_POST, h_live);
     server.on("/api/nvs", HTTP_GET, h_nvs);  // fw65
