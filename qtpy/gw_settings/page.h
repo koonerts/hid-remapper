@@ -347,7 +347,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <p class="mut" id="perfnone">Needs Feather firmware v19 or later.</p></div>
 
 <details class="card" id="fedits" hidden><summary><div><h2>Recent page edits</h2><div class="mut" id="edlast"></div></div></summary>
-<div id="edlist"></div><p class="mut" style="margin-top:10px">The last 20 edits made through this page, from any device. Automatic DPI stage changes keep only their latest 4, so they can't crowd out your edits. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
+<div id="edlist"></div><div id="edoldr" hidden style="margin-top:8px"><button type="button" class="sm" id="edoldb" onclick="edOldTog()"></button></div><p class="mut" style="margin-top:10px">The last 100 edits made through this page, from any device (the newest 20 show first). Automatic DPI stage changes keep only their latest 4, so they can't crowd out your edits. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
 </div>
 <details class="card" id="fhosts" hidden><summary><div><h2>Hosts</h2><div class="mut" id="hauto"></div></div></summary>
 <p class="mut">What the ATEN can connect the mouse to. The Feather recognises each kind of host by how it asks for its USB details, so both XIMs look the same and share one entry. Rename a host here; choose its stage under DPI stages.</p>
@@ -926,7 +926,7 @@ function liHtml(a){const e=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 // 11-04 (QT Py fw86): curve entries (kind 15). Text: R<id>:<what> a Replace (c points, d slow-down, t smoothing, l linear
 // cm/360), U<id> <name> Use, L<id> <S> linear cm/360 set, "N hosts"/"off" the running curve's hosts; before fw86 "replace "/"use "/
 // "linear " and a name cut to 15 characters. Replace's before and after come from /api/curvehist (cvHist), matched by time and id
-let cvHist=null,cvHistKey='',edHtml='';
+let cvHist=null,cvHistKey='',edHtml='',edOld=null,edOldOn=false,edOldKey='',cvHistOld=[];
 // 11-04: library ids are reused after a delete, so a library curve names an entry only if it was added at or before the
 // entry's time t (Unix s; 0 = unknown, no check). U entries keep their logged name unless the library name starts with it
 function cvAddedBy(c,t){return !t||!c.added||c.added<=t+120}/* 2 min for page clocks that differ (now_unix follows the sender's clock) */
@@ -952,7 +952,10 @@ xs.forEach(x=>{const p=ax.get(x),q=bx.get(x);if(p===q){same++;return}r+=cvTr(fx(
 return cvTbl(!a.length?h+' turned on':!b.length?h+' turned off':h,r,same?same+(same===1?' other point':' other points')+' unchanged':'')}
 function cvHistHtml(h){let o='';if(h.what&2)o+=cvPtsTbl('Slow-down',h.d0,h.d1,p=>cvDcPct(p/10)+'%');if(h.what&1)o+=cvPtsTbl('Curve',h.c0,h.c1,s=>s/10+' cm/s');
 let r='';if(h.what&4)r+=cvTr('Smoothing',h.tau[0]+' ms',h.tau[1]+' ms',cvSgn(h.tau[1]-h.tau[0],0)+' ms',h.tau[1]-h.tau[0]);if(h.what&8)r+=cvTr('cm/360',h.s10[0]/10,h.s10[1]/10,cvSgn((h.s10[1]-h.s10[0])/10,1),h.s10[1]-h.s10[0]);return o+cvTbl('Setting',r,'')}
-function edHist(x){if(x[2]!==15||!cvHist||!/^R\d+:/.test(x[5]))return null;const id=Number(x[5].slice(1,x[5].indexOf(':')));return cvHist.find(c=>c.id===id&&Math.abs(c.t-x[0])<=1)||null}
+function edHist(x){if(x[2]!==15||!cvHist||!/^R\d+:/.test(x[5]))return null;const id=Number(x[5].slice(1,x[5].indexOf(':'))),m=c=>c.id===id&&Math.abs(c.t-x[0])<=1;return cvHist.find(m)||cvHistOld.find(m)||null}
+// 11-09 (fw103): the older edits and curve records, from the QT Py's flash, loaded when asked for and again when the log has moved on
+function edOldLoad(){Promise.all([fetchJ('/api/editsold',undefined,8000),fetchJ('/api/curvehist?old=1',undefined,12000)]).then(([a,b])=>{edOld=Array.isArray(a)?a:[];cvHistOld=Array.isArray(b)?b:[];drawEvents()}).catch(()=>{edOld=edOld||[];toast('Failed: could not load the older edits',true);drawEvents()})}
+function edOldTog(){edOldOn=!edOldOn;drawEvents()}
 // 11-09: a saved curve can go back to either side of a logged change, through the same Replace the editor uses. Two clicks, as Replace
 // original; the restore is logged like any save, so it can be restored in turn. A side equal to the curve as it is now says so
 let cvRsArm=null;
@@ -961,7 +964,7 @@ function cvIsNow(c,v){const dc=c.dc||[];return c.n===v.T.length&&c.tau===v.tau&&
 function cvRsHtml(h){const c=h&&cvLib&&cvLib.curves?cvLib.curves.find(x=>x.id===h.id):null;if(!c||!cvAddedBy(c,h.t)||!(h.what&15))return '';
 const one=(s,nm)=>{if(cvIsNow(c,cvSide(h,s)))return '<span class="mut">'+nm+' is the current version</span>';const k=h.t+':'+h.id+':'+s,on=cvRsArm&&cvRsArm.k===k;return '<button type="button" class="sm" title="Put the curve back to the '+nm+' column" onclick="cvRestore('+h.t+','+h.id+','+s+')">'+(on?'Click again to restore':'Restore '+nm)+'</button>'};
 return '<div class="edrs">'+one(0,'Before')+one(1,'After')+'</div>'}
-function cvRestore(t,id,s){const h=cvHist&&cvHist.find(c=>c.t===t&&c.id===id);if(!h)return;if(cvEd){say({ok:false,err:'close the curve editor first'});return}const k=t+':'+id+':'+s;
+function cvRestore(t,id,s){const h=cvHist&&cvHist.concat(cvHistOld).find(c=>c.t===t&&c.id===id);if(!h)return;if(cvEd){say({ok:false,err:'close the curve editor first'});return}const k=t+':'+id+':'+s;
 if(!cvRsArm||cvRsArm.k!==k){cvRsArm={k};drawEvents();const a=cvRsArm;setTimeout(()=>{if(cvRsArm===a){cvRsArm=null;drawEvents()}},4000);return}
 cvRsArm=null;const v=cvSide(h,s);post('/api/curves?id='+id+'&replace=1&sp='+v.T.map(q=>q[0]).join(',')+'&g='+v.T.map(q=>q[1]).join(',')+'&tau='+v.tau+(v.D.length?'&dc='+v.D.map(q=>cvDcPct(q[0]/10)+':'+q[1]).join(','):'')+'&s10='+v.s10).then(r=>{say(r,'Restored the '+(s?'After':'Before')+' version');if(r&&r.ok)cvLibLoad();drawEvents()})}
 function cvHistLoad(ed){const k=(ed||[]).filter(x=>x[2]===15).map(x=>x[0]).join(',');if(k===cvHistKey||!k)return;cvHistKey=k;fetchJ('/api/curvehist').then(j=>{if(Array.isArray(j)){cvHist=j;drawEvents()}}).catch(()=>{cvHistKey=''})}
@@ -972,7 +975,7 @@ function drawEvents(){const ed=S.edits,items=[];
 (ed||[]).forEach(x=>{if((x[2]>=1&&x[2]<=3)||x[2]===10)items.push({at:edAt(x),s:edText(x)})});
 items.sort((p,q)=>q.at-p.at);const sh=items.slice(0,8),box=$('evbox');box.hidden=!sh.length;
 if(sh.length){$('evlast').textContent='Last change: '+whenText(sh[0].at)+'  '+sh[0].s;$('evlist').innerHTML=liHtml(sh)}
-const fe=$('fedits');fe.hidden=!ed||!ed.length;cvHistLoad(ed);if(ed&&ed.length){{const p=edSplit(ed[0]),at=edAt(ed[0]);$('edlast').textContent='Last: '+(at?edDay(at)+' '+edClock(at):'time unknown')+' \u00b7 '+p.what+(p.who?' ('+p.who+')':'')}const eh=edListHtml(ed);if(eh!==edHtml){edHtml=eh;$('edlist').innerHTML=eh}}}
+const fe=$('fedits');fe.hidden=!ed||!ed.length;cvHistLoad(ed);if(ed&&ed.length){{const p=edSplit(ed[0]),at=edAt(ed[0]);$('edlast').textContent='Last: '+(at?edDay(at)+' '+edClock(at):'time unknown')+' \u00b7 '+p.what+(p.who?' ('+p.who+')':'')}const n=S.ed_old||0,k=(ed[0][0]+':'+ed[0][5])+'/'+n,b=$('edoldb');$('edoldr').hidden=!n;if(edOldOn&&n&&k!==edOldKey){edOldKey=k;edOldLoad()}b.textContent=!edOldOn?'Show '+n+' older':edOld?'Hide older':'Loading\u2026';b.disabled=edOldOn&&!edOld;const eh=edListHtml(edOldOn&&edOld?ed.concat(edOld):ed);if(eh!==edHtml){edHtml=eh;$('edlist').innerHTML=eh}}}
 // 11-04: the edit log by day: time, what, who (muted, the full address on hover); a curve Replace's changes under it.
 // Runs of the same entry without details (curve saves before fw86) fold into one row with a count and their time span
 function edSplit(x){const f=edText(x),m=/^(Page \(([^ )]*) ?([^)]*)\)|QT Py|Auto \(([^)]*)\)): ([\s\S]*)$/.exec(f);if(!m)return {what:f,who:'',ip:''};

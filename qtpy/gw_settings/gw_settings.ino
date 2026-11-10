@@ -42,7 +42,7 @@ extern const uint32_t gw_page_src_fnv;
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 102    // this firmware's number, shown in /api/status; fw102: automatic DPI stage changes hold at most 4 places in the 20-entry edit log; fw101: the Downhill slow-down preset (Ramp mirrored left to right); fw100: the Boost ramp slow-down preset (Ramp's opposite), the page's bytes in page_data.cpp; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 103    // this firmware's number, shown in /api/status; fw103: the edit log and curve history keep 80 more of each in flash (the page's Show older); fw102: automatic DPI stage changes hold at most 4 places in the 20-entry edit log; fw101: the Downhill slow-down preset (Ramp mirrored left to right); fw100: the Boost ramp slow-down preset (Ramp's opposite), the page's bytes in page_data.cpp; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -124,6 +124,11 @@ static uint32_t last_http = 0;
 // them and when. Kept in NVS ("edits"), so they outlive power cycles (the ATEN switching ports) and QT Py updates; the
 // Feather's own recent-changes list is RAM only. fw21 kept the sender in RAM only.
 #define EDIT_LOG 20
+// fw103: what falls off the end of the edit log and of the curve history goes to a file in flash, newest first: EDIT_OLD more of
+// each, read only when the page asks (/api/editsold, /api/curvehist?old=1). Automatic stage changes aren't kept there
+#define EDIT_OLD 80
+#define EDIT_OLD_BIN "/edits_old.bin"
+#define CVH_OLD_BIN "/cvhist_old.bin"
 #define EK_STAGE 1  // the kinds; 1-3 are the Feather's link commands, so they match its "Page" events
 #define EK_ANGLE 2
 #define EK_POS 3
@@ -151,6 +156,7 @@ struct __attribute__((packed)) EditLog {  // 32 bytes
 };
 static EditLog edit_log[EDIT_LOG];  // edit_log[0] is the newest
 static uint8_t edit_n = 0;
+static uint8_t edit_old_n = 0, cvh_old_n = 0;  // fw103: the records in the two files
 // fw38: setting changes as short texts for a PC to show as an on-screen pill (GET /api/osd?since=N): the DPI stage,
 // sensor angle and position whenever the Feather reports a new value (chord, page, mouse button), and the automatic
 // stage on a host switch. A value only becoming known (power-on, a Feather restart, the mouse waking) isn't a change.
@@ -1769,7 +1775,7 @@ static void h_status() {
         j += (k ? ",[" : "[") + String(e.t) + "," + String(age) + "," + String(e.kind) + "," + String(e.dev) + ",\"" + IPAddress(e.ip).toString() +
              "\",\"" + String(e.text) + "\"]";
     }
-    j += "]";
+    j += "],\"ed_old\":" + String(edit_old_n);
     // Feather v15+: its processing time per 1 ms frame over the last second (status bytes 84-89); v19+ also the
     // whole frame: ticks merged (frames never processed, 90 and 111-112) and, in 4 us steps, how long after its tick each
     // frame was done (113-114) and the SOF interrupt (115-116)
@@ -1856,6 +1862,56 @@ static uint8_t ua_device() {
     return (ua.indexOf("Linux") >= 0) ? 5 : 0;
 }
 
+// fw103: one record in front of a newest-first file, which keeps EDIT_OLD: a whole new <path>.tmp first, then it replaces the file
+// (the pattern of cvhist_save: a power cut can't empty it; old_count finishes a replace it cut off)
+static void old_push(const char* path, const void* rec, size_t size, uint8_t* count) {
+    if (!fs_ok) {
+        return;
+    }
+    String tmp = String(path) + ".tmp";
+    File w = FFat.open(tmp, "w");
+    if (!w) {
+        return;
+    }
+    bool ok = w.write((const uint8_t*) rec, size) == size;
+    uint8_t kept = 1;
+    File r = FFat.exists(path) ? FFat.open(path, "r") : File();
+    if (r) {
+        static uint8_t buf[256];
+        size_t left = std::min((size_t) r.size(), size * (EDIT_OLD - 1));
+        left -= left % size;
+        kept += left / size;
+        while (ok && left) {
+            size_t got = r.read(buf, std::min(left, sizeof(buf)));
+            ok = got && (w.write(buf, got) == got);
+            left -= got;
+        }
+        r.close();
+    }
+    w.close();
+    if (!ok) {
+        FFat.remove(tmp);
+        return;
+    }
+    FFat.remove(path);
+    FFat.rename(tmp, path);
+    *count = kept;
+}
+
+static uint8_t old_count(const char* path, size_t size) {
+    String tmp = String(path) + ".tmp";
+    if (!FFat.exists(path) && FFat.exists(tmp)) {
+        FFat.rename(tmp, path);
+    }
+    File f = FFat.exists(path) ? FFat.open(path, "r") : File();
+    if (!f) {
+        return 0;
+    }
+    size_t n = f.size() / size;
+    f.close();
+    return (n > EDIT_OLD) ? EDIT_OLD : (uint8_t) n;
+}
+
 // fw102: automatic stage changes (an ATEN switch) hold at most EDIT_AUTO_KEEP places, so they can't push the page's edits out.
 // Drops all but the newest keep of them; everything else keeps its order and moves up
 #define EDIT_AUTO_KEEP 4
@@ -1881,6 +1937,9 @@ static void edit_cap_auto(uint8_t keep) {
 static void log_edit_as(uint8_t kind, const String& text, uint8_t dev, uint32_t ip) {
     if ((kind == EK_AUTO_STAGE) && (dev == 7)) {
         edit_cap_auto(EDIT_AUTO_KEEP - 1);
+    }
+    if ((edit_n == EDIT_LOG) && !((edit_log[EDIT_LOG - 1].kind == EK_AUTO_STAGE) && (edit_log[EDIT_LOG - 1].dev == 7))) {
+        old_push(EDIT_OLD_BIN, &edit_log[EDIT_LOG - 1], sizeof(EditLog), &edit_old_n);  // fw103
     }
     memmove(edit_log + 1, edit_log, sizeof(EditLog) * (EDIT_LOG - 1));
     memmove(edit_seq + 1, edit_seq, sizeof(edit_seq[0]) * (EDIT_LOG - 1));
@@ -3962,6 +4021,9 @@ static uint8_t cvhist_add(uint8_t id) {
     }
     what |= (o.tau != c.tau) ? CVH_TAU : 0;
     what |= (o.s10 != c.s10) ? CVH_S10 : 0;
+    if (cvhist_n == EDIT_LOG) {
+        old_push(CVH_OLD_BIN, &cvhist[EDIT_LOG - 1], sizeof(CvHist), &cvh_old_n);  // fw103
+    }
     memmove(cvhist + 1, cvhist, sizeof(CvHist) * (EDIT_LOG - 1));
     CvHist& h = cvhist[0];
     memset(&h, 0, sizeof(h));
@@ -3995,14 +4057,52 @@ static String cvhist_pts(const uint16_t* x, const uint16_t* y, uint8_t n) {
     return j + "]";
 }
 
+static String cvhist_json(const void* rec) {  // a void pointer: the generated prototypes come before the struct
+    const CvHist& h = *(const CvHist*) rec;
+    uint8_t n0 = (h.n0 > CV_N) ? CV_N : h.n0, n1 = (h.n1 > CV_N) ? CV_N : h.n1, e0 = (h.d0.n > DC_N) ? DC_N : h.d0.n, e1 = (h.d1.n > DC_N) ? DC_N : h.d1.n;
+    return String("{\"t\":") + String(h.t) + ",\"id\":" + String(h.id) + ",\"what\":" + String(h.what) + ",\"tau\":[" + String(h.tau0) + "," +
+           String(h.tau1) + "],\"s10\":[" + String(h.s10_0) + "," + String(h.s10_1) + "],\"c0\":" + cvhist_pts(h.sp0, h.g0, n0) + ",\"c1\":" +
+           cvhist_pts(h.sp1, h.g1, n1) + ",\"d0\":" + cvhist_pts(h.d0.p10, h.d0.g, e0) + ",\"d1\":" + cvhist_pts(h.d1.p10, h.d1.g, e1) + "}";
+}
+
 static void h_curvehist() {
+    if (server.hasArg("old")) {  // fw103: from the file, a record at a time (80 of them are about 32 KB as text)
+        server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+        server.send(200, "application/json", "");
+        server.sendContent("[");
+        File f = (fs_ok && FFat.exists(CVH_OLD_BIN)) ? FFat.open(CVH_OLD_BIN, "r") : File();
+        if (f) {
+            static CvHist h;
+            bool first = true;
+            while (f.read((uint8_t*) &h, sizeof(h)) == sizeof(h)) {
+                server.sendContent(String(first ? "" : ",") + cvhist_json(&h));
+                first = false;
+            }
+            f.close();
+        }
+        server.sendContent("]");
+        server.sendContent("");
+        return;
+    }
     String j = "[";
     for (uint8_t i = 0; i < cvhist_n; i++) {
-        const CvHist& h = cvhist[i];
-        uint8_t n0 = (h.n0 > CV_N) ? CV_N : h.n0, n1 = (h.n1 > CV_N) ? CV_N : h.n1, e0 = (h.d0.n > DC_N) ? DC_N : h.d0.n, e1 = (h.d1.n > DC_N) ? DC_N : h.d1.n;
-        j += String(i ? "," : "") + "{\"t\":" + String(h.t) + ",\"id\":" + String(h.id) + ",\"what\":" + String(h.what) + ",\"tau\":[" + String(h.tau0) + "," +
-             String(h.tau1) + "],\"s10\":[" + String(h.s10_0) + "," + String(h.s10_1) + "],\"c0\":" + cvhist_pts(h.sp0, h.g0, n0) + ",\"c1\":" +
-             cvhist_pts(h.sp1, h.g1, n1) + ",\"d0\":" + cvhist_pts(h.d0.p10, h.d0.g, e0) + ",\"d1\":" + cvhist_pts(h.d1.p10, h.d1.g, e1) + "}";
+        j += String(i ? "," : "") + cvhist_json(&cvhist[i]);
+    }
+    server.send(200, "application/json", j + "]");
+}
+
+static void h_editsold() {  // fw103: as the status's "edits", from the file
+    String j = "[";
+    File f = (fs_ok && FFat.exists(EDIT_OLD_BIN)) ? FFat.open(EDIT_OLD_BIN, "r") : File();
+    if (f) {
+        EditLog e;
+        bool first = true;
+        while (f.read((uint8_t*) &e, sizeof(e)) == sizeof(e)) {
+            e.text[sizeof(e.text) - 1] = 0;
+            j += String(first ? "[" : ",[") + String(e.t) + ",-1," + String(e.kind) + "," + String(e.dev) + ",\"" + IPAddress(e.ip).toString() + "\",\"" + String(e.text) + "\"]";
+            first = false;
+        }
+        f.close();
     }
     server.send(200, "application/json", j + "]");
 }
@@ -5961,6 +6061,10 @@ void setup() {
     // fw71: the library's file; 10-31 audit: /curves.tmp is a whole checked copy too (a power cut between lib_write's renames)
     lib_fs = fs_ok && (lib_read("/curves.bin", true) || lib_read("/curves.tmp", true) || lib_read("/curves.bak", true));
     cvhist_load();  // fw86
+    if (fs_ok) {  // fw103
+        edit_old_n = old_count(EDIT_OLD_BIN, sizeof(EditLog));
+        cvh_old_n = old_count(CVH_OLD_BIN, sizeof(CvHist));
+    }
     if (lib_fs && lib_v1) {  // fw76: converted from a v1 file (whole-% slow-down shares): written back as v2 now; a failure
         lib_write();         // leaves the v1 files as they were (read and converted again at the next boot) and lib_fs on
     }
@@ -6153,6 +6257,7 @@ void setup() {
     server.on("/api/cvtemp", HTTP_POST, h_cvtemp);  // fw48
     server.on("/api/cvtry", HTTP_POST, h_cvtry);  // fw81
     server.on("/api/curvehist", HTTP_GET, h_curvehist);  // fw86
+    server.on("/api/editsold", HTTP_GET, h_editsold);    // fw103
   server.on("/api/live", HTTP_GET, h_live);  // fw50
   server.on("/api/live", HTTP_POST, h_live);
     server.on("/api/nvs", HTTP_GET, h_nvs);  // fw65
