@@ -179,6 +179,9 @@ select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .edr{display:grid;grid-template-columns:6.6em 1fr;gap:0 12px;padding:5px 0;border-bottom:1px solid var(--line);align-items:baseline}
 .edt{color:var(--mut);font-variant-numeric:tabular-nums;font-size:13px;line-height:1.25}.edby{font-size:12px;color:var(--mut);white-space:nowrap}
 .edn{font-size:11px;border:1px solid var(--line);border-radius:999px;padding:0 6px;margin-left:6px;color:var(--mut);white-space:nowrap}.edr .edd{margin:2px 0 0}
+.edr>div{min-width:0}.edc{border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums;margin:5px 0 3px}.edc th,.edc td{padding:1px 0 1px 12px;text-align:right;white-space:nowrap;font-weight:400;border:0}
+.edc th:first-child,.edc tbody th{padding-left:0;text-align:left;min-width:6.5em;color:var(--mut)}.edc thead th{font-size:11.5px;color:var(--mut)}.edc .ed0,.edc .eda,.edc .edz{color:var(--mut)}.edc .eda,.edc .ed1{padding-left:7px}.edc .ed1{font-weight:600}
+.edc .edu{color:var(--acc)}.edc .edw{color:var(--warn)}.edc tfoot td{text-align:left;padding:3px 0 0;color:var(--mut);font-size:12px}@media (max-width:480px){.edr{grid-template-columns:1fr}}
 @media (max-width:540px){.cdo{grid-template-columns:1fr}}
 .cerr{color:var(--bad);font-size:12.5px;margin:6px 0 0}
 .cerr:empty{display:none}
@@ -940,14 +943,16 @@ if((m=/^(replace|use|linear) (.*)$/.exec(v))){const L=cvLib&&cvLib.curves||[],f=
 if(m[1]==='linear'&&!c.length){const q=p.replace(/ [\d.]+$/,'').trim();if(q!==p){p=q;c=f(p)}}
 return {replace:'replaced curve',use:'running curve',linear:'linear cm/360 of curve'}[m[1]]+' \u201c'+(c.length===1?c[0].name:p+'\u2026')+'\u201d'}
 return v==='off'?'speed curve off':/hosts?$/.test(v)?'speed curve on '+v:'speed curve: '+v}
-// a list of changed points: same x with a new y, added and removed ones (x and y as fx and fy show them)
-function cvPtsDiff(a,b,fx,fy){const ax=new Map(a.map(p=>[p[0],p[1]])),bx=new Map(b.map(p=>[p[0],p[1]])),xs=[...new Set([...ax.keys(),...bx.keys()])].sort((p,q)=>p-q),o=[];
-if(!a.length)return 'on: '+b.map(p=>fx(p[0])+' '+fy(p[1])).join(', ');if(!b.length)return 'off (was '+a.map(p=>fx(p[0])+' '+fy(p[1])).join(', ')+')';
-xs.forEach(x=>{const p=ax.get(x),q=bx.get(x);if(p===undefined)o.push('+'+fx(x)+' '+fy(q));else if(q===undefined)o.push('\u2212'+fx(x)+' '+fy(p));else if(p!==q)o.push(fx(x)+' '+fy(p)+' \u2192 '+fy(q))});return o.join(', ')}
-function cvHistText(h){const o=[];if(h.what&2)o.push('slow-down: '+cvPtsDiff(h.d0,h.d1,p=>cvDcPct(p/10)+'%',cvDcG));
-if(h.what&1)o.push('curve: '+cvPtsDiff(h.c0,h.c1,s=>s/10+' cm/s',g=>(g/1000).toFixed(3)));if(h.what&4)o.push('smoothing '+h.tau[0]+' \u2192 '+h.tau[1]+' ms');
-if(h.what&8)o.push('linear cm/360 '+h.s10[0]/10+' \u2192 '+h.s10[1]/10);return o.join(' \u00b7 ')}
-function edDetail(x){if(x[2]!==15||!cvHist||!/^R\d+:/.test(x[5]))return '';const id=Number(x[5].slice(1,x[5].indexOf(':'))),h=cvHist.find(c=>c.id===id&&Math.abs(c.t-x[0])<=1);return h?cvHistText(h):''}
+// 11-09: a curve Replace's changes as tables: each changed point's value before and after, and the difference
+function cvTr(l,a,b,c,s){return '<tr><th scope="row">'+l+'</th><td class="ed0">'+(a===''?'\u2014':a)+'</td><td class="eda">\u2192</td><td class="ed1">'+(b===''?'\u2014':b)+'</td><td class="'+(s>0?'edu':s<0?'edw':'edz')+'">'+c+'</td></tr>'}
+function cvTbl(h,rows,note){return rows?'<table class="edc"><thead><tr><th>'+h+'</th><th>Before</th><th></th><th>After</th><th>Change</th></tr></thead><tbody>'+rows+'</tbody>'+(note?'<tfoot><tr><td colspan="5">'+note+'</td></tr></tfoot>':'')+'</table>':''}
+function cvSgn(d,n){return (d>0?'+':d<0?'\u2212':'')+Math.abs(d).toFixed(n)}
+function cvPtsTbl(h,a,b,fx){const ax=new Map(a.map(p=>[p[0],p[1]])),bx=new Map(b.map(p=>[p[0],p[1]])),xs=[...new Set([...ax.keys(),...bx.keys()])].sort((p,q)=>p-q),fy=g=>(g/1000).toFixed(3);let r='',same=0;
+xs.forEach(x=>{const p=ax.get(x),q=bx.get(x);if(p===q){same++;return}r+=cvTr(fx(x),p===undefined?'':fy(p),q===undefined?'':fy(q),p===undefined?'added':q===undefined?'removed':cvSgn((q-p)/1000,3),p===undefined||q===undefined?0:q-p)});
+return cvTbl(!a.length?h+' turned on':!b.length?h+' turned off':h,r,same?same+(same===1?' other point':' other points')+' unchanged':'')}
+function cvHistHtml(h){let o='';if(h.what&2)o+=cvPtsTbl('Slow-down',h.d0,h.d1,p=>cvDcPct(p/10)+'%');if(h.what&1)o+=cvPtsTbl('Curve',h.c0,h.c1,s=>s/10+' cm/s');
+let r='';if(h.what&4)r+=cvTr('Smoothing',h.tau[0]+' ms',h.tau[1]+' ms',cvSgn(h.tau[1]-h.tau[0],0)+' ms',h.tau[1]-h.tau[0]);if(h.what&8)r+=cvTr('cm/360',h.s10[0]/10,h.s10[1]/10,cvSgn((h.s10[1]-h.s10[0])/10,1),h.s10[1]-h.s10[0]);return o+cvTbl('Setting',r,'')}
+function edDetail(x){if(x[2]!==15||!cvHist||!/^R\d+:/.test(x[5]))return '';const id=Number(x[5].slice(1,x[5].indexOf(':'))),h=cvHist.find(c=>c.id===id&&Math.abs(c.t-x[0])<=1);return h?cvHistHtml(h):''}
 function cvHistLoad(ed){const k=(ed||[]).filter(x=>x[2]===15).map(x=>x[0]).join(',');if(k===cvHistKey||!k)return;cvHistKey=k;fetchJ('/api/curvehist').then(j=>{if(Array.isArray(j)){cvHist=j;drawEvents()}}).catch(()=>{cvHistKey=''})}
 // Sensor list: the Feather's events since it powered on (chords, wakes) plus the saved page edits of stage, angle and
 // position. With saved edits the Feather's own "Page" events are left out: the saved ones are the same edits, with the sender.
@@ -971,7 +976,7 @@ rows.push({at,first:at,n:1,day,d,...p})});let h='',day=null;
 rows.forEach(r=>{if(r.day!==day){day=r.day;h+='<div class="edday">'+e(day)+'</div>'}
 const a=edClock(r.first),b=edClock(r.at),sa=a.replace(/^[\d:]+\s*/,''),t=r.n<2?e(b):sa&&sa===b.replace(/^[\d:]+\s*/,'')?e(a.slice(0,a.length-sa.length).trim()+'\u2013'+b):e(a)+'\u2013<br>'+e(b),full=r.at?new Date(r.at).toLocaleString():'time unknown';
 h+='<div class="edr" title="'+e(full+(r.ip?' \u00b7 '+r.ip:''))+'"><span class="edt">'+t+'</span><div><span>'+e(r.what)+'</span>'+(r.n>1?'<span class="edn">\u00d7'+r.n+'</span>':'')+
-(r.who?' <span class="edby">'+e(r.who)+'</span>':'')+(r.d?'<div class="mut edd">'+e(r.d)+'</div>':'')+'</div></div>'});return h}
+(r.who?' <span class="edby">'+e(r.who)+'</span>':'')+(r.d||'')+'</div></div>'});return h}
 function drawChordEditor(){const c=S.chords,ed=$('ched'),leg=$('chords'),pf=S.perf;
 drawPerf(pf);
 if(!c){ed.hidden=true;leg.hidden=false;drawChords();$('chstate').textContent=S.link&&S.fw?'Editing chords needs Feather firmware v15.':'';return}
