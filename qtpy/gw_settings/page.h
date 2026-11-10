@@ -367,7 +367,7 @@ const TUNE=[["angle_step","as","Angle step (°)",1,10],["pos_step","ps","Positio
 function tq(u){return u+(u.includes('?')?'&':'?')+'t='+Math.floor(Date.now()/1000)}
 // QT Py fw33: every request gives up after a few seconds (a request in flight when the ATEN cuts the power hung for minutes)
 function fetchJ(u,o,ms){const c=new AbortController(),tm=setTimeout(()=>c.abort(),ms||4000);return fetch(u,Object.assign({signal:c.signal},o||{})).then(r=>r.json()).finally(()=>clearTimeout(tm))}
-function post(u,b){return fetchJ(tq(u),{method:'POST',body:b}).catch(()=>({ok:false,err:'no answer'}))}
+function post(u,b,ms){return fetchJ(tq(u),{method:'POST',body:b},ms).catch(()=>({ok:false,err:'no answer'}))}
 function toast(m,bad){const t=$('toast');t.textContent=m;t.className='toast show'+(bad?' bad':'');clearTimeout(tt);tt=setTimeout(()=>{t.className='toast'},2400)}
 function say(r,m){toast(r.ok?m:'Failed: '+(r.err||'error'),!r.ok);return r}
 function ink(c){const n=parseInt(c,16);return ((n>>16)*.299+(n>>8&255)*.587+(n&255)*.114)>140?'#111':'#fff'}
@@ -977,7 +977,7 @@ const one=(s,nm)=>{if(cvIsNow(c,cvSide(h,s)))return '<span class="mut">'+nm+' is
 return '<div class="edrs">'+one(0,'Before')+one(1,'After')+'</div>'}
 function cvRestore(t,id,s){const h=cvHist&&cvHist.concat(cvHistOld).find(c=>c.t===t&&c.id===id);if(!h)return;if(cvEd){say({ok:false,err:'close the curve editor first'});return}const k=t+':'+id+':'+s;
 if(!cvRsArm||cvRsArm.k!==k){cvRsArm={k};drawEvents();const a=cvRsArm;setTimeout(()=>{if(cvRsArm===a){cvRsArm=null;drawEvents()}},4000);return}
-cvRsArm=null;const v=cvSide(h,s);post('/api/curves?id='+id+'&replace=1&sp='+v.T.map(q=>q[0]).join(',')+'&g='+v.T.map(q=>q[1]).join(',')+'&tau='+v.tau+(v.D.length?'&dc='+v.D.map(q=>cvDcPct(q[0]/10)+':'+q[1]).join(','):'')+'&s10='+v.s10+(v.s10?'':'&s10z=1')+'&restore=1').then(r=>{say(r,'Restored the '+(s?'After':'Before')+' version');if(r&&r.ok)cvLibLoad();drawEvents()})}
+cvRsArm=null;const v=cvSide(h,s);post('/api/curves?id='+id+'&replace=1&sp='+v.T.map(q=>q[0]).join(',')+'&g='+v.T.map(q=>q[1]).join(',')+'&tau='+v.tau+(v.D.length?'&dc='+v.D.map(q=>cvDcPct(q[0]/10)+':'+q[1]).join(','):'')+'&s10='+v.s10+(v.s10?'':'&s10z=1')+'&restore=1',undefined,10000).then(r=>{say(r,'Restored the '+(s?'After':'Before')+' version');if(r&&r.ok)cvLibLoad();drawEvents()})}
 function cvHistLoad(ed){const k=(ed||[]).filter(x=>x[2]===15).map(x=>x[0]).join(',');if(k===cvHistKey||!k)return;cvHistKey=k;fetchJ('/api/curvehist').then(j=>{if(Array.isArray(j)){cvHist=j;drawEvents();cvNotesLoad()}}).catch(()=>{cvHistKey=''})}
 // Sensor list: the Feather's events since it powered on (chords, wakes) plus the saved page edits of stage, angle and
 // position. With saved edits the Feather's own "Page" events are left out: the saved ones are the same edits, with the sender.
@@ -1493,7 +1493,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)cvTryKeep(
 let cvRepArm=0;
 function cvEdRepLabel(){const b=$('cvedrep');if(!b)return;const c=cvEd&&cvEd.id&&cvLib?cvLib.curves.find(x=>x.id===cvEd.id):null;b.hidden=!c;if(c){b.textContent='Replace original';b.title='Write this over “'+c.name+'” (same name and place). Results already saved under it were measured with the old version.'}}
 function cvEdReplace(){if(!cvEd||!cvEd.id)return;const b=$('cvedrep');if(Date.now()-cvRepArm>4000){cvRepArm=Date.now();b.textContent='Click again to replace it';setTimeout(()=>{if(cvRepArm&&Date.now()-cvRepArm>=4000){cvRepArm=0;cvEdRepLabel()}},4100);return}
-cvRepArm=0;const q=cvEdQ(1);if(q==null){cvEdRepLabel();return}post('/api/curves?id='+cvEd.id+'&replace=1'+q).then(r=>{say(r,'Replaced. Results saved under it before came from the old version');if(r&&r.ok){cvEdCancel();cvLibLoad()}else cvEdRepLabel()})}
+cvRepArm=0;const q=cvEdQ(1);if(q==null){cvEdRepLabel();return}post('/api/curves?id='+cvEd.id+'&replace=1'+q,undefined,10000).then(r=>{say(r,'Replaced. Results saved under it before came from the old version');if(r&&r.ok){cvEdCancel();cvLibLoad()}else cvEdRepLabel()})}
 function cvEdSave(use){if(!cvEd)return;const nm=$('cvedname').value.trim()||'edited curve',q=cvEdQ();if(q==null)return;
 post('/api/curves?add=1&name='+encodeURIComponent(nm)+q).then(r=>{if(use&&r&&r.ok&&r.id){post('/api/curves?use='+r.id).then(u=>{say(u,'Saved and running');cvEdCancel();cvLibLoad()});return}say(r,'Saved: pick it in BallSheet to A/B it, or Use it');if(r&&r.ok){cvEdCancel();cvLibLoad()}})}
 function cvEdSet(i,sp,g){const T=cvEd.T,lo=i?T[i-1][0]+1:1,hi=i<T.length-1?T[i+1][0]-1:65535;T[i]=[Math.max(lo,Math.min(hi,Math.round(sp))),Math.max(250,Math.min(4000,Math.round(g)))]}
