@@ -190,7 +190,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 .toast.bad{background:var(--bad);color:#fff}
 @media (prefers-reduced-motion:reduce){.toast,details>summary::after{transition:none}}
-</style></head><body><div class="top"><div class="row" style="justify-content:space-between"><h1>Warg settings</h1><div class="row"><button onclick="readMouse()">Read from mouse</button><button onclick="post('/api/flash?c=ffffff').then(r=>say(r,'Flash sent'))">Test flash</button></div></div></div>
+</style></head><body><div class="top"><div class="row" style="justify-content:space-between"><h1>Warg settings</h1><div class="row"><button onclick="readMouse()">Read from mouse</button><button onclick="post('/api/flash?c=ffffff').then(r=>say(r,'Flash sent'))">Test flash</button><button id="usbrb" hidden style="min-width:11em" title="Turns the Feather's USB-A port off and on, the same as replugging what's in it. Everything on that port drops for about 3 seconds." onclick="usbReset()">Reset USB-A</button></div></div></div>
 <header class="bar"><div class="barin"><div class="barrow"><div class="chips"><span id="state" class="chips"><span class="chip">Connecting…</span></span><span id="sbar" class="chips"></span></div><span id="batbig" class="batbig" hidden></span></div>
 <nav class="tabs" role="tablist" aria-label="Sections"><button role="tab" id="tb-mouse" onclick="tabShow('mouse',1)">Mouse</button><button role="tab" id="tb-aim" onclick="tabShow('aim',1)">Aim</button><button role="tab" id="tb-setup" onclick="tabShow('setup',1)">Setup</button><button role="tab" id="tb-diag" onclick="tabShow('diag',1)">Diagnostics</button></nav></div></header>
 <main>
@@ -340,7 +340,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <table class="pt"><thead><tr><th></th><th>Average</th><th>Worst</th></tr></thead><tbody id="ptb"></tbody></table>
 <p class="note" id="pthelp" hidden></p>
 <p class="mut" id="pskip"></p>
-<p class="mut tip" id="pgap" hidden onclick="ptHelp({title:PTIP.gap})"></p>
+<p class="mut tip" id="pgap" hidden onclick="ptHelp({title:PTIP.gap})"></p><p class="mut" id="pusb" hidden></p>
 <details style="margin-top:10px" id="fprof" hidden><summary><span>Where the frame goes</span></summary>
 <table class="pt"><thead><tr><th></th><th>Average</th><th>Worst</th><th title="Its time in the slowest frame of the second">Worst frame</th></tr></thead><tbody id="pfb"></tbody></table>
 <p class="mut" id="pfnote" style="margin:6px 0 0"></p></details></div>
@@ -579,7 +579,7 @@ else if(k===7){const[o,w]=v.split('='),n=EDOPT[o]||[o];s=n[0]+' → '+(o==='snap
 else if(k===8)s='chords → '+v;else if(k===9)s='chords → defaults';
 else if(k===10){const[n,w]=v.split('=');return 'Auto ('+(n||'host')+'): DPI stage → stage '+(Number(w)+1)+na}
 else if(k===11){const[n,w]=v.split('=');s=(n||'a host')+' → '+(w==='0'?'leave the stage':'stage '+w)}
-else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':v==='dropped'?'calibration DPI: stopped putting the table back':/^unverified/.test(v)?'calibration DPI: gave up putting the table back (the mouse kept reporting '+v.slice(11)+')':'calibration DPI → '+v+' for the test';else if(k===14)s='refused '+v+' from an out-of-date page (reload that tab)';else if(k===15)s=edCurve(v,x[0]);else s='edit '+k;
+else if(k===12)s='direction sensitivity saved (on '+v+')';else if(k===13)s=v==='restored'?'DPI table back after the calibration':v==='dropped'?'calibration DPI: stopped putting the table back':/^unverified/.test(v)?'calibration DPI: gave up putting the table back (the mouse kept reporting '+v.slice(11)+')':'calibration DPI → '+v+' for the test';else if(k===14)s='refused '+v+' from an out-of-date page (reload that tab)';else if(k===15)s=edCurve(v,x[0]);else if(k===16)s=v==='auto'?'USB-A port restarted: the receiver had stopped responding':'USB-A port restarted from this page';else s='edit '+k;
 return (d===7?'QT Py: ':'Page ('+DEV[d]+' '+ip+'): ')+s+na}
 // QT Py fw26 + Feather v24: sensitivity per direction (like Corsair's PureVector). Direction k = 0..7 every 45 degrees
 // clockwise on screen from "right" (screen y grows downwards, as in the Feather's atan2).
@@ -957,6 +957,8 @@ function edHist(x){if(x[2]!==15||!cvHist||!/^R\d+:/.test(x[5]))return null;const
 function edOldLoad(){Promise.all([fetchJ('/api/editsold',undefined,8000),fetchJ('/api/curvehist?old=1',undefined,12000)]).then(([a,b])=>{edOld=Array.isArray(a)?a:[];cvHistOld=Array.isArray(b)?b:[];drawEvents()}).catch(()=>{edOld=edOld||[];toast('Failed: could not load the older edits',true);drawEvents()})}
 function edOldTog(){edOldOn=!edOldOn;drawEvents()}
 // 11-10 (fw104): a star and a short note on a curve save, for the version it saved (its After column). The list isn't rebuilt while a note is being typed
+/* 11-10 (Feather v70): the USB-A port off and on; two clicks, the mouse drops for a moment */
+let usbArm=0;function usbReset(){const b=$('usbrb');if(Date.now()-usbArm>4000){usbArm=Date.now();b.textContent='Click again to reset';setTimeout(()=>{if(usbArm&&Date.now()-usbArm>=4000){usbArm=0;b.textContent='Reset USB-A'}},4100);return}usbArm=0;b.textContent='Reset USB-A';post('/api/usbreset').then(r=>say(r,'Restarting the USB-A port'))}
 function edStarTog(){edStar=!edStar;try{localStorage.setItem('gw_edstar',edStar?'1':'0')}catch(e){}drawEvents()}
 function cvNotesLoad(){fetchJ('/api/cvnotes').then(j=>{if(Array.isArray(j)){cvNotes=new Map(j.map(x=>[x[0]+':'+x[1],{s:!!x[2],n:x[3]}]));drawEvents()}}).catch(()=>{})}
 function cvNoteSet(t,id,v){const k=t+':'+id;if(v.s||v.n)cvNotes.set(k,v);else cvNotes.delete(k);drawEvents();post('/api/cvnote?at='+t+'&id='+id+'&star='+(v.s?1:0)+'&note='+encodeURIComponent(v.n)).then(r=>{if(!r||!r.ok){say(r||{ok:false});cvNotesLoad()}})}
@@ -979,7 +981,7 @@ cvRsArm=null;const v=cvSide(h,s);post('/api/curves?id='+id+'&replace=1&sp='+v.T.
 function cvHistLoad(ed){const k=(ed||[]).filter(x=>x[2]===15).map(x=>x[0]).join(',');if(k===cvHistKey||!k)return;cvHistKey=k;fetchJ('/api/curvehist').then(j=>{if(Array.isArray(j)){cvHist=j;drawEvents();cvNotesLoad()}}).catch(()=>{cvHistKey=''})}
 // Sensor list: the Feather's events since it powered on (chords, wakes) plus the saved page edits of stage, angle and
 // position. With saved edits the Feather's own "Page" events are left out: the saved ones are the same edits, with the sender.
-function drawEvents(){const ed=S.edits,items=[];
+function drawEvents(){const ed=S.edits,items=[],ub=$('usbrb'),pu=$('pusb');ub.hidden=!S.usb;pu.hidden=!S.usb;if(S.usb)pu.textContent='USB-A port: restarted '+S.usb.resets+(S.usb.resets===1?' time':' times')+' since the Feather started. Slowest send to the receiver: '+S.usb.worst+' ms (3000 ms restarts the port).';
 (S.events||[]).forEach(e=>{if(!(ed&&e[1]===6))items.push({at:Date.now()-e[0]*1000,s:evText(e)})});
 (ed||[]).forEach(x=>{if((x[2]>=1&&x[2]<=3)||x[2]===10)items.push({at:edAt(x),s:edText(x)})});
 items.sort((p,q)=>q.at-p.at);const sh=items.slice(0,8),box=$('evbox');box.hidden=!sh.length;
@@ -1077,7 +1079,7 @@ const t='Battery '+p+'%'+(bt.chg?', charging':'')+' · '+(bt.mv/1000).toFixed(2)
 if(el.dataset.h!==h+cls){el.innerHTML=h;el.className=cls;el.dataset.h=h+cls}el.title=t;el.setAttribute('aria-label',t);el.hidden=false}
 function render(){const st=$('state');
 if(!S.link){st.innerHTML='<span class="chip bad">No answer from the Feather</span><span class="mut">Check the 4-pin cable.</span>'}
-else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')+(S.cv&&S.cv.try&&!cvTry&&Date.now()-cvTryEndAt>3000?'<span class="chip" title="A curve edit is running live on the mouse (not saved), from another page or one that closed: the QT Py ends it by itself 90 s after that page last checked in. Open Edit on a curve here to take it over.">Curve edit live</span>':'')}  // 11-04: a live curve edit this page isn't running (another page's, or a stale one) shows
+else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'Warg connected':S.vuk?'VUK connected':'No G-Wolves mouse')+'</span>'+(S.warg&&S.paused?'<span class="chip bad">mouse didn\'t answer (asleep?)</span><span class="mut">Move it: this page reads it again by itself.</span>':S.warg&&S.reads===false?'<span class="chip">mouse hasn\'t answered a read yet</span>':'')+(S.refreshing?'<span class="chip">reading…</span>':'')+(S.usb&&S.usb.off?'<span class="chip">USB-A restarting\u2026</span>':S.usb&&S.usb.gaveup?'<span class="chip bad">USB-A not responding: replug it</span>':S.usb&&S.usb.stuck?'<span class="chip bad">USB-A not responding</span>':'')+(S.pending?'<span class="chip">sending…</span>':'')+(S.cv&&S.cv.try&&!cvTry&&Date.now()-cvTryEndAt>3000?'<span class="chip" title="A curve edit is running live on the mouse (not saved), from another page or one that closed: the QT Py ends it by itself 90 s after that page last checked in. Open Edit on a curve here to take it over.">Curve edit live</span>':'')}  // 11-04: a live curve edit this page isn't running (another page's, or a stale one) shows
 if(pgNew)st.insertAdjacentHTML('beforeend','<button class="chip" onclick="pgGo()">New page version: reload</button>');
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});

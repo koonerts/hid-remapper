@@ -3,6 +3,8 @@
 
 #include <tusb.h>
 
+#include "pico/time.h"
+
 #include "out_report.h"
 
 struct outgoing_out_report_t {
@@ -28,6 +30,7 @@ __attribute__((weak)) void gw_on_get_report_complete(uint8_t dev_addr, uint8_t i
 __attribute__((weak)) void gw_on_input_report(uint8_t dev_addr, uint8_t instance, const uint8_t* report, uint16_t len) {}
 
 static bool ready_to_send = true;
+static uint64_t last_moved_us = 0;  // v70: when the queue last moved (out_report_stall_ms)
 // The report in flight while !ready_to_send. TinyUSB drops a control transfer without a completion
 // callback when its device is unplugged, so that device going away has to free the queue too.
 static uint8_t in_flight_dev_addr;
@@ -50,6 +53,9 @@ void do_queue_out_report(const uint8_t* report, uint16_t len, uint8_t report_id,
         outgoing_out_reports[oor_tail].report[0] = report_id;
     }
     memcpy(outgoing_out_reports[oor_tail].report + ((report_id != 0) ? 1 : 0), report, len);
+    if ((oor_items == 0) && ready_to_send) {
+        last_moved_us = time_us_64();
+    }
     oor_tail = (oor_tail + 1) % OOR_BUFSIZE;
     oor_items++;
 }
@@ -64,6 +70,9 @@ void do_queue_get_report(uint8_t report_id, uint8_t dev_addr, uint8_t interface,
     outgoing_out_reports[oor_tail].report_id = report_id;
     outgoing_out_reports[oor_tail].type = OutType::GET_FEATURE;
     outgoing_out_reports[oor_tail].len = len;
+    if ((oor_items == 0) && ready_to_send) {
+        last_moved_us = time_us_64();
+    }
     oor_tail = (oor_tail + 1) % OOR_BUFSIZE;
     oor_items++;
 }
@@ -72,9 +81,17 @@ uint8_t out_report_free_slots() {
     return OOR_BUFSIZE - oor_items;
 }
 
+uint32_t out_report_stall_ms() {
+    if ((oor_items == 0) && ready_to_send) {
+        return 0;
+    }
+    return (uint32_t) ((time_us_64() - last_moved_us) / 1000);
+}
+
 void do_send_out_report() {
     if (!ready_to_send && !tuh_hid_mounted(in_flight_dev_addr, in_flight_instance)) {
         ready_to_send = true;
+        last_moved_us = time_us_64();
     }
     if ((oor_items > 0) && ready_to_send) {
         outgoing_out_report_t* out = &(outgoing_out_reports[oor_head]);
@@ -82,6 +99,7 @@ void do_send_out_report() {
         if (!tuh_hid_mounted(out->dev_addr, out->interface)) {
             oor_head = (oor_head + 1) % OOR_BUFSIZE;
             oor_items--;
+            last_moved_us = time_us_64();
             return;
         }
         bool sent = false;
@@ -91,6 +109,7 @@ void do_send_out_report() {
             sent = tuh_hid_get_report(out->dev_addr, out->interface, out->report_id, HID_REPORT_TYPE_FEATURE, get_buffer, out->len);
         }
         if (sent) {
+            last_moved_us = time_us_64();
             ready_to_send = false;
             in_flight_dev_addr = out->dev_addr;
             in_flight_instance = out->interface;
@@ -102,12 +121,14 @@ void do_send_out_report() {
 
 void tuh_hid_set_report_complete_cb(uint8_t dev_addr, uint8_t instance, uint8_t report_id, uint8_t report_type, uint16_t len) {
     ready_to_send = true;
+    last_moved_us = time_us_64();
     gw_on_set_report_complete(dev_addr, instance, report_id, len);
     set_report_complete_cb(dev_addr, instance, report_id);
 }
 
 void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t report_id, uint8_t report_type, uint16_t len) {
     ready_to_send = true;
+    last_moved_us = time_us_64();
     gw_on_get_report_complete(dev_addr, idx, report_id, get_buffer, len);
     get_report_cb(dev_addr, idx, report_id, report_type, get_buffer, len);
 }

@@ -45,6 +45,8 @@ uint16_t gw_mouse_dpi(void);
 // frame's motion. A button, the wheel or real movement is use: two idle minutes put the mouse on its lowest-DPI stage
 // so it can sleep, and use puts the stage back.
 void gw_idle_frame(int32_t* const* ch, const int32_t* x, const int32_t* y);
+void gw_ua_state(uint8_t* resets, uint8_t* tries, bool* off, bool* gave_up, uint16_t* worst_ms);  // v70: for the host tests (block 8 holds the same)
+extern bool gw_ua_beats;  // v70: the quiet-time check of the USB-A port (off in the host tests that count reads)
 void gw_gap_totals(uint32_t* cnt, uint32_t* ms, uint32_t* frames);  // v66: the report pauses since the start (cnt: 5 lengths), for tests
 
 #endif

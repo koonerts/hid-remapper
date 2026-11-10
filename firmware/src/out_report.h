@@ -14,6 +14,9 @@ void do_queue_get_report(uint8_t report_id, uint8_t dev_addr, uint8_t interface,
 void do_send_out_report();
 // Free entries in the out-report queue (gw_mouse.cc paces its writes with it).
 uint8_t out_report_free_slots();
+// v70: ms the queue has had work without anything going out or finishing (0 while it has none): the receiver or the USB
+// host side has hung when this grows, a sleeping mouse doesn't do it (its receiver still takes the request)
+uint32_t out_report_stall_ms();
 
 void get_report_cb(uint8_t dev_addr, uint8_t interface, uint8_t report_id, uint8_t report_type, uint8_t* report, uint16_t len);
 void set_report_complete_cb(uint8_t dev_addr, uint8_t interface, uint8_t report_id);
