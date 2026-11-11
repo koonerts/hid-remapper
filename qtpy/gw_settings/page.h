@@ -960,10 +960,12 @@ function edOldTog(){edOldOn=!edOldOn;drawEvents()}
 /* 11-10 (Feather v70): the USB-A port off and on; two clicks, the mouse drops for a moment */
 let usbArm=0;function usbReset(){const b=$('usbrb');if(Date.now()-usbArm>4000){usbArm=Date.now();b.textContent='Click again to reset';setTimeout(()=>{if(usbArm&&Date.now()-usbArm>=4000){usbArm=0;b.textContent='Reset USB-A'}},4100);return}usbArm=0;b.textContent='Reset USB-A';post('/api/usbreset').then(r=>say(r,'Restarting the USB-A port'))}
 /* 11-10 (Feather v73, QT Py fw109): the slow-down gain's flick threshold, for all curves */
-function cvDcMinShow(){const i=$('cvdcmin'),r=$('cvdcminr');if(!i)return;const on=!!(S&&S.fw>=73&&S.cv&&S.cv.dcmin!=null);r.hidden=!on;if(on&&document.activeElement!==i)i.value=S.cv.dcmin}
+/* 11-11: a change not yet sent or not yet in the status holds the box (cvDcMinW, until cvDcMinU): the refresh put the stored value back during the 1 s wait (clicking the arrows does not keep the box focused), so most clicks were undone before they were sent */
+let cvDcMinW=null,cvDcMinU=0;
+function cvDcMinShow(){const i=$('cvdcmin'),r=$('cvdcminr');if(!i)return;const on=!!(S&&S.fw>=73&&S.cv&&S.cv.dcmin!=null);r.hidden=!on;if(!on)return;if(cvDcMinW!==null&&!cvDcMinT&&(Math.abs(S.cv.dcmin-cvDcMinW)<0.05||Date.now()>cvDcMinU))cvDcMinW=null;if(cvDcMinW===null&&document.activeElement!==i)i.value=S.cv.dcmin}
 /* sent 1 s after the last change: each click of the box's arrows would be a request */
-let cvDcMinT=0;function cvDcMinIn(){clearTimeout(cvDcMinT);cvDcMinT=setTimeout(cvDcMinSet,1000)}
-function cvDcMinSet(){const v=Number($('cvdcmin').value);if(!(v>=0&&v<=100)){toast('Flick threshold: 0 to 100 cm/s',true);return}post('/api/dcmin?v='+v).then(r=>say(r,v?'Slow-down only for flicks from '+v+' cm/s':'Slow-down for every stroke'))}
+let cvDcMinT=0;function cvDcMinIn(){clearTimeout(cvDcMinT);cvDcMinW=Number($('cvdcmin').value);cvDcMinU=Date.now()+8000;cvDcMinT=setTimeout(cvDcMinSet,1000)}
+function cvDcMinSet(){cvDcMinT=0;const t=$('cvdcmin').value.trim(),v=Number(t);if(t==='')return;if(!(v>=0&&v<=100)){cvDcMinW=null;toast('Flick threshold: 0 to 100 cm/s',true);return}cvDcMinW=v;cvDcMinU=Date.now()+8000;post('/api/dcmin?v='+v).then(r=>{if(!r.ok)cvDcMinW=null;say(r,v?'Slow-down only for flicks from '+v+' cm/s':'Slow-down for every stroke')})}
 function edStarTog(){edStar=!edStar;try{localStorage.setItem('gw_edstar',edStar?'1':'0')}catch(e){}drawEvents()}
 function cvNotesLoad(){fetchJ('/api/cvnotes').then(j=>{if(Array.isArray(j)){cvNotes=new Map(j.map(x=>[x[0]+':'+x[1],{s:!!x[2],n:x[3]}]));drawEvents()}}).catch(()=>{})}
 function cvNoteSet(t,id,v){const k=t+':'+id;if(v.s||v.n)cvNotes.set(k,v);else cvNotes.delete(k);drawEvents();post('/api/cvnote?at='+t+'&id='+id+'&star='+(v.s?1:0)+'&note='+encodeURIComponent(v.n)).then(r=>{if(!r||!r.ok){say(r||{ok:false});cvNotesLoad()}})}
