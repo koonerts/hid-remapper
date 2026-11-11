@@ -50,9 +50,10 @@ static uint8_t hist_resets = 0;
 // v39: the slow-down gain
 static bool dc_on = false, dc_got = false;
 static uint8_t dc_n = 0, dc_crc = 0;
-static uint8_t dc_last_p[1 + 4 * GW_DECEL_N], dc_last_len = 0xFF;  // v42: the last payload, whole (as last_p); v47: room for 4-byte points
+static uint8_t dc_last_p[1 + 4 * GW_DECEL_N + 2], dc_last_len = 0xFF;  // v73: + the flick threshold  // v42: the last payload, whole (as last_p); v47: room for 4-byte points
 static float dc_r[GW_DECEL_N], dc_g[GW_DECEL_N];  // share of the peak (0-1), gain
 static float dc_pk = 0, dc_tr = 0;                 // cm/s: the stroke's peak, the slowest since it
+static float dc_min = 0.0f;  // v73: cm/s a stroke's peak must reach for the slow-down gain to apply (0 = any stroke; slow tracking was damped too)
 static float dc_gn = 1.0f;                         // the slow-down gain now (eased)
 // gw v53: the per-frame float work cut to what changes (soft-float on RP2040: every op is a call), all exact: the same
 // inputs give the same floats, so only repeated work is skipped. The table segments' widths and rises, as gain_at and
@@ -208,10 +209,14 @@ void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
     }
     // v47: byte 0 bit 0 = on, bit 1 = 4-byte points (share uint16 in 0.1 %); without it the old 3-byte points (share
     // in whole %, taken as share * 10), so a QT Py from before v47 still works
+    // v73: byte 0 bit 2 = the flick threshold follows the points, last (0.1 cm/s, uint16); without it, any stroke
     uint16_t p10[GW_DECEL_N] = {}, g[GW_DECEL_N] = {};
+    uint8_t x = ((len >= 1) && (d[0] & 4)) ? 2 : 0;
+    uint8_t m = (len >= 1 + x) ? len - x : 0;  // [on, points]
     uint8_t w = ((len >= 1) && (d[0] & 2)) ? 4 : 3;
-    uint8_t n = (len >= 1) ? (len - 1) / w : 0;
-    bool ok = (len >= 1) && ((len - 1) % w == 0) && (n <= GW_DECEL_N);
+    uint8_t n = (m >= 1) ? (m - 1) / w : 0;
+    bool ok = (m >= 1) && ((m - 1) % w == 0) && (n <= GW_DECEL_N);
+    dc_min = (ok && x) ? (float) (d[len - 2] | d[len - 1] << 8) / 10.0f : 0.0f;
     for (uint8_t k = 0; ok && (k < n); k++) {
         const uint8_t* q = d + 1 + w * k;
         p10[k] = (w == 4) ? (uint16_t) (q[0] | q[1] << 8) : (uint16_t) (q[0] * 10);
@@ -267,7 +272,7 @@ static float __not_in_flash_func(decel_step)(float a) {
         dc_pk = dc_tr = spd;
     }
     // gw v54 (d): spd is the peak (just set) = share 1.0 = gain 1.0, as v53's decel_at(1.0) gives; else below the peak
-    float want = (dc_on && lt_pn(spd, dc_pk)) ? decel_spd(spd) : 1.0f;
+    float want = (dc_on && lt_pn(spd, dc_pk) && (dc_pk >= dc_min)) ? decel_spd(spd) : 1.0f;  // v73: only a stroke that reached the flick threshold
     dc_gn += (want - dc_gn) * a;
     return dc_gn;
 }
