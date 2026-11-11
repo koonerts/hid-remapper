@@ -1097,9 +1097,13 @@ $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw
 // IP went into the tunnel and hung, so Firefox showed the page loading forever
 // 11-04 review: while the move is pending (ipMove) poll() schedules nothing, so window.stop() can't abort a status read in
 // flight; polling starts again after the stop. gwNoIp is "ip|ms" and lapses after 24 h (the VPN may be gone by then)
-let ipTried=false,touched=false,ipMove=false;['input','pointerdown','keydown'].forEach(e=>document.addEventListener(e,()=>{touched=true},true));
-async function toIp(j){if(ipTried||touched)return false;ipTried=true;const ip=j&&j.radio&&j.radio.mode==='sta'?j.radio.ip:'';
-if(!/\.local$/i.test(location.hostname)||!/^\d+\.\d+\.\d+\.\d+$/.test(ip)||ip==='0.0.0.0')return false;try{const w=(localStorage.getItem('gwNoIp')||'').split('|');if(w[0]===ip&&Date.now()-Number(w[1])<864e5)return false}catch(e){}
+// 11-10: no longer at the first load: the page stays on gwolves.local (readable, and it follows the QT Py to a new address)
+// and only moves to the plain address after 3 status reads by name in a row failed while that address answers, and only
+// before any input (a move reloads the page); otherwise the lost-QT-Py message links the address
+let ipTried=false,touched=false,ipMove=false,ipLast='',failN=0;['input','pointerdown','keydown'].forEach(e=>document.addEventListener(e,()=>{touched=true},true));
+function ipOf(j){const ip=j&&j.radio&&j.radio.mode==='sta'?j.radio.ip:'';return /^\d+\.\d+\.\d+\.\d+$/.test(ip)&&ip!=='0.0.0.0'?ip:''}
+async function toIp(ip){if(ipTried||touched)return false;ipTried=true;
+if(!/\.local$/i.test(location.hostname)||!ip)return false;try{const w=(localStorage.getItem('gwNoIp')||'').split('|');if(w[0]===ip&&Date.now()-Number(w[1])<864e5)return false}catch(e){}
 const c=new AbortController(),tm=setTimeout(()=>c.abort(),2500);try{await fetch('http://'+ip+'/api/status',{mode:'no-cors',cache:'no-store',signal:c.signal})}catch(e){return false}finally{clearTimeout(tm)}
 if(touched)return false;ipMove=true;setTimeout(()=>{window.stop();ipMove=false;try{localStorage.setItem('gwNoIp',ip+'|'+Date.now())}catch(e){}poll()},4000);location.replace('http://'+ip+'/');return true}
 // A new page on the QT Py (an upload, or new firmware): a style-only change is swapped in place; anything else
@@ -1120,7 +1124,7 @@ if(k===pgKey||pgFetching)return;if(pgNew){if(!pgBusy())pgGo();return}
 pgFetching=true;try{const t=await(await fetch('/',{cache:'no-store'})).text(),m=t.match(/<meta name="gw-rest" content="([0-9a-f]+)">/),mine=document.querySelector('meta[name=gw-rest]'),s=t.match(/<style>([\s\S]*?)<\/style>/);
 if(m&&s&&mine&&mine.content===m[1]){document.querySelector('style').textContent=s[1];pgKey=k;toast('Page style updated');return}
 pgNew=true;if(!pgBusy())pgGo();else render()}catch(e){}finally{pgFetching=false}}
-function poll(){if(ipMove)return;fetchJ(tq('/api/status')).then(async j=>{if(!S&&await toIp(j))return;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}pgCheck(j);nvsWarn(j)}).catch(()=>{$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again.</span>'}).finally(()=>{if(!ipMove)setTimeout(poll,document.hidden?5000:1000)})}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
+function poll(){if(ipMove)return;fetchJ(tq('/api/status')).then(j=>{failN=0;const ip=ipOf(j);if(ip)ipLast=ip;if(S&&edit.stage&&Date.now()-edit.stage<1500)j.stage=S.stage;S=j;optOverlay();if(!cb){render();autoRead()}pgCheck(j);nvsWarn(j)}).catch(()=>{failN++;const local=/\.local$/i.test(location.hostname);if(local&&ipLast&&failN>=3)toIp(ipLast);$('state').innerHTML='<span class="chip bad">Page lost the QT Py</span><span class="mut">Its Wi-Fi may be off, or its address changed: open gwolves.local again'+(local&&ipLast?', or its address <a href="http://'+ipLast+'/">'+ipLast+'</a>':'')+'.</span>'}).finally(()=>{if(!ipMove)setTimeout(poll,document.hidden?5000:1000)})}  // fw33: no full render while a flick calibration runs (its stalls land in the timing); a background tab polls every 5 s
 buildStages();bindSlider('angle');bindSlider('pos');
 $('ms').addEventListener('pointerdown',e=>{if(!S||e.target===$('ms'))return;msDrag=e.target.id==='msh'?'angle':'pos';msOff=0;if(msDrag==='pos'&&$('mss').contains(e.target))msOff=new DOMPoint(e.clientX,e.clientY).matrixTransform($('ms').getScreenCTM().inverse()).y-msY(Number($('pos').value));$('ms').setPointerCapture(e.pointerId);e.preventDefault();msMove(e)});
 $('ms').addEventListener('pointermove',msMove);['pointerup','pointercancel'].forEach(t=>$('ms').addEventListener(t,()=>{msDrag=null}));
