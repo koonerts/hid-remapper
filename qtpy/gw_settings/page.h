@@ -345,7 +345,8 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <details style="margin-top:10px" id="fprof" hidden><summary><span>Where the frame goes</span></summary>
 <table class="pt"><thead><tr><th></th><th>Average</th><th>Worst</th><th title="Its time in the slowest frame of the second">Worst frame</th></tr></thead><tbody id="pfb"></tbody></table>
 <p class="mut" id="pfnote" style="margin:6px 0 0"></p></details></div>
-<p class="mut" id="perfnone">Needs Feather firmware v19 or later.</p></div>
+<p class="mut" id="perfnone">Needs Feather firmware v19 or later.</p>
+<div class="row" id="drstr" style="margin-top:8px" hidden><button type="button" id="drstb" title="The minute, hour and 24 h numbers start over, and the Feather's own totals too (frames skipped, pauses, USB-A restarts, slowest send). Click twice." onclick="diagReset()">Reset these numbers</button><span class="mut" id="drstt"></span></div></div>
 
 <details class="card" id="fedits" hidden ontoggle="if(this.open&&S)drawEvents()"><summary><div><h2>Recent edits</h2><div class="mut" id="edlast"></div></div></summary>
 <div class="edtop"><button type="button" class="chipb" id="edstarb" hidden onclick="edStarTog()"></button></div><div id="edlist"></div><div id="edoldr" hidden style="margin-top:8px"><button type="button" class="sm" id="edoldb" onclick="edOldTog()"></button></div><p class="mut" style="margin-top:10px">The last 100 edits: made through this page from any device, with mouse chords, by the automatic DPI stage and USB-A restarts (the newest 20 show first). Automatic DPI stage changes keep only their latest 4, and changes made with mouse chords their latest 6 (quick presses of the same setting are one entry), so neither can crowd out your edits. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
@@ -512,6 +513,15 @@ bar:'The share of each 1 ms frame the Feather is busy: USB interrupt plus frame 
    Pauses labels: under their own line, so it opens downward); the same one again closes it */
 function ptHelp(tr,at){const p=$('pthelp'),s=tr?tr.title:'',to=at||$('ptb').parentNode;if(!s||(!p.hidden&&p.textContent===s&&p.previousElementSibling===to)){p.hidden=true;return}if(p.previousElementSibling!==to)to.after(p);p.textContent=s;p.hidden=false}
 /* 11-11: only the label opens its tip (not the whole line); a line is rewritten only when it changed, so a click isn't lost to the 1 s redraw */
+/* 11-11 (QT Py fw112, Feather v74): Reset these numbers: the QT Py's minute / hour / 24 h windows start over, and the
+   Feather's since-start totals too (frames skipped, pauses, USB-A restarts and slowest send). The first click arms it for 4 s */
+let drstArm=0;
+function drstAt(){const d=S&&S.drst;return !d?0:d.ago>=0?Date.now()-d.ago*1000:d.t*1000}
+function drstSince(){return S&&S.drst&&S.drst.on?'since the reset':'since the Feather started'}
+function drawDrst(){const r=$('drstr');r.hidden=!S||!(S.qt_fw>=112);if(r.hidden)return;if(!drstArm)$('drstb').textContent='Reset these numbers';const d=S.drst,w=d?whenText(drstAt()):'';
+$('drstt').textContent=!d?'':d.on?'Counting since '+w+'.':'Reset '+w+(S.fw>=74?': the Feather has restarted since, so its totals count from its start.':': the minute, hour and 24 h numbers only (the Feather\'s own totals need Feather firmware v74).')}
+function diagReset(){const b=$('drstb');if(Date.now()-drstArm>4000){drstArm=Date.now();b.textContent='Click again to reset';setTimeout(()=>{if(drstArm&&Date.now()-drstArm>=4000){drstArm=0;b.textContent='Reset these numbers'}},4100);return}
+drstArm=0;b.textContent='Reset these numbers';post('/api/diagreset').then(r=>{say(r,r.feather?'Reset: counting from now':'Reset the minute, hour and 24 h numbers (the Feather\'s own totals need Feather firmware v74)');ptData=null;gpS=null;ptAt=0;gpAt=0;if(S)drawPerf(S.perf)})}
 const GAPL='Pauses in the mouse\'s reports mid-swipe',ptLab=(k,l)=>'<span class="tipl" title="'+esc(PTIP[k])+'" onclick="ptHelp({title:PTIP.'+k+'},this.parentNode)">'+esc(l)+'</span>';
 function ptSetH(el,h){if(el.dataset.h!==h){el.innerHTML=h;el.dataset.h=h}}
 /* 11-05 (QT Py fw91, Feather v59): the card shows all frames, still ones or moving ones (moving: the mouse's smoothed speed
@@ -554,7 +564,7 @@ const s='Each 1 ms frame: '+Math.round(pa)+'% used on average, '+Math.round(pw)+
 const ps=$('pskip');ps.hidden=!v19;if(v19){const m=win?win.missed:pf.missed_1s,lack=win&&ptw!=='s'&&win.n<win.win_s*0.97,K=PTK[ptk];
 const share=win&&ptk!=='a'?K[0].toUpperCase()+K.slice(1)+': '+win.frames.toLocaleString()+' of '+win.frames_all.toLocaleString()+' ('+(win.frames_all?(100*win.frames/win.frames_all).toFixed(win.frames*100<win.frames_all?2:1):0)+'%). ':'';
 const sm=win?win.settle_missed||0:0,nd=win&&ptk!=='a'&&win.nodpi&&win.nodpi*100>=win.frames?win.nodpi:0;
-ptSetH(ps,esc(share)+ptLab('skip','Frames skipped')+esc((win&&ptk!=='a'?' (all frames)':'')+': '+(!win&&m>=255?'255+':m)+' in '+wl+(lack?' (data for '+ptSpan(win.n)+' of it: kept since the QT Py started, and not while the Feather was out of reach)':''))+(sm?' <span class="mut">· not counted: '+sm.toLocaleString()+' while the Feather started or a USB device changed (a normal half-second pause)</span>':'')+esc(' · '+pf.missed_total+' since the Feather started'+(win?(win.settle_total?' (+'+win.settle_total.toLocaleString()+' while it settled)':''):' (its start-up and USB changes count there: each pauses it about half a second)')+'.'+(win&&win.down?' The Feather isn\'t answering right now: this is what was kept.':'')+(nd?' '+nd.toLocaleString()+' of these frames were told apart by raw motion (the DPI wasn\'t known yet, so no speed).':'')+(!ptSup&&(ptw!=='s'||ptk!=='a')?' Longer times and still / moving frames need Feather firmware v59 (QT Py firmware 91).':'')));ps.classList.toggle('bad',m>0)}
+ptSetH(ps,esc(share)+ptLab('skip','Frames skipped')+esc((win&&ptk!=='a'?' (all frames)':'')+': '+(!win&&m>=255?'255+':m)+' in '+wl+(lack?' (data for '+ptSpan(win.n)+' of it: kept since '+(S.drst&&S.drst.ago>=0?'the reset':'the QT Py started')+', and not while the Feather was out of reach)':''))+(sm?' <span class="mut">· not counted: '+sm.toLocaleString()+' while the Feather started or a USB device changed (a normal half-second pause)</span>':'')+esc(' · '+pf.missed_total+' '+drstSince()+(win?(win.settle_total?' (+'+win.settle_total.toLocaleString()+' while it settled)':''):' (its start-up and USB changes count there: each pauses it about half a second)')+'.'+(win&&win.down?' The Feather isn\'t answering right now: this is what was kept.':'')+(nd?' '+nd.toLocaleString()+' of these frames were told apart by raw motion (the DPI wasn\'t known yet, so no speed).':'')+(!ptSup&&(ptw!=='s'||ptk!=='a')?' Longer times and still / moving frames need Feather firmware v59 (QT Py firmware 91).':'')));ps.classList.toggle('bad',m>0)}
 drawGap(win);drawProf(pr,win?PTW[ptw]:'second')}
 // 11-04 (Feather v51+, QT Py fw83+): each part of the frame, from the Feather's profile block (/api/status prof), in frame
 // order; parts 13-19 are inside the housekeeping row
@@ -995,7 +1005,7 @@ cvRsArm=null;const v=cvSide(h,s);post('/api/curves?id='+id+'&replace=1&sp='+v.T.
 function cvHistLoad(ed){const k=(ed||[]).filter(x=>x[2]===15).map(x=>x[0]).join(',');if(k===cvHistKey||!k)return;cvHistKey=k;fetchJ('/api/curvehist').then(j=>{if(Array.isArray(j)){cvHist=j;drawEvents();cvNotesLoad()}}).catch(()=>{cvHistKey=''})}
 // Sensor list: the Feather's events since it powered on (chords, wakes) plus the saved page edits of stage, angle and
 // position. With saved edits the Feather's own "Page" events are left out: the saved ones are the same edits, with the sender.
-function drawEvents(){const ed=S.edits,items=[],ub=$('usbrb'),pu=$('pusb');ub.hidden=!S.usb;pu.hidden=!S.usb;if(S.usb)pu.textContent='USB-A port: restarted '+S.usb.resets+(S.usb.resets===1?' time':' times')+' since the Feather started. Slowest send to the receiver: '+S.usb.worst+' ms (3000 ms restarts the port).';
+function drawEvents(){const ed=S.edits,items=[],ub=$('usbrb'),pu=$('pusb');ub.hidden=!S.usb;pu.hidden=!S.usb;if(S.usb)pu.textContent='USB-A port: restarted '+S.usb.resets+(S.usb.resets===1?' time':' times')+' '+drstSince()+'. Slowest send to the receiver: '+S.usb.worst+' ms (3000 ms restarts the port).';
 (S.events||[]).forEach(e=>{if(!(ed&&e[1]===6))items.push({at:Date.now()-e[0]*1000,s:evText(e)})});
 (ed||[]).forEach(x=>{if((x[2]>=1&&x[2]<=3)||x[2]===10)items.push({at:edAt(x),s:edText(x)})});
 items.sort((p,q)=>q.at-p.at);const sh=items.slice(0,8),box=$('evbox');box.hidden=!sh.length;
@@ -1098,7 +1108,7 @@ else{st.innerHTML='<span class="chip'+(S.warg||S.vuk?' ok':'')+'">'+(S.warg?'War
 if(pgNew)st.insertAdjacentHTML('beforeend','<button class="chip" onclick="pgGo()">New page version: reload</button>');
 paintStages();if(S.palette&&S.stage!=null&&S.palette[S.stage])fav(S.palette[S.stage]);
 ['angle','pos'].forEach(k=>{if(!edit[k]||Date.now()-edit[k]>1500)setVal(k,S[k])});
-drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();cvDcMinShow();drawHosts();drawDG();drawLevel();c3Draw();cvDraw();foldsApply();
+drawChordEditor();drawTune();drawRadio();drawOpt();drawEvents();drawDrst();cvDcMinShow();drawHosts();drawDG();drawLevel();c3Draw();cvDraw();foldsApply();
 drawBat();
 $('ver').textContent=(S.fw?'Feather v'+S.fw+' · ':'')+'QT Py firmware '+S.qt_fw+(S.page&&S.page.fs?' · page uploaded '+whenText(S.page.t*1000):'');drawBar();tabApply()}
 // Opened as gwolves.local: once, before the first render and before any input, check the plain
