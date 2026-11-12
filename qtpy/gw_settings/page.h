@@ -335,6 +335,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 </div></div></section>
 <section class="tab" id="t-diag" role="tabpanel" hidden><div class="cols">
 <div class="card" id="perfc"><div class="hd"><h2>Frame timing</h2><span class="hdr"><span class="seg" id="ptkind" role="group" aria-label="Which frames"><button type="button" data-k="a" onclick="ptKindSet('a')">All</button><button type="button" data-k="i" onclick="ptKindSet('i')" title="Frames with the mouse still">Still</button><button type="button" data-k="m" onclick="ptKindSet('m')" title="Frames with the mouse moving: its smoothed speed at least 0.1 cm/s (the speed curve's still threshold)">Moving</button></span><select id="ptwin" onchange="ptWinSet(this.value)" aria-label="Time window" style="width:auto"><option value="s">Last second</option><option value="m">Last minute</option><option value="h">Last hour</option><option value="d">Last 24 hours</option></select></span></div>
+<div class="row" id="drstr" style="margin:0 0 8px" hidden><button type="button" id="drstb" title="The minute, hour and 24 h numbers start over, and the Feather's own totals too (frames skipped, pauses, USB-A restarts, slowest send). Click twice." onclick="diagReset()">Reset these numbers</button><span class="mut" id="drstt"></span></div>
 <div id="perf" hidden>
 <div class="bud tip" role="img" id="bud" onclick="ptHelp({title:PTIP.bar})"><i id="budw"></i><i id="buda"></i></div>
 <p class="mut" id="budt" style="margin:0"></p>
@@ -346,7 +347,7 @@ h3.sub{font-size:14px;font-weight:650;margin:18px 0 8px}
 <table class="pt"><thead><tr><th></th><th>Average</th><th>Worst</th><th title="Its time in the slowest frame of the second">Worst frame</th></tr></thead><tbody id="pfb"></tbody></table>
 <p class="mut" id="pfnote" style="margin:6px 0 0"></p></details></div>
 <p class="mut" id="perfnone">Needs Feather firmware v19 or later.</p>
-<div class="row" id="drstr" style="margin-top:8px" hidden><button type="button" id="drstb" title="The minute, hour and 24 h numbers start over, and the Feather's own totals too (frames skipped, pauses, USB-A restarts, slowest send). Click twice." onclick="diagReset()">Reset these numbers</button><span class="mut" id="drstt"></span></div></div>
+</div>
 
 <details class="card" id="fedits" hidden ontoggle="if(this.open&&S)drawEvents()"><summary><div><h2>Recent edits</h2><div class="mut" id="edlast"></div></div></summary>
 <div class="edtop"><button type="button" class="chipb" id="edstarb" hidden onclick="edStarTog()"></button></div><div id="edlist"></div><div id="edoldr" hidden style="margin-top:8px"><button type="button" class="sm" id="edoldb" onclick="edOldTog()"></button></div><p class="mut" style="margin-top:10px">The last 100 edits: made through this page from any device, with mouse chords, by the automatic DPI stage and USB-A restarts (the newest 20 show first). Automatic DPI stage changes keep only their latest 4, and changes made with mouse chords their latest 6 (quick presses of the same setting are one entry), so neither can crowd out your edits. Kept on the QT Py, so they stay through refreshes, the ATEN switching ports and updates.</p></details>
