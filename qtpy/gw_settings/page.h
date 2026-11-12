@@ -520,7 +520,9 @@ function drstAt(){const d=S&&S.drst;return !d?0:d.ago>=0?Date.now()-d.ago*1000:d
 function drstSince(){return S&&S.drst&&S.drst.on?'since the reset':'since the Feather started'}
 /* 11-12: Reset sits with the pickers on the title line; under the title, since when it counts (the long form on hover) */
 function drawDrst(){const b=$('drstb'),t=$('drstt');b.hidden=!S||!(S.qt_fw>=112);const d=!b.hidden&&S.drst;t.hidden=!d;if(b.hidden)return;if(!drstArm)b.textContent='Reset';if(!d)return;const w=whenText(drstAt());
-t.textContent=d.on?'Counting since '+w:'Reset '+w+(S.fw>=74?' · Feather restarted since':' · windows only');t.title=d.on?'':S.fw>=74?'The Feather has restarted since, so its own totals count from its start.':'The minute, hour and 24 h numbers only: the Feather\'s own totals need Feather firmware v74.'}
+const fs=d.fup>=0?Date.now()-d.fup*1000:0;
+t.textContent=d.on?'Counting since your reset at '+w:S.fw>=74?'Counting since the Feather restarted'+(fs?' at '+whenText(fs):''):'Reset at '+w+' (minute, hour and 24 h only)';
+t.title=d.on?'':S.fw>=74?'You reset at '+w+'. The Feather has restarted since then, and a restart starts its totals over too.':'The Feather\'s own totals need Feather firmware v74, so only the minute, hour and 24 h numbers were reset.'}
 function diagReset(){const b=$('drstb');if(Date.now()-drstArm>4000){drstArm=Date.now();b.textContent='Confirm';setTimeout(()=>{if(drstArm&&Date.now()-drstArm>=4000){drstArm=0;b.textContent='Reset'}},4100);return}
 drstArm=0;b.textContent='Reset';post('/api/diagreset').then(r=>{say(r,r.feather?'Reset: counting from now':'Reset the minute, hour and 24 h numbers (the Feather\'s own totals need Feather firmware v74)');ptData=null;gpS=null;ptAt=0;gpAt=0;if(S)drawPerf(S.perf)})}
 const GAPL='Pauses in the mouse\'s reports mid-swipe',ptLab=(k,l)=>'<span class="tipl" title="'+esc(PTIP[k])+'" onclick="ptHelp({title:PTIP.'+k+'},this.parentNode)">'+esc(l)+'</span>';
