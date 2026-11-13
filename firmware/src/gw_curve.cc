@@ -55,6 +55,12 @@ static float dc_r[GW_DECEL_N], dc_g[GW_DECEL_N];  // share of the peak (0-1), ga
 static float dc_pk = 0, dc_tr = 0;                 // cm/s: the stroke's peak, the slowest since it
 static float dc_min = 0.0f;  // v73: cm/s a stroke's peak must reach for the slow-down gain to apply (0 = any stroke; slow tracking was damped too)
 static float dc_gn = 1.0f;                         // the slow-down gain now (eased)
+// v75: a reversal ends the stroke (LINK_SET_DECEL byte 0 bit 3, off = v74's direction-blind stroke). The motion's smoothed
+// velocity (cm/s, signed, by the speed's own smoothing; only kept while asked for) and its direction when the stroke's peak
+// was set: once the velocity points more than 90 degrees away from that (and is 0.5 cm/s or more, so a resting mouse's
+// stray counts don't count), the stroke is over, as when the hand stops: the gain back to 1.0 at once, a new peak from here
+static bool dc_rev = false;
+static float dc_vx = 0, dc_vy = 0, dc_px = 0, dc_py = 0;
 // gw v53: the per-frame float work cut to what changes (soft-float on RP2040: every op is a call), all exact: the same
 // inputs give the same floats, so only repeated work is skipped. The table segments' widths and rises, as gain_at and
 // decel_at took them every frame (the same subtractions, done once per table)
@@ -103,6 +109,7 @@ static void __not_in_flash_func(dc_stroke)() {
     dc_pk = dc_tr = 0;
     dc_gn = 1.0f;
     dc_tpk = -1.0f;  // gw v54 (d): a new table or stroke: the peak's speeds are stale
+    dc_px = dc_py = 0;  // v75: no peak, no direction (a dot product of 0 is never a reversal)
 }
 
 void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, const uint16_t* sp, const uint16_t* g) {
@@ -140,6 +147,7 @@ void gw_curve_set(bool want, uint8_t tau_ms, uint16_t dpi_fallback, uint8_t n, c
     on = want && ok;
     if (fresh) {
         spd = 0;
+        dc_vx = dc_vy = 0;  // v75
         rxq = ryq = 0;
         have_t = moved = false;
         dc_stroke();
@@ -217,6 +225,12 @@ void gw_curve_decel_link(const uint8_t* d, uint8_t len) {
     uint8_t n = (m >= 1) ? (m - 1) / w : 0;
     bool ok = (m >= 1) && ((m - 1) % w == 0) && (n <= GW_DECEL_N);
     dc_min = (ok && x) ? (float) (d[len - 2] | d[len - 1] << 8) / 10.0f : 0.0f;
+    // v75: byte 0 bit 3 = a reversal ends the stroke; kept as it came (status 252 bit 4), so the QT Py can confirm it
+    bool rev = (len >= 1) && (d[0] & 8);
+    if (rev != dc_rev) {
+        dc_vx = dc_vy = dc_px = dc_py = 0;  // velocity kept only while asked for: start it over, no stale direction
+        dc_rev = rev;
+    }
     for (uint8_t k = 0; ok && (k < n); k++) {
         const uint8_t* q = d + 1 + w * k;
         p10[k] = (w == 4) ? (uint16_t) (q[0] | q[1] << 8) : (uint16_t) (q[0] * 10);
@@ -264,12 +278,22 @@ static float __not_in_flash_func(decel_step)(float a) {
         dc_stroke();             // leave the 50 ms gap, so slow aim after a rest kept the last flick's peak and its lowest gain)
         return dc_gn;
     }
+    if (dc_rev && dc_on) {  // v75: moving more than 90 degrees away from the peak's direction, at 0.5 cm/s or more: a new stroke
+        int32_t b = fbits(dc_vx * dc_px + dc_vy * dc_py);
+        if ((b < 0) && (b != INT32_MIN) && !le_pn(dc_vx * dc_vx + dc_vy * dc_vy, 0.25f)) {  // below 0, not -0 (no direction yet)
+            dc_stroke();
+        }
+    }
     if (spd >= dc_pk) {
         dc_pk = dc_tr = spd;
+        dc_px = dc_vx;  // v75
+        dc_py = dc_vy;
     } else if (spd < dc_tr) {
         dc_tr = spd;
     } else if ((spd > dc_tr * 1.25f) && (spd > dc_tr + 2.0f)) {
         dc_pk = dc_tr = spd;
+        dc_px = dc_vx;  // v75
+        dc_py = dc_vy;
     }
     // gw v54 (d): spd is the peak (just set) = share 1.0 = gain 1.0, as v53's decel_at(1.0) gives; else below the peak
     float want = (dc_on && lt_pn(spd, dc_pk) && (dc_pk >= dc_min)) ? decel_spd(spd) : 1.0f;  // v73: only a stroke that reached the flick threshold
@@ -406,6 +430,7 @@ void __not_in_flash_func(gw_curve_filter)(int32_t* x, int32_t* y, uint64_t now_u
     moving = moved && (now_us - moved_us < GW_CURVE_GAP_US) && ge_pn(spd, GW_CURVE_STILL);  // gw v53: by the bits
     if (dpi == 0) {
         spd = 0;  // v31: no DPI known: the speed can't be, so the motion passes unchanged (it froze the last gain)
+        dc_vx = dc_vy = 0;  // v75
         have_t = moved = moving = false;
         sample(now_us);
         return;
@@ -416,7 +441,12 @@ void __not_in_flash_func(gw_curve_filter)(int32_t* x, int32_t* y, uint64_t now_u
     have_t = true;
     if ((dx == 0) && (dy == 0)) {
         if (gap > 0) {
-            spd *= ec_e[decay_of(gap)];  // a still frame: the speed decays (gw v53: e^(-dt/tau) cached by the gap)
+            float e = ec_e[decay_of(gap)];
+            spd *= e;  // a still frame: the speed decays (gw v53: e^(-dt/tau) cached by the gap)
+            if (dc_rev) {
+                dc_vx *= e;  // v75: and the velocity with it
+                dc_vy *= e;
+            }
         }
         if (on) {
             g_now = gain_at(spd) * dc_gn;
@@ -427,12 +457,18 @@ void __not_in_flash_func(gw_curve_filter)(int32_t* x, int32_t* y, uint64_t now_u
     float a = 0;  // how far this frame moves the smoothed speed (and the slow-down gain) toward its own
     if (!moved || (now_us - moved_us >= GW_CURVE_GAP_US)) {
         spd = 0;  // the first motion after 50 ms without any starts from rest
+        dc_vx = dc_vy = 0;  // v75
         dc_stroke();  // v39: and a new stroke
     } else if (gap > 0) {
         uint32_t k = decay_of(gap);  // gw v53: dt (ms) and a = 1 - e^(-dt/tau), cached by the gap
         float cm = cm_of(dx, dy, dpi);  // gw v53: cached by |dx|, |dy|, DPI
         a = ec_a[k];
         spd = spd * ec_e[k] + cm * ec_ka[k];  // gw v54 (a2): the same smoothing in 2 multiplies and an add
+        if (dc_rev) {  // v75: the velocity, smoothed the same way, each axis signed
+            float c = cm_per(dpi) * ec_ka[k];
+            dc_vx = dc_vx * ec_e[k] + (float) dx * c;
+            dc_vy = dc_vy * ec_e[k] + (float) dy * c;
+        }
     }
     moved = true;
     moved_us = now_us;
@@ -471,7 +507,7 @@ bool gw_curve_speed_known(void) {
 }
 
 void gw_curve_status(uint8_t* s) {
-    s[0] = (on ? 1 : 0) | (got ? 2 : 0) | (dc_on ? 4 : 0) | (dc_got ? 8 : 0);
+    s[0] = (on ? 1 : 0) | (got ? 2 : 0) | (dc_on ? 4 : 0) | (dc_got ? 8 : 0) | (dc_rev ? 16 : 0);  // v75: bit 4
     s[1] = table_crc;
     s[2] = dc_crc;  // v39
 }

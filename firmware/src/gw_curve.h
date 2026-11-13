@@ -27,6 +27,8 @@ void gw_curve_link(const uint8_t* d, uint8_t len);
 void gw_curve_decel_set(bool on, uint8_t n, const uint16_t* p10, const uint16_t* g);
 // the payload as LINK_SET_DECEL carries it: [flags, n x point]. flags bit 0 = on; v47: bit 1 = 4-byte points (share
 // uint16 in 0.1 %, gain uint16), len 1 + 4n; without it 3-byte points (share whole % uint8, gain uint16), len 1 + 3n
+// v73: bit 2 = the flick threshold follows the points (0.1 cm/s uint16, last). v75: bit 3 = a reversal (moving more than
+// 90 degrees away from the stroke's peak direction) ends the stroke; clear = direction-blind, as before
 void gw_curve_decel_link(const uint8_t* d, uint8_t len);
 
 // once per frame on the frame's summed relative X and Y, after the turn (whose steady motion is a hand speed too);
@@ -35,6 +37,7 @@ void gw_curve_filter(int32_t* x, int32_t* y, uint64_t now_us, uint16_t dpi);
 
 // status bytes 252-253: bit 0 applying, bit 1 got a table since power-on; crc8 of the payload after its "on" byte
 // v39: 252 bit 2 slow-down gain applying, bit 3 got one; 254 crc8 of its payload after the "on" byte
+// v75: 252 bit 4 = the last slow-down payload asked for the reversal check (byte 0 bit 3; the crc doesn't cover byte 0)
 void gw_curve_status(uint8_t* s);
 
 // v32: the live view (the QT Py page's speed curve chart). The hand speed is tracked whenever the DPI is known, curve on
