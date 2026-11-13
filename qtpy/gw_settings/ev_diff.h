@@ -23,7 +23,8 @@ static inline uint8_t ev_new_count(const uint8_t* o, const uint8_t* n, uint32_t 
             const uint8_t* a = n + 2 + 6 * (k + j);
             const uint8_t* b = o + 2 + 6 * j;
             uint32_t aa = a[0] | a[1] << 8, ba = b[0] | b[1] << 8;
-            ok = !memcmp(a + 2, b + 2, 4) && (aa >= ba);
+            // fw115 (review 11-12): a value the Feather didn't know yet (0x7F) is filled in later on the same entry: not a new one
+            ok = !memcmp(a + 2, b + 2, 3) && ((a[5] == b[5]) || (b[5] == 0x7F)) && (aa >= ba);
             if (ok && (aa != 65535)) {
                 uint32_t d = aa - ba;
                 ok = (d >= lo) && (d <= hi) && ((d0 == 0xFFFFFFFF) || (d == d0));
@@ -35,6 +36,16 @@ static inline uint8_t ev_new_count(const uint8_t* o, const uint8_t* n, uint32_t 
         }
     }
     return nn;  // nothing of the old list left in it: all new (more than the list holds, or the Feather started over)
+}
+
+// fw115: Feather v76 counts the actions it added since it started (block bytes 46-49): the new ones are the difference,
+// exact even for identical actions in a full list. The count starts at a hash of the first action's time, so after the
+// Feather started over it jumps far either way: more than the list holds = all new
+static inline uint8_t ev_new_by_count(const uint8_t* o, const uint8_t* n) {
+    uint8_t nn = (n[1] > 8) ? 8 : n[1];
+    uint32_t a = o[46] | o[47] << 8 | o[48] << 16 | (uint32_t) o[49] << 24, b = n[46] | n[47] << 8 | n[48] << 16 | (uint32_t) n[49] << 24;
+    uint32_t d = b - a;
+    return (d > nn) ? nn : (uint8_t) d;
 }
 
 // the setting a recent action changed: 0 DPI stage (actions 1-7), 1 angle (8-10), 2 position (11-13), 0xFF other
