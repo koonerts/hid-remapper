@@ -43,7 +43,7 @@ extern const uint32_t gw_page_src_fnv;
 #define STATUS_FULL 512 // Feather v15+: 128-191 = the chord table (own crc), read only when byte 124 changes; v21+:
                         // 192-255 = recent actions (own crc), read when byte 117's high nibble changes (v15-v20: 192);
                         // v23+: 256-511 = the USB host capture (own crc), read on the same nibble
-#define QT_FW 115    // this firmware's number, shown in /api/status; fw115 (review 11-12): chord presses counted exactly with Feather v76, a filled-in value isn't a new action, no chord entry for a change with no new press, the diagnostics reset's bases zeroed once the Feather takes it (dropped: not shown as reset), wrap-safe chord timing; fw114: the slow-down gain's reversal toggle (POST /api/dcrev, status cv.dcrev; Feather v75 C_SET_DECEL byte 0 bit 3, confirmed by status 252 bit 4); fw113: the status's drst also has the Feather's uptime (fup, s; -1 = not read yet), so the page can say when it restarted; fw112: the frame-timing numbers can be reset (/api/diagreset: the minute / hour / 24 h windows start over, and Feather v74+ starts its since-start counts over; status "drst"); fw111: a chord entry's press count from the presses the Feather listed (the status showed 3 quick presses as 2 changes); fw110: the flick threshold logged once per run of changes (from and to), not per click; fw109: the slow-down gain's flick threshold (all curves, NVS "dcmin", default 20 cm/s) sent to Feather v73+ (/api/dcmin); fw108: a DPI stage, angle or position changed by a mouse chord goes into the edit log (quick presses merged into one entry, at most 6 kept); fw107: a curve Replace answers before the history files are written, and writes the library once (it took 4.1 s against the page's 4 s wait: "no answer" for a save that went through); fw106: review fixes: a USB-A restart from the button logged once it happened, the USB-A flags dropped when old, Restore can clear cm/360 and may match another saved curve; fw105: the Feather's USB-A port (Feather v70): restarts logged, /api/usbreset, block 8 layout 3; fw104: a star and a note on a curve save (/api/cvnote, /api/cvnotes); fw103: the edit log and curve history keep 80 more of each in flash (the page's Show older); fw102: automatic DPI stage changes hold at most 4 places in the 20-entry edit log; fw101: the Downhill slow-down preset (Ramp mirrored left to right); fw100: the Boost ramp slow-down preset (Ramp's opposite), the page's bytes in page_data.cpp; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
+#define QT_FW 116    // this firmware's number, shown in /api/status; fw116: a 3 s self-check that the curve, slow-down and gains the QT Py thinks the Feather has are really there (resent if not) and that the Feather's DPI matches the mouse's stage, with a record per start (host switch) of when each came back (GET /api/swrep); fw115 (review 11-12): chord presses counted exactly with Feather v76, a filled-in value isn't a new action, no chord entry for a change with no new press, the diagnostics reset's bases zeroed once the Feather takes it (dropped: not shown as reset), wrap-safe chord timing; fw114: the slow-down gain's reversal toggle (POST /api/dcrev, status cv.dcrev; Feather v75 C_SET_DECEL byte 0 bit 3, confirmed by status 252 bit 4); fw113: the status's drst also has the Feather's uptime (fup, s; -1 = not read yet), so the page can say when it restarted; fw112: the frame-timing numbers can be reset (/api/diagreset: the minute / hour / 24 h windows start over, and Feather v74+ starts its since-start counts over; status "drst"); fw111: a chord entry's press count from the presses the Feather listed (the status showed 3 quick presses as 2 changes); fw110: the flick threshold logged once per run of changes (from and to), not per click; fw109: the slow-down gain's flick threshold (all curves, NVS "dcmin", default 20 cm/s) sent to Feather v73+ (/api/dcmin); fw108: a DPI stage, angle or position changed by a mouse chord goes into the edit log (quick presses merged into one entry, at most 6 kept); fw107: a curve Replace answers before the history files are written, and writes the library once (it took 4.1 s against the page's 4 s wait: "no answer" for a save that went through); fw106: review fixes: a USB-A restart from the button logged once it happened, the USB-A flags dropped when old, Restore can clear cm/360 and may match another saved curve; fw105: the Feather's USB-A port (Feather v70): restarts logged, /api/usbreset, block 8 layout 3; fw104: a star and a note on a curve save (/api/cvnote, /api/cvnotes); fw103: the edit log and curve history keep 80 more of each in flash (the page's Show older); fw102: automatic DPI stage changes hold at most 4 places in the 20-entry edit log; fw101: the Downhill slow-down preset (Ramp mirrored left to right); fw100: the Boost ramp slow-down preset (Ramp's opposite), the page's bytes in page_data.cpp; fw99: review fixes for fw98 (a table longer than the Feather takes is sent as none, cv.dcmax; 7-10 points refused until the Feather answers; the page never shows fewer boxes than points; slow-down presets); fw98: slow-down gains up to 10 points (Feather v68; 6 before), library file v3, NVS and /cvhist.bin's 6-point records converted; fw97: the USB frame interrupt's jitter (Feather v67, block 8 30-31 / 40-41) in /api/perfwin gaps jit_max / jit_n50; fw96: block 8 layout 2 (Feather v66: frames checked since the start), restarts by its own uptime; fw95: the mouse's report pauses mid-movement (Feather v63 block 8) per second / minute / hour / 24 h in /api/perfwin "gaps"; fw94: the top bar's Stage chip in the stage's colour; fw93: frames skipped while the Feather settles (Feather v62: its start, USB changes) kept apart (settle_missed); fw92: review fixes for fw91 (sup:false only from an answering older Feather, down flag, skips after a gap kept out of the second/minute, restart in a long gap, link interrupt over the seconds that have it, nodpi from Feather v60); fw91: frame timing windows from Feather v59's still / moving blocks 6-7 (k=a|i|m, w=s too), time slots (no old data after a gap), uncapped skipped frames; fw90: frame timing over the last minute, hour and 24 h (/api/perfwin, RAM only; the profile block read twice a second); fw89: the mouse's sleep time and competitive mode (Feather v58: options 5-6, values in the 192-255 block) in /api/status "opt" (sleep s, comp) and /api/opt k=sleep|comp; fw88: battery kept from the refresh's status query and the QT Py's own (a cmd-04 probe once a minute while a page or tool polls), with the charging byte ("chg"); fw87: the live edit is owned by its page (tok) and leased (90 s), BallSheet's gains/DPI tests end it too, /cvhist.bin saved through /cvhist.tmp, prof drops stale numbers (+ age_ms); fw86: curve Replace logs which curve and what changed (/api/curvehist keeps before and after); fw85: the profile's layout 3 (Feather v55: the loop pass that takes the tick); fw84: the profile's gw_tick parts as Feather v52 times them; fw83: the profile block's layout 2 (Feather v51); fw82: where the Feather's frames go (Feather v50 block 5, /api/status prof); fw81: the curve editor's curve runs live while it's open (/api/cvtry); fw80: the curve editor types a point's values, Linear (all 1.00); fw79: BEGIN sent again for 7.5 s, not 2.5; fw78: an update waits 6 s for a Feather that doesn't answer BEGIN before a slower clock; fw77: what a Feather freeze left (Feather v48, block 4) in /api/status "fz"; fw75: audit 11-01 fixes (library kept off NVS when its file doesn't load, /api/pagereset, update APPLY polled, Wi-Fi drops shown); fw76: slow-down shares in 0.1 % steps
 #define POLL_MS 100
 #define RADIO_IDLE_MS (10UL * 60 * 1000)
 #define RADIO_IDLE_LONG_MS (60UL * 60 * 1000)
@@ -6441,6 +6441,133 @@ static void h_not_found() {
     server.send(404, "text/plain", "not found");
 }
 
+// ---- fw116: after a host switch (the ATEN power-cycles the box: both boards start over, and the Feather keeps the curve,
+// slow-down and direction gains in RAM only) check they really are back. The QT Py's copy of the Feather's status block (evb,
+// where the Feather says what it holds) is read again only when its change counter moves, and that counter doesn't count
+// those: a Feather that lost them unseen stayed "applied" until something forced a send (the editor). Every 3 s the block is
+// read anyway; what was applied and isn't is a heal (cv_tick / dg_tick then resend it). The Feather's DPI (what its speed
+// uses) is compared with the mouse's stage too: a wrong one makes the curve read the wrong speeds. Each start's record (when
+// each was confirmed, sends, heals, DPI mismatches) is kept for the last SW_N starts (NVS "swrep"), GET /api/swrep
+#define SW_N 8
+#define SW_NONE 0xFFFF
+struct __attribute__((packed)) SwRep {
+    uint32_t boot, t, sig;
+    uint16_t fe, host, stage, cv, dc, dg;  // 0.1 s after the QT Py started: the Feather answering, host known, stage set, curve / slow-down / gains confirmed
+    uint8_t cv_sends, dc_sends, heal, dpi_bad;
+    uint16_t dpi_fe, dpi_st;  // the last mismatch: the DPI the Feather's speed used, the mouse stage's
+};
+static SwRep sw[SW_N];
+static SwRep sw_cur;
+static uint32_t sw_check_at = 0, sw_saved_at = 0;
+static bool sw_dirty = false, sw_saved = false, sw_dpi_prev = false;
+static void sw_init() {
+    if (prefs.getBytes("swrep", sw, sizeof(sw)) != sizeof(sw)) {
+        memset(sw, 0, sizeof(sw));
+    }
+    memset(&sw_cur, 0, sizeof(sw_cur));
+    sw_cur.fe = sw_cur.host = sw_cur.stage = sw_cur.cv = sw_cur.dc = sw_cur.dg = SW_NONE;
+}
+static void sw_save() {
+    if (!sw_saved) {
+        memmove(sw + 1, sw, sizeof(SwRep) * (SW_N - 1));  // this start's record goes in front, once
+        sw_saved = true;
+    }
+    sw_cur.boot = b_boots;
+    sw_cur.t = now_unix();
+    sw_cur.cv_sends = (cv_sends > 255) ? 255 : cv_sends;
+    sw_cur.dc_sends = (dc_sends > 255) ? 255 : dc_sends;
+    sw[0] = sw_cur;
+    nvs_put("swrep", sw, sizeof(sw));
+    sw_dirty = false;
+    sw_saved_at = millis() | 1;
+}
+static uint16_t sw_stamp(uint16_t f, bool now) {  // by value: the record's fields are packed
+    if (now && (f == SW_NONE)) {
+        uint32_t d = millis() / 100;
+        f = (d >= SW_NONE) ? SW_NONE - 1 : (uint16_t) d;
+        sw_dirty = true;
+    }
+    return f;
+}
+static void sw_tick() {
+    if (auto_sig && (sw_cur.sig != auto_sig)) {
+        sw_cur.sig = auto_sig;
+        sw_dirty = true;
+    }
+    bool cvs = cv_supported(), dcs = dc_supported() && !lib_off, dgs = dg_supported();
+    sw_cur.fe = sw_stamp(sw_cur.fe, st_ok);
+    sw_cur.host = sw_stamp(sw_cur.host, auto_sig != 0);
+    sw_cur.stage = sw_stamp(sw_cur.stage, (auto_sig != 0) && ((auto_state == 2) || (auto_state == 4) || (auto_state == 6)));
+    sw_cur.cv = sw_stamp(sw_cur.cv, cvs && ev_ok && cv_applied());
+    sw_cur.dc = sw_stamp(sw_cur.dc, dcs && ev_ok && dc_applied());
+    sw_cur.dg = sw_stamp(sw_cur.dg, dgs && ev_ok && dg_applied());
+    if (link_up && st_ok && ev_ok && (cq_n == 0) && !cv_reread && !dg_reread && (millis() - sw_check_at >= 3000) && (millis() - ev_read_at >= 3000)) {
+        sw_check_at = millis();
+        bool cv0 = cvs && cv_applied(), dc0 = dcs && dc_applied(), dg0 = dgs && dg_applied();
+        read_chords();
+        bool cv1 = cvs && cv_applied(), dc1 = dcs && dc_applied(), dg1 = dgs && dg_applied();
+        if ((cv0 && !cv1) || (dc0 && !dc1) || (dg0 && !dg1)) {
+            if (sw_cur.heal < 255) {
+                sw_cur.heal++;
+            }
+            sw_dirty = true;
+        }
+        // the Feather's DPI against the mouse's stage (its DPI table read: status byte 3 bit 7), twice in a row (a stage
+        // change in between is not a mismatch)
+        bool bad = false;
+        if (live_supported() && (st[3] & 128) && (st[4] < 5)) {
+            uint8_t b[80];
+            uint8_t len = (st[56] >= 33) ? 80 : 48;
+            uint16_t sd = u16(23 + 4 * st[4]);
+            if (sd && read_sel(1, b, len) && (b[0] == 'L') && (b[1] & 2)) {
+                uint16_t fe = b[4] | b[5] << 8;
+                bad = fe && (fe != sd);
+                if (bad && sw_dpi_prev) {
+                    if (sw_cur.dpi_bad < 255) {
+                        sw_cur.dpi_bad++;
+                    }
+                    sw_cur.dpi_fe = fe;
+                    sw_cur.dpi_st = sd;
+                    sw_dirty = true;
+                }
+            }
+        }
+        sw_dpi_prev = bad;
+    }
+    // kept 10 s and 30 s after the start (a quick switch back still leaves one), then on news, at most every 10 s
+    uint32_t up = millis();
+    if ((!sw_saved && (up >= 10000)) || (sw_saved && (sw_saved_at < 30000) && (up >= 30000)) || (sw_saved && sw_dirty && (up - sw_saved_at >= 10000))) {
+        sw_save();
+    }
+}
+static String sw_json(const void* rp) {  // void*: the sketch's generated prototypes come before the struct
+    const SwRep& r = *(const SwRep*) rp;
+    auto tm = [](uint16_t v) { return (v == SW_NONE) ? String("null") : String(v / 10.0f, 1); };
+    HostProf* p = r.sig ? hprof_at(hprof_find(r.sig)) : nullptr;
+    return String("{\"boot\":") + String(r.boot) + ",\"t\":" + String(r.t) + ",\"host\":\"" + (r.sig ? hex32(r.sig).substring(2) : String("")) + "\",\"name\":\"" + String(p ? p->name : "") +
+           "\",\"feather\":" + tm(r.fe) + ",\"host_s\":" + tm(r.host) + ",\"stage\":" + tm(r.stage) + ",\"curve\":" + tm(r.cv) + ",\"slowdown\":" + tm(r.dc) +
+           ",\"gains\":" + tm(r.dg) + ",\"curve_sends\":" + String(r.cv_sends) + ",\"slowdown_sends\":" + String(r.dc_sends) + ",\"heals\":" + String(r.heal) +
+           ",\"dpi_bad\":" + String(r.dpi_bad) + ",\"dpi_feather\":" + String(r.dpi_fe) + ",\"dpi_stage\":" + String(r.dpi_st) + "}";
+}
+// GET /api/swrep: this start's record (live), then the kept ones newest first (the first may be this start's, as saved)
+static void h_swrep() {
+    touch();
+    SwRep c = sw_cur;
+    c.boot = b_boots;
+    c.cv_sends = (cv_sends > 255) ? 255 : cv_sends;
+    c.dc_sends = (dc_sends > 255) ? 255 : dc_sends;
+    String j = String("{\"now\":") + String(now_unix()) + ",\"up_s\":" + String(millis() / 1000) + ",\"cur\":" + sw_json(&c) + ",\"kept\":[";
+    bool first = true;
+    for (uint8_t k = 0; k < SW_N; k++) {
+        if (!sw[k].boot) {
+            continue;
+        }
+        j += (first ? "" : ",") + sw_json(&sw[k]);
+        first = false;
+    }
+    server.send(200, "application/json", j + "]}");
+}
+
 void setup() {
 #ifdef NEOPIXEL_POWER
     pinMode(NEOPIXEL_POWER, OUTPUT);
@@ -6464,6 +6591,7 @@ void setup() {
     if (prefs.getBytes("drst", &drst, sizeof(drst)) != sizeof(drst)) {  // fw112: the last reset of the frame-timing numbers
         memset(&drst, 0, sizeof(drst));
     }
+    sw_init();  // fw116
     edit_cap_kind(EK_AUTO_STAGE, EDIT_AUTO_KEEP);  // fw102: a log from before the cap
     hcap_n = prefs.getBytes("hcaps", hcap, sizeof(hcap)) / sizeof(HostCap);         // fw23: USB host captures so far
     fz_have = prefs.getBytes("fz", &fz, sizeof(fz)) == sizeof(fz);                  // fw77: the last Feather freeze
@@ -6722,6 +6850,7 @@ void setup() {
     server.on("/api/cvnotes", HTTP_GET, h_cvnotes);      // fw104
     server.on("/api/cvnote", HTTP_POST, h_cvnote);
     server.on("/api/diagreset", HTTP_POST, h_diagreset);  // fw112
+    server.on("/api/swrep", HTTP_GET, h_swrep);  // fw116
     server.on("/api/usbreset", HTTP_POST, h_usbreset);   // fw105
     server.on("/api/dcmin", HTTP_POST, h_dcmin);         // fw109
     server.on("/api/dcrev", HTTP_POST, h_dcrev);         // fw114
@@ -6785,6 +6914,7 @@ void loop() {
     chord_tick();  // fw108
     dg_tick();
     cv_tick();
+    sw_tick();  // fw116
     live_tick();
     tdpi_tick();
     bat_tick();  // fw88
